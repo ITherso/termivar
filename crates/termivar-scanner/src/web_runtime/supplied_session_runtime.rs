@@ -204,7 +204,8 @@ impl CommittedSuppliedSessionHealthReceipt {
                 == match expected_phase {
                     SuppliedSessionHealthCheckpointPhase::Startup => 0,
                     SuppliedSessionHealthCheckpointPhase::Terminal => 1,
-                    SuppliedSessionHealthCheckpointPhase::SubjectBoundary => return false,
+                    SuppliedSessionHealthCheckpointPhase::SubjectBoundary
+                    | SuppliedSessionHealthCheckpointPhase::Renewal => return false,
                 }
             && self.phase == expected_phase
             && self.after_subject_count == expected_after_subject_count
@@ -296,6 +297,8 @@ pub const SUPPLIED_SESSION_AUDIT_SCHEMA: &str = "security.supplied-session-audit
 pub const SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v2";
 /// Strict saved-audit schema for one bounded form-login transition.
 pub const SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v3";
+/// Scheduled supplied-cookie renewal audit, preserving the historical audits.
+pub const SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v4";
 /// Stable capability identity. This audit-only V1 emits no assessment item.
 pub const SUPPLIED_SESSION_CAPABILITY_ID: &str = "session.supplied-context-assessment@1";
 
@@ -377,6 +380,8 @@ pub enum SuppliedSessionAuditOutcome {
     LoginSubmitUnavailable,
     /// The login response did not yield the exact declared cookie set.
     LoginCookieUnavailable,
+    /// The one selected renewal did not yield a usable replacement context.
+    RenewalUnavailable,
 }
 
 /// Value-free result of selecting the one policy-bound login form.
@@ -507,6 +512,8 @@ pub enum SuppliedSessionHealthCheckpointPhase {
     Startup,
     SubjectBoundary,
     Terminal,
+    /// Immediate health check after applying the selected replacement cookies.
+    Renewal,
 }
 
 /// Health interpretation at one actually dispatched checkpoint.
@@ -567,11 +574,16 @@ pub struct WebAssessmentSuppliedSessionCheckpointAudit {
     body_state: SuppliedSessionBodyState,
     predicate: SuppliedSessionPredicateOutcome,
     response_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<u8>,
     #[serde(skip)]
     cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
 }
 
 impl WebAssessmentSuppliedSessionCheckpointAudit {
+    pub fn epoch(&self) -> u8 {
+        self.epoch.unwrap_or(1)
+    }
     pub const fn sequence(&self) -> u8 {
         self.sequence
     }
@@ -781,6 +793,63 @@ pub struct WebAssessmentSuppliedSessionAudit {
     cookie_lifecycle: Option<SuppliedSessionCookieLifecycleAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<SuppliedSessionLoginAudit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    renewal: Option<SuppliedSessionRenewalAudit>,
+}
+
+/// Value-free record of the one explicit credential transition and its health gate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuppliedSessionRenewalAudit {
+    renewal_reference: String,
+    after_resource_count: u8,
+    attempt_count: u8,
+    status: Option<u16>,
+    body_state: SuppliedSessionBodyState,
+    outcome: SuppliedSessionLoginSubmitOutcome,
+    response_bytes: u64,
+    applied_cookie_count: u8,
+    initial_epoch: u8,
+    final_epoch: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<WebAssessmentSuppliedSessionCheckpointAudit>,
+    #[serde(skip)]
+    cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
+}
+
+impl SuppliedSessionRenewalAudit {
+    pub fn renewal_reference(&self) -> &str {
+        &self.renewal_reference
+    }
+    pub const fn after_resource_count(&self) -> u8 {
+        self.after_resource_count
+    }
+    pub const fn attempt_count(&self) -> u8 {
+        self.attempt_count
+    }
+    pub const fn status(&self) -> Option<u16> {
+        self.status
+    }
+    pub const fn body_state(&self) -> SuppliedSessionBodyState {
+        self.body_state
+    }
+    pub const fn outcome(&self) -> SuppliedSessionLoginSubmitOutcome {
+        self.outcome
+    }
+    pub const fn response_bytes(&self) -> u64 {
+        self.response_bytes
+    }
+    pub const fn applied_cookie_count(&self) -> u8 {
+        self.applied_cookie_count
+    }
+    pub const fn initial_epoch(&self) -> u8 {
+        self.initial_epoch
+    }
+    pub const fn final_epoch(&self) -> u8 {
+        self.final_epoch
+    }
+    pub fn health(&self) -> Option<&WebAssessmentSuppliedSessionCheckpointAudit> {
+        self.health.as_ref()
+    }
 }
 
 const fn legacy_credential_acquisition(value: &SuppliedSessionCredentialAcquisition) -> bool {
@@ -792,6 +861,9 @@ const fn legacy_credential_acquisition(value: &SuppliedSessionCredentialAcquisit
 }
 
 impl WebAssessmentSuppliedSessionAudit {
+    pub fn renewal(&self) -> Option<&SuppliedSessionRenewalAudit> {
+        self.renewal.as_ref()
+    }
     pub const fn schema(&self) -> &'static str {
         self.schema
     }
@@ -963,7 +1035,7 @@ impl SuppliedSessionRuntimeConfig {
             resource_observer.expect("observer remains present").fail();
         }
 
-        let credential = match input {
+        let mut credential = match input {
             SuppliedSessionRuntimeInput::Ready(credential) => credential,
             SuppliedSessionRuntimeInput::FormLogin(form_credential) => {
                 let (Some(login_page), Some(login_submit)) =
@@ -1055,6 +1127,13 @@ impl SuppliedSessionRuntimeConfig {
         }
 
         for (index, (descriptor, reference)) in resources.iter().enumerate() {
+            let dispatch_context = DispatchContext {
+                authority,
+                requests: &requests,
+                credential: &credential,
+                policy: &policy,
+                deadline,
+            };
             let sequence = u8::try_from(index).unwrap_or(u8::MAX);
             let resource = dispatch(
                 &dispatch_context,
@@ -1130,6 +1209,64 @@ impl SuppliedSessionRuntimeConfig {
                     state.add_not_dispatched(&resources[index + 1..]);
                     return state.finish(policy);
                 },
+            }
+            if policy.renewal_after_resource_count() == Some(after_subject_count) {
+                let renewal = SuppliedSessionRequestDescriptor::renewal(&policy)
+                    .expect("V4 policy owns the validated renewal descriptor");
+                let result = dispatch(
+                    &dispatch_context,
+                    &renewal,
+                    state.dispatch_budget(),
+                    DecisionActionOrigin::Planned,
+                    SuppliedSessionRequestPurpose::Renewal,
+                )
+                .await;
+                let replacement = match state.record_renewal(result, &renewal, &policy) {
+                    Ok(replacement) => replacement,
+                    Err(outcome) => {
+                        state.outcome = outcome;
+                        state.add_not_dispatched(&resources[index + 1..]);
+                        return state.finish(policy);
+                    },
+                };
+                credential = replacement;
+                let dispatch_context = DispatchContext {
+                    authority,
+                    requests: &requests,
+                    credential: &credential,
+                    policy: &policy,
+                    deadline,
+                };
+                let result = dispatch(
+                    &dispatch_context,
+                    &health,
+                    state.dispatch_budget(),
+                    DecisionActionOrigin::Planned,
+                    SuppliedSessionRequestPurpose::Health,
+                )
+                .await;
+                let previous_checkpoint_count = state.checkpoints.len();
+                let continued = state.record_health(
+                    result,
+                    &health,
+                    SuppliedSessionHealthCheckpointPhase::Renewal,
+                    after_subject_count,
+                    &policy,
+                    authority.knowledge(),
+                );
+                let renewal_health = (state.checkpoints.len() > previous_checkpoint_count)
+                    .then(|| state.checkpoints.pop())
+                    .flatten();
+                state
+                    .renewal
+                    .as_mut()
+                    .expect("renewal is initialized")
+                    .health = renewal_health;
+                if let Continue::No(outcome) = continued {
+                    state.outcome = outcome;
+                    state.add_not_dispatched(&resources[index + 1..]);
+                    return state.finish(policy);
+                }
             }
         }
         state.outcome = SuppliedSessionAuditOutcome::Complete;
@@ -1437,6 +1574,8 @@ struct ExecutionState {
     outcome: SuppliedSessionAuditOutcome,
     selected_resource_count: u8,
     response_bytes: u64,
+    epoch: u8,
+    renewal: Option<SuppliedSessionRenewalAudit>,
 }
 
 #[derive(Clone, Copy)]
@@ -1456,6 +1595,26 @@ impl ExecutionState {
             outcome: SuppliedSessionAuditOutcome::RuntimeLimit,
             selected_resource_count,
             response_bytes: 0,
+            epoch: 1,
+            renewal: policy
+                .renewal_after_resource_count()
+                .map(|after_resource_count| SuppliedSessionRenewalAudit {
+                    renewal_reference: SuppliedSessionRequestDescriptor::renewal(policy)
+                        .expect("validated V4 descriptor")
+                        .target_reference()
+                        .to_owned(),
+                    after_resource_count,
+                    attempt_count: 0,
+                    status: None,
+                    body_state: SuppliedSessionBodyState::Unavailable,
+                    outcome: SuppliedSessionLoginSubmitOutcome::NotDispatched,
+                    response_bytes: 0,
+                    applied_cookie_count: 0,
+                    initial_epoch: 1,
+                    final_epoch: 1,
+                    health: None,
+                    cookie_update: None,
+                }),
         }
     }
 
@@ -1661,6 +1820,93 @@ impl ExecutionState {
         }
     }
 
+    fn record_renewal(
+        &mut self,
+        dispatch: DispatchResult,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+    ) -> Result<SuppliedSessionCredential, SuppliedSessionAuditOutcome> {
+        let renewal = self
+            .renewal
+            .as_mut()
+            .ok_or(SuppliedSessionAuditOutcome::RenewalUnavailable)?;
+        if renewal.attempt_count != 0 || !descriptor.validate_against(policy) {
+            return Err(SuppliedSessionAuditOutcome::RenewalUnavailable);
+        }
+        let (bytes, dispatched, outcome) = match dispatch {
+            DispatchResult::Response {
+                response,
+                bytes,
+                exact_target,
+                cookie_update,
+            } => {
+                renewal.attempt_count = 1;
+                renewal.response_bytes = bytes;
+                renewal.status = Some(response.status());
+                renewal.body_state = if response.body_complete() {
+                    SuppliedSessionBodyState::Complete
+                } else {
+                    SuppliedSessionBodyState::Incomplete
+                };
+                renewal.cookie_update = cookie_update;
+                renewal.outcome = if (300..400).contains(&response.status()) {
+                    SuppliedSessionLoginSubmitOutcome::RedirectRefused
+                } else if !response.body_complete() {
+                    SuppliedSessionLoginSubmitOutcome::Incomplete
+                } else if response.status() != 200 {
+                    SuppliedSessionLoginSubmitOutcome::HttpError
+                } else {
+                    SuppliedSessionLoginSubmitOutcome::CookieUnavailable
+                };
+                self.response_bytes = self.response_bytes.saturating_add(bytes);
+                if !exact_target
+                    || !cookie_update.is_some_and(|update| {
+                        update.kind == SuppliedSessionResponseCookieUpdateKind::Selected
+                    })
+                {
+                    return Err(SuppliedSessionAuditOutcome::RenewalUnavailable);
+                }
+                let now =
+                    unix_time_seconds().ok_or(SuppliedSessionAuditOutcome::RenewalUnavailable)?;
+                let cookies = response
+                    .supplied_session_renewal_cookies(policy, now)
+                    .map_err(|_| SuppliedSessionAuditOutcome::RenewalUnavailable)?;
+                renewal.applied_cookie_count =
+                    u8::try_from(cookies.cookie_count()).unwrap_or(u8::MAX);
+                renewal.outcome = SuppliedSessionLoginSubmitOutcome::CookieAcquired;
+                renewal.final_epoch = 2;
+                self.epoch = 2;
+                return Ok(SuppliedSessionCredential::SuppliedCookies(cookies));
+            },
+            DispatchResult::Transport { bytes, dispatched } => (
+                bytes,
+                dispatched,
+                SuppliedSessionAuditOutcome::RenewalUnavailable,
+            ),
+            DispatchResult::RuntimeLimit { bytes, dispatched } => {
+                (bytes, dispatched, SuppliedSessionAuditOutcome::RuntimeLimit)
+            },
+            DispatchResult::Cancelled { bytes, dispatched } => {
+                (bytes, dispatched, SuppliedSessionAuditOutcome::Cancelled)
+            },
+            DispatchResult::InvalidDescriptor => {
+                (0, false, SuppliedSessionAuditOutcome::RenewalUnavailable)
+            },
+        };
+        renewal.attempt_count = u8::from(dispatched);
+        renewal.outcome = match outcome {
+            SuppliedSessionAuditOutcome::RuntimeLimit => {
+                SuppliedSessionLoginSubmitOutcome::RuntimeLimit
+            },
+            SuppliedSessionAuditOutcome::Cancelled => SuppliedSessionLoginSubmitOutcome::Cancelled,
+            _ if dispatched => SuppliedSessionLoginSubmitOutcome::TransportFailed,
+            _ => SuppliedSessionLoginSubmitOutcome::NotDispatched,
+        };
+        renewal.response_bytes = bytes;
+        self.response_bytes = self.response_bytes.saturating_add(bytes);
+        Err(outcome)
+    }
+
     fn dispatched_request_count(&self) -> u8 {
         let dispatched_resources = self
             .resources
@@ -1674,6 +1920,11 @@ impl ExecutionState {
             .unwrap_or(u8::MAX)
             .saturating_add(u8::try_from(dispatched_resources).unwrap_or(u8::MAX))
             .saturating_add(login_requests)
+            .saturating_add(self.renewal.as_ref().map_or(0, |renewal| {
+                renewal
+                    .attempt_count
+                    .saturating_add(u8::from(renewal.health.is_some()))
+            }))
     }
 
     fn dispatch_budget(&self) -> DispatchBudget {
@@ -1723,6 +1974,8 @@ impl ExecutionState {
                     },
                     policy,
                 );
+                record.epoch =
+                    (policy.version() == SuppliedSessionPolicyVersion::V4).then_some(self.epoch);
                 bind_health_evidence(
                     &mut record,
                     policy,
@@ -1783,7 +2036,13 @@ impl ExecutionState {
                 (None, Some(SuppliedSessionAuditOutcome::ResourceUnavailable))
             },
         };
-        if let Some(record) = record {
+        if let Some(mut record) = record {
+            if policy.version() == SuppliedSessionPolicyVersion::V4
+                && record.epoch != Some(self.epoch)
+            {
+                record.epoch = Some(self.epoch);
+                bind_health_evidence(&mut record, policy, descriptor, None, knowledge);
+            }
             self.response_bytes = self.response_bytes.saturating_add(record.response_bytes);
             self.checkpoints.push(record);
         }
@@ -1805,7 +2064,9 @@ impl ExecutionState {
                 exact_target,
                 cookie_update,
             } => {
-                let staged = stage_resource_response(&response, bytes, exact_target, cookie_update);
+                let mut staged =
+                    stage_resource_response(&response, bytes, exact_target, cookie_update);
+                staged.epoch = self.epoch;
                 if let Some(outcome) = cookie_update_stop_outcome(staged.cookie_update) {
                     let record = commit_health_unqualified_resource(
                         sequence,
@@ -1975,13 +2236,32 @@ impl ExecutionState {
         }
     }
 
-    fn finish(self, policy: SuppliedSessionPolicy) -> WebAssessmentSuppliedSessionAudit {
+    fn finish(mut self, policy: SuppliedSessionPolicy) -> WebAssessmentSuppliedSessionAudit {
+        if let Some(boundary) = policy.renewal_after_resource_count() {
+            for resource in &mut self.resources {
+                resource.epoch = if self.epoch == 2 && resource.sequence >= boundary {
+                    2
+                } else {
+                    1
+                };
+            }
+        }
         let response_byte_limit = policy.max_total_response_bytes();
         let cookie_policy = policy
             .cookie_summary()
             .map(|summary| cookie_policy_audit(summary, &policy));
         let cookie_lifecycle = cookie_policy.is_some().then(|| {
-            cookie_lifecycle_audit(&self.checkpoints, &self.resources, self.login.as_ref())
+            let mut lifecycle = cookie_lifecycle_audit(
+                &self.checkpoints,
+                &self.resources,
+                self.login.as_ref(),
+                self.renewal.as_ref(),
+            );
+            if let Some(renewal) = self.renewal.as_ref() {
+                lifecycle.final_epoch = renewal.final_epoch;
+                lifecycle.updates_applied = u8::from(renewal.applied_cookie_count > 0);
+            }
+            lifecycle
         });
         let dispatched_resource_count = u8::try_from(
             self.resources
@@ -2053,12 +2333,21 @@ impl ExecutionState {
                         .map(WebAssessmentSuppliedSessionResourceAudit::response_bytes)
                         .sum::<u64>()
                 )
+                .saturating_add(self.renewal.as_ref().map_or(0, |renewal| {
+                    renewal.response_bytes.saturating_add(
+                        renewal
+                            .health
+                            .as_ref()
+                            .map_or(0, |health| health.response_bytes),
+                    )
+                }))
         );
         WebAssessmentSuppliedSessionAudit {
             schema: match policy.version() {
                 SuppliedSessionPolicyVersion::V1 => SUPPLIED_SESSION_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V2 => SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V3 => SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+                SuppliedSessionPolicyVersion::V4 => SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
             },
             capability_id: SUPPLIED_SESSION_CAPABILITY_ID,
             policy_reference: policy.policy_reference().to_owned(),
@@ -2083,7 +2372,10 @@ impl ExecutionState {
             response_bytes: self.response_bytes,
             response_byte_limit,
             response_byte_limit_exceeded: self.response_bytes > response_byte_limit,
-            refresh_performed: false,
+            refresh_performed: self
+                .renewal
+                .as_ref()
+                .is_some_and(|renewal| renewal.applied_cookie_count > 0),
             anonymous_fallback_performed: false,
             continuous_authentication_established: false,
             exploit_execution_performed: false,
@@ -2091,6 +2383,7 @@ impl ExecutionState {
             cookie_policy,
             cookie_lifecycle,
             login: self.login,
+            renewal: self.renewal,
         }
     }
 }
@@ -2121,11 +2414,18 @@ fn cookie_lifecycle_audit(
     checkpoints: &[WebAssessmentSuppliedSessionCheckpointAudit],
     resources: &[WebAssessmentSuppliedSessionResourceAudit],
     login: Option<&SuppliedSessionLoginAudit>,
+    renewal: Option<&SuppliedSessionRenewalAudit>,
 ) -> SuppliedSessionCookieLifecycleAudit {
     let updates = checkpoints
         .iter()
         .filter_map(|record| record.cookie_update)
-        .chain(resources.iter().filter_map(|record| record.cookie_update));
+        .chain(resources.iter().filter_map(|record| record.cookie_update))
+        .chain(renewal.and_then(|renewal| renewal.cookie_update))
+        .chain(
+            renewal
+                .and_then(|renewal| renewal.health.as_ref())
+                .and_then(|health| health.cookie_update),
+        );
     let mut selected_update_response_count = 0_u8;
     let mut unselected_update_response_count = 0_u8;
     let mut update_classification_failure_count = 0_u8;
@@ -2405,14 +2705,31 @@ async fn dispatch(
     }
     let limits = DecisionExecutionLimits::new().with_max_response_body_bytes(response_limit);
     let before = context.authority.request_accounting().snapshot();
-    let execution = context.requests.collect_supplied_session_get_for_runtime(
-        DecisionExecutionStage::Passive,
-        Some(origin),
-        limits,
-        descriptor,
-        context.policy,
-        context.credential,
-    );
+    let execution = async {
+        if expected_purpose == SuppliedSessionRequestPurpose::Renewal {
+            context
+                .requests
+                .collect_supplied_session_renewal_for_runtime(
+                    limits,
+                    descriptor,
+                    context.policy,
+                    context.credential,
+                )
+                .await
+        } else {
+            context
+                .requests
+                .collect_supplied_session_get_for_runtime(
+                    DecisionExecutionStage::Passive,
+                    Some(origin),
+                    limits,
+                    descriptor,
+                    context.policy,
+                    context.credential,
+                )
+                .await
+        }
+    };
     let result = super::await_execution(
         context.authority.cancellation(),
         context.deadline,
@@ -2472,7 +2789,9 @@ fn response_cookie_update(
 ) -> Option<SuppliedSessionResponseCookieUpdate> {
     if !matches!(
         policy.version(),
-        SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V3
+        SuppliedSessionPolicyVersion::V2
+            | SuppliedSessionPolicyVersion::V3
+            | SuppliedSessionPolicyVersion::V4
     ) {
         return None;
     }
@@ -2588,6 +2907,7 @@ fn classify_health(
         body_state,
         predicate,
         response_bytes: bytes,
+        epoch: None,
         cookie_update,
     }
 }
@@ -2608,6 +2928,7 @@ fn health_unavailable(
         body_state: SuppliedSessionBodyState::Unavailable,
         predicate: SuppliedSessionPredicateOutcome::NotEvaluated,
         response_bytes: bytes,
+        epoch: None,
         cookie_update: None,
     }
 }
@@ -2683,6 +3004,10 @@ fn commit_health_evidence(
         health_outcome_token(checkpoint.outcome),
         checkpoint.response_bytes,
     );
+    if policy.version() == SuppliedSessionPolicyVersion::V4 {
+        use std::fmt::Write as _;
+        let _ = write!(binding, ";epoch={}", checkpoint.epoch());
+    }
     append_cookie_update_binding(policy, &mut binding, checkpoint.cookie_update);
     commit_value_safe_evidence(
         policy,
@@ -2701,6 +3026,7 @@ fn checkpoint_phase_token(phase: SuppliedSessionHealthCheckpointPhase) -> &'stat
         SuppliedSessionHealthCheckpointPhase::Startup => "startup",
         SuppliedSessionHealthCheckpointPhase::SubjectBoundary => "subject_boundary",
         SuppliedSessionHealthCheckpointPhase::Terminal => "terminal",
+        SuppliedSessionHealthCheckpointPhase::Renewal => "renewal",
     }
 }
 
@@ -2741,6 +3067,7 @@ struct StagedSuppliedSessionResource {
     exact_target: bool,
     body_complete: bool,
     cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
+    epoch: u8,
 }
 
 fn stage_resource_response(
@@ -2755,6 +3082,7 @@ fn stage_resource_response(
         exact_target,
         body_complete: response.body_complete(),
         cookie_update,
+        epoch: 1,
     }
 }
 
@@ -2821,6 +3149,7 @@ fn commit_staged_resource_with_receipt(
                     resource_reference: expected_reference,
                     response_bytes: staged.response_bytes,
                     cookie_update: staged.cookie_update,
+                    epoch: staged.epoch,
                     qualifying_checkpoint_reference: checkpoint_reference,
                 },
                 policy,
@@ -2844,7 +3173,7 @@ fn commit_staged_resource_with_receipt(
             outcome,
             status: Some(staged.status),
             response_bytes: staged.response_bytes,
-            epoch: 1,
+            epoch: staged.epoch,
             cookie_update: staged.cookie_update,
         },
         receipt,
@@ -2885,7 +3214,7 @@ fn commit_health_unqualified_resource(
         evidence_reference,
         status: Some(staged.status),
         response_bytes: staged.response_bytes,
-        epoch: 1,
+        epoch: staged.epoch,
         cookie_update: staged.cookie_update,
     }
 }
@@ -2902,6 +3231,7 @@ struct ResourceEvidenceCommitInput<'a> {
     response_bytes: u64,
     cookie_update: Option<SuppliedSessionResponseCookieUpdate>,
     qualifying_checkpoint_reference: &'a str,
+    epoch: u8,
 }
 
 fn commit_resource_evidence(
@@ -2916,6 +3246,18 @@ fn commit_resource_evidence(
         return None;
     }
     require_committed_health_evidence(input.qualifying_checkpoint_reference, knowledge)?;
+    if policy.version() == SuppliedSessionPolicyVersion::V4 {
+        let id = EvidenceId::parse(input.qualifying_checkpoint_reference).ok()?;
+        let expected_binding = format!(
+            "policy={};application={};",
+            policy.policy_reference(),
+            policy.application_reference()
+        );
+        let epoch_binding = format!(";epoch={};", input.epoch);
+        if !knowledge.inspect_evidence(&id, |evidence| {
+            matches!(evidence.value(), EvidenceValue::Text(binding) if binding.starts_with(&expected_binding) && binding.contains(&epoch_binding) && binding.contains(";outcome=healthy;"))
+        })? { return None; }
+    }
     let mut binding = format!(
         "policy={};application={};resource={};purpose=resource;status=200;response_bytes={};qualifying_checkpoint={};outcome=committed",
         policy.policy_reference(),
@@ -2924,6 +3266,10 @@ fn commit_resource_evidence(
         input.response_bytes,
         input.qualifying_checkpoint_reference,
     );
+    if policy.version() == SuppliedSessionPolicyVersion::V4 {
+        use std::fmt::Write as _;
+        let _ = write!(binding, ";epoch={}", input.epoch);
+    }
     append_cookie_update_binding(policy, &mut binding, input.cookie_update);
     let evidence_reference = commit_value_safe_evidence(
         policy,
@@ -2954,7 +3300,7 @@ fn commit_resource_evidence(
         #[cfg(feature = "wordpress-review")]
         credential_mechanism: policy.credential_mechanism(),
         #[cfg(feature = "wordpress-review")]
-        epoch: 1,
+        epoch: input.epoch,
         evidence_reference,
         #[cfg(feature = "wordpress-review")]
         expected_evidence,
@@ -3003,6 +3349,7 @@ fn health_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static str
         SuppliedSessionPolicyVersion::V1 => HEALTH_COMMIT_EVIDENCE_METHOD_V1,
         SuppliedSessionPolicyVersion::V2 => HEALTH_COMMIT_EVIDENCE_METHOD_V2,
         SuppliedSessionPolicyVersion::V3 => HEALTH_COMMIT_EVIDENCE_METHOD_V3,
+        SuppliedSessionPolicyVersion::V4 => "supplied-session-health/v4",
     }
 }
 
@@ -3011,6 +3358,7 @@ fn resource_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static s
         SuppliedSessionPolicyVersion::V1 => RESOURCE_COMMIT_EVIDENCE_METHOD_V1,
         SuppliedSessionPolicyVersion::V2 => RESOURCE_COMMIT_EVIDENCE_METHOD_V2,
         SuppliedSessionPolicyVersion::V3 => RESOURCE_COMMIT_EVIDENCE_METHOD_V3,
+        SuppliedSessionPolicyVersion::V4 => "supplied-session-resource/v4",
     }
 }
 
@@ -3021,7 +3369,9 @@ fn append_cookie_update_binding(
 ) {
     if !matches!(
         policy.version(),
-        SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V3
+        SuppliedSessionPolicyVersion::V2
+            | SuppliedSessionPolicyVersion::V3
+            | SuppliedSessionPolicyVersion::V4
     ) {
         return;
     }
@@ -3456,6 +3806,270 @@ same_site = "lax"
         SuppliedSessionPolicy::parse_toml(application, bytes.as_bytes()).unwrap()
     }
 
+    fn renewal_policy(application: &url::Url) -> SuppliedSessionPolicy {
+        let source = format!(
+            r#"schema = "security.supplied-session-policy/v4"
+principal_alias = "renewal-fixture"
+credential_mechanism = "cookie_jar"
+cookie_update_policy = "stop_on_selected_cookie"
+renewal_path = "/app/renew"
+renewal_method = "post"
+renewal_after_resource_count = 1
+max_renewal_attempts = 1
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/before", "/app/after"]
+max_session_requests = 7
+max_total_response_bytes = 65536
+max_response_body_bytes = 16384
+max_wall_time_ms = 5000
+[[cookies]]
+id = "session"
+name = "session"
+domain = "{}"
+host_only = true
+path = "/app/"
+secure = {}
+http_only = true
+same_site = "lax"
+"#,
+            application.host_str().unwrap(),
+            application.scheme() == "https"
+        );
+        SuppliedSessionPolicy::parse_toml(application, source.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn renewal_resource_commit_requires_the_committed_matching_epoch_not_a_reported_number() {
+        let policy = renewal_policy(&url::Url::parse("https://example.test/app/").unwrap());
+        let health = SuppliedSessionRequestDescriptor::health(&policy);
+        let (target, reference) = policy.execution_resources().nth(1).unwrap();
+        let descriptor =
+            SuppliedSessionRequestDescriptor::resource(&policy, target, reference).unwrap();
+        let knowledge = KnowledgeBase::new();
+        let mut checkpoint = WebAssessmentSuppliedSessionCheckpointAudit {
+            sequence: 2,
+            evidence_reference: None,
+            phase: SuppliedSessionHealthCheckpointPhase::Terminal,
+            after_subject_count: 2,
+            outcome: SuppliedSessionHealthOutcome::Healthy,
+            status: Some(200),
+            body_state: SuppliedSessionBodyState::Complete,
+            predicate: SuppliedSessionPredicateOutcome::Matched,
+            response_bytes: 22,
+            epoch: Some(1),
+            cookie_update: None,
+        };
+        bind_health_evidence(&mut checkpoint, &policy, &health, Some(true), &knowledge);
+        let staged = StagedSuppliedSessionResource {
+            status: 200,
+            response_bytes: 17,
+            exact_target: true,
+            body_complete: true,
+            cookie_update: None,
+            epoch: 2,
+        };
+        let (rejected, receipt) = commit_staged_resource_with_receipt(
+            1,
+            &descriptor,
+            reference,
+            &policy,
+            &knowledge,
+            staged,
+            checkpoint.evidence_reference(),
+        );
+        assert_eq!(
+            rejected.outcome(),
+            SuppliedSessionResourceOutcome::Incomplete
+        );
+        assert!(
+            receipt.is_none(),
+            "old-epoch committed health authorized renewed resource"
+        );
+        checkpoint.epoch = Some(2);
+        bind_health_evidence(&mut checkpoint, &policy, &health, Some(true), &knowledge);
+        let (accepted, receipt) = commit_staged_resource_with_receipt(
+            1,
+            &descriptor,
+            reference,
+            &policy,
+            &knowledge,
+            staged,
+            checkpoint.evidence_reference(),
+        );
+        assert_eq!(
+            accepted.outcome(),
+            SuppliedSessionResourceOutcome::Committed
+        );
+        assert_eq!(accepted.epoch(), 2);
+        assert!(receipt.is_some());
+    }
+
+    #[tokio::test]
+    async fn normal_runtime_renewal_preserves_epochs_classifier_parent_budget_and_cancellation() {
+        for case in 0_u8..4 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let trace = Arc::new(Mutex::new(Vec::new()));
+            let server_trace = Arc::clone(&trace);
+            let replacement = if case == 1 {
+                format!(
+                    "Set-Cookie: session={}; Path=/app/; HttpOnly; SameSite=Lax\r\n",
+                    "COOKIE-OVERFLOW-CANARY".repeat(185)
+                )
+            } else {
+                "Set-Cookie: session=NEW-RENEWAL-CANARY; Path=/app/; HttpOnly; SameSite=Lax\r\n"
+                    .to_owned()
+            };
+            let server = tokio::spawn(async move {
+                let mut renewed = false;
+                loop {
+                    let Ok((mut stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let mut request = Vec::new();
+                    while request.len() <= 16 * 1024 {
+                        let mut chunk = [0_u8; 1024];
+                        let read = stream.read(&mut chunk).await.unwrap_or(0);
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request);
+                    let mut line = text.lines().next().unwrap_or("").split_whitespace();
+                    let method = line.next().unwrap_or("");
+                    let path = line.next().unwrap_or("");
+                    let old = text.lines().any(|line| {
+                        line.eq_ignore_ascii_case("cookie: session=OLD-RENEWAL-CANARY")
+                    });
+                    let new = text.lines().any(|line| {
+                        line.eq_ignore_ascii_case("cookie: session=NEW-RENEWAL-CANARY")
+                    });
+                    server_trace
+                        .lock()
+                        .await
+                        .push((method.to_owned(), path.to_owned(), old, new));
+                    let active = if renewed { new } else { old };
+                    let (status, media, body, headers) = match (method, path) {
+                        ("GET", "/app/health") => (
+                            200,
+                            "application/json",
+                            if active {
+                                r#"{"authenticated":true}"#
+                            } else {
+                                r#"{"authenticated":false}"#
+                            },
+                            "",
+                        ),
+                        ("GET", "/app/before") if old && !renewed => {
+                            (200, "text/html", "PRIVATE-RENEWAL-BODY", "")
+                        },
+                        ("POST", "/app/renew") if old && !renewed => {
+                            renewed = true;
+                            (200, "application/json", "{}", replacement.as_str())
+                        },
+                        ("GET", "/app/after") if new && renewed => {
+                            (200, "text/html", "PRIVATE-RENEWAL-BODY", "")
+                        },
+                        (_, "/app/before" | "/app/after" | "/app/renew") => {
+                            (403, "text/plain", "denied", "")
+                        },
+                        _ => (200, "text/html", "<title>public</title>", ""),
+                    };
+                    let response = format!("HTTP/1.1 {status} OK\r\nContent-Type: {media}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                }
+            });
+            let application = url::Url::parse(&format!("http://{address}/app/")).unwrap();
+            let policy = renewal_policy(&application);
+            let credential = SuppliedSessionCookies::parse_tsv(
+                &policy,
+                b"session\tOLD-RENEWAL-CANARY".to_vec(),
+                0,
+            )
+            .unwrap();
+            let limits = if case == 2 {
+                WebAssessmentLimits::default()
+                    .with_max_total_requests(4)
+                    .unwrap()
+            } else {
+                WebAssessmentLimits::default()
+            };
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            if case == 3 {
+                cancellation.cancel();
+            }
+            let mut runtime = WebAssessmentRuntimeBuilder::new(application)
+                .limits(limits)
+                .cancellation_token(cancellation)
+                .with_supplied_session_review(policy, credential)
+                .build()
+                .unwrap();
+            let report = runtime.analyze().await.unwrap();
+            let audit = report.supplied_session_audit().unwrap();
+            let (expected_outcome, expected_requests, expected_committed, expected_epoch) =
+                match case {
+                    0 => (SuppliedSessionAuditOutcome::Complete, 7, 2, 2),
+                    1 => (SuppliedSessionAuditOutcome::RenewalUnavailable, 4, 1, 1),
+                    2 => (SuppliedSessionAuditOutcome::RuntimeLimit, 4, 1, 2),
+                    _ => (SuppliedSessionAuditOutcome::Cancelled, 0, 0, 1),
+                };
+            assert_eq!(audit.outcome(), expected_outcome, "case {case}");
+            assert_eq!(audit.dispatched_request_count(), expected_requests);
+            assert_eq!(audit.committed_resource_count(), expected_committed);
+            assert_eq!(audit.resources()[0].epoch(), 1);
+            assert_eq!(audit.resources()[1].epoch(), expected_epoch);
+            assert_eq!(
+                audit.renewal().unwrap().attempt_count(),
+                u8::from(case != 3)
+            );
+            if case == 0 {
+                assert_eq!(audit.renewal().unwrap().health().unwrap().epoch(), 2);
+            } else {
+                assert!(audit.renewal().unwrap().health().is_none());
+            }
+            if case == 2 {
+                assert_eq!(report.usage().total_requests(), 4);
+            }
+            let saved = serde_json::to_string(audit).unwrap();
+            for private in [
+                "OLD-RENEWAL-CANARY",
+                "NEW-RENEWAL-CANARY",
+                "PRIVATE-RENEWAL-BODY",
+                "COOKIE-OVERFLOW-CANARY",
+                "/app/renew",
+            ] {
+                assert!(!saved.contains(private));
+            }
+            let trace = trace.lock().await;
+            let actual: Vec<_> = trace
+                .iter()
+                .filter(|(_, _, old, new)| *old || *new)
+                .cloned()
+                .collect();
+            let expected = [
+                ("GET".into(), "/app/health".into(), true, false),
+                ("GET".into(), "/app/before".into(), true, false),
+                ("GET".into(), "/app/health".into(), true, false),
+                ("POST".into(), "/app/renew".into(), true, false),
+                ("GET".into(), "/app/health".into(), false, true),
+                ("GET".into(), "/app/after".into(), false, true),
+                ("GET".into(), "/app/health".into(), false, true),
+            ];
+            assert_eq!(
+                actual,
+                expected[..expected_requests as usize],
+                "case {case}"
+            );
+            server.abort();
+        }
+    }
+
     fn cookie_credential(policy: &SuppliedSessionPolicy) -> SuppliedSessionCookies {
         SuppliedSessionCookies::parse_tsv(
             policy,
@@ -3517,6 +4131,7 @@ same_site = "lax"
             body_state: SuppliedSessionBodyState::Complete,
             predicate: SuppliedSessionPredicateOutcome::Matched,
             response_bytes: 22,
+            epoch: None,
             cookie_update: None,
         };
         bind_health_evidence(&mut checkpoint, policy, &descriptor, Some(true), knowledge);
@@ -3591,6 +4206,7 @@ same_site = "lax"
             body_state: SuppliedSessionBodyState::Complete,
             predicate: SuppliedSessionPredicateOutcome::Matched,
             response_bytes: 22,
+            epoch: None,
             cookie_update: None,
         };
 
@@ -3672,6 +4288,7 @@ same_site = "lax"
             body_state: SuppliedSessionBodyState::Complete,
             predicate: SuppliedSessionPredicateOutcome::Matched,
             response_bytes: 22,
+            epoch: None,
             cookie_update: None,
         };
         bind_health_evidence(
@@ -3734,6 +4351,7 @@ same_site = "lax"
             exact_target: true,
             body_complete: true,
             cookie_update: None,
+            epoch: 1,
         };
         let knowledge = KnowledgeBase::new();
         assert_eq!(
@@ -3882,6 +4500,7 @@ same_site = "lax"
             exact_target: true,
             body_complete: true,
             cookie_update: None,
+            epoch: 1,
         };
         let knowledge = KnowledgeBase::new();
         let qualifier = committed_health_qualification(&policy, &knowledge);
@@ -4031,6 +4650,23 @@ max_wall_time_ms = 5000
             .expect("V3 form-login policy must not reach the WordPress session consumer");
         assert!(matches!(
             unsupported_form_login,
+            WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy
+        ));
+
+        let renewal = renewal_policy(&application);
+        let credential =
+            SuppliedSessionCookies::parse_tsv(&renewal, b"session\tRENEWAL-WP-CANARY".to_vec(), 0)
+                .unwrap();
+        let unsupported_renewal = WebAssessmentRuntimeBuilder::new(application.clone())
+            .with_wordpress_review(WordPressReviewInputs::new(None, None))
+            .with_wordpress_discovery()
+            .with_supplied_session_review(renewal, credential)
+            .with_wordpress_supplied_session()
+            .build()
+            .err()
+            .expect("V4 renewal must not reach the fixed-epoch WordPress consumer");
+        assert!(matches!(
+            unsupported_renewal,
             WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy
         ));
 

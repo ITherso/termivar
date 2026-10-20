@@ -142,7 +142,7 @@ use super::{
     WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
     MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
@@ -2166,6 +2166,16 @@ fn validate_supplied_session_audit(
     let Some(audit) = audit else {
         return Ok(());
     };
+    let renewal = audit.renewal();
+    let renewal_schema = audit.schema() == SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA;
+    if renewal_schema != renewal.is_some() {
+        return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
+    }
+    let renewal_health = renewal.and_then(|renewal| renewal.health());
+    let renewal_request_count = renewal.map_or(0, |renewal| {
+        usize::from(renewal.attempt_count()) + usize::from(renewal.health().is_some())
+    });
+    let renewal_applied = renewal.is_some_and(|renewal| renewal.applied_cookie_count() > 0);
     let selected_resource_count = usize::from(audit.selected_resource_count());
     let dispatched_resource_count = usize::from(audit.dispatched_resource_count());
     let committed_resource_count = usize::from(audit.committed_resource_count());
@@ -2196,7 +2206,14 @@ fn validate_supplied_session_audit(
                 )
                 .try_fold(0_u64, u64::checked_add)
                 .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?,
-        );
+        )
+        .and_then(|bytes| {
+            bytes
+                .checked_add(renewal.map_or(0, |renewal| renewal.response_bytes()))
+                .and_then(|bytes| {
+                    bytes.checked_add(renewal_health.map_or(0, |health| health.response_bytes()))
+                })
+        });
     let login_request_count = audit.login().map_or(0_u8, |login| {
         u8::from(login.page_dispatched()).saturating_add(u8::from(login.submit_dispatched()))
     });
@@ -2206,6 +2223,94 @@ fn validate_supplied_session_audit(
         audit.cookie_policy(),
         audit.cookie_lifecycle(),
     ) {
+        (
+            SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+            SuppliedSessionCredentialMechanism::CookieJar,
+            Some(policy),
+            Some(lifecycle),
+        ) => {
+            let declared = policy.declared_count();
+            let renewal = renewal.expect("V4 presence was checked");
+            let boundary = usize::from(renewal.after_resource_count());
+            audit.credential_acquisition()
+                == SuppliedSessionCredentialAcquisition::SuppliedCookieJar
+                && audit.login().is_none()
+                && (2..=3).contains(&selected_resource_count)
+                && boundary > 0
+                && boundary < selected_resource_count
+                && (1..=MAX_SUPPLIED_SESSION_COOKIES).contains(&usize::from(declared))
+                && policy.host_only_count() == declared
+                && policy.domain_count() == 0
+                && (policy.secure_count() == 0 || policy.secure_count() == declared)
+                && policy.http_only_count() == declared
+                && policy.session_count() == declared
+                && policy.persistent_count() == 0
+                && policy.same_site_missing_count() == 0
+                && policy.same_site_none_count() == 0
+                && policy
+                    .same_site_strict_count()
+                    .checked_add(policy.same_site_lax_count())
+                    == Some(declared)
+                && policy.update_policy().as_str() == "stop_on_selected_cookie"
+                && policy.browser_semantics() == "attributes_preserved_not_browser_csrf_emulation"
+                && renewal.initial_epoch() == 1
+                && renewal.final_epoch() == if renewal_applied { 2 } else { 1 }
+                && lifecycle.initial_epoch() == 1
+                && lifecycle.final_epoch() == renewal.final_epoch()
+                && lifecycle.updates_applied() == u8::from(renewal_applied)
+                && renewal.attempt_count() <= 1
+                && valid_supplied_session_reference(
+                    renewal.renewal_reference(),
+                    "supplied-session-resource-sha256:",
+                )
+                && audit
+                    .resources()
+                    .iter()
+                    .all(|resource| resource.resource_reference() != renewal.renewal_reference())
+                && (!renewal_applied
+                    || (renewal.attempt_count() == 1
+                        && renewal.status() == Some(200)
+                        && renewal.body_state() == SuppliedSessionBodyState::Complete
+                        && renewal.applied_cookie_count() == declared))
+                && (!renewal_applied || committed_resource_count >= boundary)
+                && (renewal_applied || renewal_health.is_none())
+                && renewal_health.is_none_or(|health| {
+                    health.phase() == SuppliedSessionHealthCheckpointPhase::Renewal
+                        && usize::from(health.after_subject_count()) == boundary
+                        && health.epoch() == 2
+                        && usize::from(health.sequence()) == boundary + 1
+                        && (health.outcome() == SuppliedSessionHealthOutcome::Indeterminate
+                            || health.evidence_reference().is_some())
+                })
+                && (committed_resource_count <= boundary
+                    || renewal_health.is_some_and(|health| {
+                        health.outcome() == SuppliedSessionHealthOutcome::Healthy
+                    }))
+                && valid_v2_cookie_lifecycle_accounting(
+                    lifecycle.selected_update_response_count(),
+                    lifecycle.unselected_update_response_count(),
+                    lifecycle.update_classification_failure_count(),
+                    audit.dispatched_request_count(),
+                )
+                && lifecycle.selected_update_response_count() >= u8::from(renewal_applied)
+                && match audit.outcome() {
+                    SuppliedSessionAuditOutcome::CredentialUpdateRequired => {
+                        lifecycle.selected_update_response_count() == u8::from(renewal_applied) + 1
+                            && lifecycle.update_classification_failure_count() == 0
+                    },
+                    SuppliedSessionAuditOutcome::CredentialUpdateUnusable => {
+                        lifecycle.selected_update_response_count() == u8::from(renewal_applied)
+                            && lifecycle.update_classification_failure_count() == 1
+                    },
+                    SuppliedSessionAuditOutcome::RenewalUnavailable => {
+                        committed_resource_count == boundary && !renewal_applied
+                    },
+                    _ => {
+                        lifecycle.selected_update_response_count() == u8::from(renewal_applied)
+                            && lifecycle.update_classification_failure_count() == 0
+                    },
+                }
+        },
         (
             SUPPLIED_SESSION_AUDIT_SCHEMA,
             SuppliedSessionCredentialMechanism::AuthorizationHeader,
@@ -2311,7 +2416,8 @@ fn validate_supplied_session_audit(
         || !valid_supplied_session_principal_alias(audit.principal_alias())
         || audit.resources().is_empty()
         || audit.resources().len() > MAX_SUPPLIED_SESSION_RESOURCES
-        || audit.checkpoints().len() > MAX_SUPPLIED_SESSION_CHECKPOINTS
+        || audit.checkpoints().len() + usize::from(renewal_health.is_some())
+            > MAX_SUPPLIED_SESSION_CHECKPOINTS
         || selected_resource_count != audit.resources().len()
         || dispatched_resource_count != actual_dispatched_resource_count
         || committed_resource_count != actual_committed_resource_count
@@ -2324,6 +2430,7 @@ fn validate_supplied_session_audit(
                 .len()
                 .checked_add(dispatched_resource_count)
                 .and_then(|count| count.checked_add(usize::from(login_request_count)))
+                .and_then(|count| count.checked_add(renewal_request_count))
                 .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?
         || child_response_bytes != Some(audit.response_bytes())
         || !valid_supplied_session_response_limit(
@@ -2375,13 +2482,22 @@ fn validate_supplied_session_audit(
             .enumerate()
             .any(|(index, resource)| {
                 usize::from(resource.sequence()) != index
-                    || resource.epoch() != 1
+                    || resource.epoch()
+                        != if renewal_applied
+                            && renewal.is_some_and(|renewal| {
+                                resource.sequence() >= renewal.after_resource_count()
+                            })
+                        {
+                            2
+                        } else {
+                            1
+                        }
                     || !valid_supplied_session_reference(
                         resource.resource_reference(),
                         "supplied-session-resource-sha256:",
                     )
             })
-        || audit.refresh_performed()
+        || audit.refresh_performed() != renewal_applied
         || audit.anonymous_fallback_performed()
         || audit.continuous_authentication_established()
         || (matches!(

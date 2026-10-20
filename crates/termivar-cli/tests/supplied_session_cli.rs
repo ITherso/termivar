@@ -523,6 +523,295 @@ fn scan_cookie_bundle(
         .expect("run supplied-cookie assessment")
 }
 
+// Original synthetic renewal contract; these expectations are not produced by the runtime.
+fn renewal_policy(host: &str) -> String {
+    format!(
+        r#"schema = "security.supplied-session-policy/v4"
+principal_alias = "fixture-renewal-reader"
+credential_mechanism = "cookie_jar"
+cookie_update_policy = "stop_on_selected_cookie"
+renewal_path = "/app/renew"
+renewal_method = "post"
+renewal_after_resource_count = 1
+max_renewal_attempts = 1
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/before", "/app/after"]
+max_session_requests = 7
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+[[cookies]]
+id = "session"
+name = "session"
+domain = "{host}"
+host_only = true
+path = "/app/"
+secure = false
+http_only = true
+same_site = "lax"
+"#
+    )
+}
+
+#[test]
+fn supplied_cookie_renewal_real_cli_rotates_once_and_qualifies_new_epoch_offline() {
+    let renewed = Arc::new(AtomicBool::new(false));
+    let fixture_state = Arc::clone(&renewed);
+    let mut server = serve_form_login(move |_, record| {
+        let active = if fixture_state.load(Ordering::Acquire) {
+            CookieClass::Alternate
+        } else {
+            CookieClass::Expected
+        };
+        match (
+            record.method.as_str(),
+            record.target.as_str(),
+            record.cookie,
+        ) {
+            ("POST", "/app/renew", CookieClass::Expected) => {
+                assert_eq!(record.authorization, AuthorizationClass::Absent);
+                assert_eq!(record.form_body, FormBodyClass::Absent);
+                assert!(
+                    !fixture_state.swap(true, Ordering::AcqRel),
+                    "renewal retried"
+                );
+                response("200 OK", "application/json", r#"{"received":true}"#,
+                    &format!("Set-Cookie: session={ALTERNATE_BROAD_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n"))
+            },
+            ("GET", "/app/health", cookie) => json_ok(if cookie == active {
+                r#"{"authenticated":true}"#
+            } else {
+                r#"{"authenticated":false}"#
+            }),
+            ("GET", "/app/before", CookieClass::Expected)
+                if !fixture_state.load(Ordering::Acquire) =>
+            {
+                html_ok(RESPONSE_CANARY)
+            },
+            ("GET", "/app/after", CookieClass::Alternate)
+                if fixture_state.load(Ordering::Acquire) =>
+            {
+                html_ok(RESPONSE_CANARY)
+            },
+            (_, "/app/before" | "/app/after" | "/app/renew", _) => {
+                response("403 Forbidden", "text/plain", "denied", "")
+            },
+            _ => html_ok("<html><title>Owned renewal fixture</title></html>"),
+        }
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let policy_path = directory.path().join("renewal.toml");
+    let cookie_path = directory.path().join("renewal.secret.tsv");
+    let host = url::Url::parse(&server.application_url)
+        .unwrap()
+        .host_str()
+        .unwrap()
+        .to_owned();
+    fs::write(&policy_path, renewal_policy(&host)).unwrap();
+    fs::write(&cookie_path, format!("session\t{BROAD_COOKIE}\n")).unwrap();
+    let destination = directory.path().join("renewed-bundle");
+    let output = scan_cookie_bundle(&server, &policy_path, &cookie_path, &destination);
+    assert_no_private_values(&output.stdout);
+    assert_no_private_values(&output.stderr);
+    assert!(
+        output.status.success(),
+        "renewal scan failed: {:?}",
+        output.status.code()
+    );
+    let (_, assessment) = read_assessment(&destination);
+    let audit = &assessment["supplied_session"];
+    assert_eq!(audit["schema"], "security.supplied-session-audit/v4");
+    assert_eq!(audit["outcome"], "complete");
+    assert_eq!(audit["coverage"], "complete");
+    assert_eq!(audit["dispatched_request_count"], 7);
+    assert_eq!(audit["committed_resource_count"], 2);
+    assert_eq!(audit["refresh_performed"], true);
+    assert_eq!(audit["cookie_lifecycle"]["updates_applied"], 1);
+    assert_eq!(audit["cookie_lifecycle"]["initial_epoch"], 1);
+    assert_eq!(audit["cookie_lifecycle"]["final_epoch"], 2);
+    assert_eq!(audit["resources"][0]["epoch"], 1);
+    assert_eq!(audit["resources"][1]["epoch"], 2);
+    assert_eq!(audit["renewal"]["attempt_count"], 1);
+    assert_eq!(audit["renewal"]["health"]["epoch"], 2);
+    assert_eq!(audit["renewal"]["health"]["outcome"], "healthy");
+    let records = server.requests.lock().unwrap().clone();
+    let session: Vec<_> = records
+        .iter()
+        .filter(|record| record.cookie != CookieClass::Absent)
+        .map(|record| {
+            (
+                record.method.as_str(),
+                record.target.as_str(),
+                record.cookie,
+            )
+        })
+        .collect();
+    assert_eq!(
+        session,
+        [
+            ("GET", "/app/health", CookieClass::Expected),
+            ("GET", "/app/before", CookieClass::Expected),
+            ("GET", "/app/health", CookieClass::Expected),
+            ("POST", "/app/renew", CookieClass::Expected),
+            ("GET", "/app/health", CookieClass::Alternate),
+            ("GET", "/app/after", CookieClass::Alternate),
+            ("GET", "/app/health", CookieClass::Alternate),
+        ]
+    );
+    for file in ["assessment.json", "assessment.html", "manifest.json"] {
+        assert_no_private_values(&fs::read(destination.join(file)).unwrap());
+    }
+    server.stop();
+    assert_bundle_verify_and_self_compare_are_offline(&server, &destination, &assessment);
+}
+
+#[test]
+fn supplied_cookie_renewal_real_cli_failure_matrix_never_retries_or_resumes_old_state() {
+    // Independent closed oracles: cookie/redirect failures stop at POST; health
+    // failures stop at the immediate new-context checkpoint, not the next resource.
+    for (case, expected_outcome, expected_epoch, expected_requests) in [
+        (0_u8, "renewal_unavailable", 1, 4), // Missing HttpOnly/SameSite.
+        (1, "renewal_unavailable", 1, 4),    // A forbidden Domain extension.
+        (2, "renewal_unavailable", 1, 4),    // Duplicate selected cookie.
+        (3, "renewal_unavailable", 1, 4),    // Redirect is not followed.
+        (4, "session_lost", 2, 5),           // A 200 login page/false marker is unhealthy.
+        (5, "credential_update_required", 2, 5), // Healthy marker cannot override rotation.
+        (6, "credential_update_unusable", 2, 5), // Nor an unusable update.
+        (7, "renewal_unavailable", 1, 4),    // An interrupted replacement body is incomplete.
+        (8, "renewal_unavailable", 1, 4), // Existing Set-Cookie field bound wins over parser's value bound.
+    ] {
+        let renewed = Arc::new(AtomicBool::new(false));
+        let fixture_state = Arc::clone(&renewed);
+        let mut server = serve_form_login(move |_, record| {
+            match (record.method.as_str(), record.target.as_str(), record.cookie) {
+                ("GET", "/app/health", CookieClass::Expected) if !fixture_state.load(Ordering::Acquire) => json_ok(r#"{"authenticated":true}"#),
+                ("GET", "/app/before", CookieClass::Expected) => html_ok(RESPONSE_CANARY),
+                ("POST", "/app/renew", CookieClass::Expected) => {
+                    assert!(!fixture_state.swap(true, Ordering::AcqRel), "renewal retry");
+                    let valid = format!("Set-Cookie: session={ALTERNATE_BROAD_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n");
+                    match case {
+                        0 => response("200 OK", "application/json", "{}", &format!("Set-Cookie: session={ALTERNATE_BROAD_COOKIE}; Path=/app/\r\n")),
+                        1 => response("200 OK", "application/json", "{}", &format!("Set-Cookie: session={ALTERNATE_BROAD_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax; Domain=127.0.0.1\r\n")),
+                        2 => response("200 OK", "application/json", "{}", &format!("{valid}{valid}")),
+                        3 => response("302 Found", "text/plain", "redirect", "Location: /app/forbidden-renewal-decoy\r\n"),
+                        7 => format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{valid}Content-Length: 10\r\nConnection: close\r\n\r\n{{}}").into_bytes(),
+                        8 => response("200 OK", "application/json", "{}", &format!("Set-Cookie: session={}; Path=/app/; HttpOnly; SameSite=Lax\r\n", "COOKIE-OVERFLOW-CANARY".repeat(185))),
+                        _ => response("200 OK", "application/json", "{}", &valid),
+                    }
+                },
+                ("GET", "/app/health", CookieClass::Alternate) => match case {
+                    4 => json_ok(r#"{"authenticated":false}"#),
+                    5 => response("200 OK", "application/json", r#"{"authenticated":true}"#, &format!("Set-Cookie: session={ALTERNATE_BROAD_COOKIE}; Path=/app/; HttpOnly; SameSite=Lax\r\n")),
+                    6 => response("200 OK", "application/json", r#"{"authenticated":true}"#, "Set-Cookie: session=invalid value; Path=/app/\r\n"),
+                    _ => panic!("new-context health dispatched after failed renewal"),
+                },
+                (_, "/app/after" | "/app/forbidden-renewal-decoy", _) => panic!("later resource or redirect dispatched after stop"),
+                _ => html_ok("<title>Owned negative fixture</title>"),
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let host = url::Url::parse(&server.application_url)
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .to_owned();
+        let policy_path = directory.path().join("renewal.toml");
+        let cookie_path = directory.path().join("renewal.secret.tsv");
+        fs::write(&policy_path, renewal_policy(&host)).unwrap();
+        fs::write(&cookie_path, format!("session\t{BROAD_COOKIE}\n")).unwrap();
+        let destination = directory.path().join("stopped-bundle");
+        let output = scan_cookie_bundle(&server, &policy_path, &cookie_path, &destination);
+        assert_no_private_values(&output.stdout);
+        assert_no_private_values(&output.stderr);
+        assert!(
+            output.status.success(),
+            "negative case {case} failed to publish its bounded stopped assessment"
+        );
+        let (_, assessment) = read_assessment(&destination);
+        let audit = &assessment["supplied_session"];
+        assert_eq!(audit["outcome"], expected_outcome, "case {case}");
+        assert_eq!(audit["coverage"], "partial");
+        assert_eq!(audit["dispatched_request_count"], expected_requests);
+        assert_eq!(audit["dispatched_resource_count"], 1);
+        assert_eq!(audit["committed_resource_count"], 1);
+        assert_eq!(audit["cookie_lifecycle"]["final_epoch"], expected_epoch);
+        assert_eq!(
+            audit["cookie_lifecycle"]["updates_applied"],
+            u8::from(expected_epoch == 2)
+        );
+        assert_eq!(audit["renewal"]["attempt_count"], 1);
+        assert_eq!(audit["resources"][1]["outcome"], "not_dispatched");
+        if case == 5 {
+            assert_eq!(
+                audit["cookie_lifecycle"]["selected_update_response_count"],
+                2
+            );
+        }
+        if case == 6 {
+            assert_eq!(
+                audit["cookie_lifecycle"]["selected_update_response_count"],
+                1
+            );
+            assert_eq!(
+                audit["cookie_lifecycle"]["update_classification_failure_count"],
+                1
+            );
+        }
+        assert_eq!(
+            server
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| record.method == "POST")
+                .count(),
+            1
+        );
+        server.stop();
+        assert_bundle_verify_and_self_compare_are_offline(&server, &destination, &assessment);
+    }
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn supplied_cookie_renewal_wordpress_refusal_precedes_secret_output_and_network() {
+    let mut server = serve_form_login(|_, _| panic!("unsupported renewal reached transport"));
+    let directory = tempfile::tempdir().unwrap();
+    let policy_path = directory.path().join("renewal.toml");
+    let missing_secret = directory.path().join("must-not-be-opened.tsv");
+    let destination = directory.path().join("must-not-be-reserved");
+    let host = url::Url::parse(&server.application_url)
+        .unwrap()
+        .host_str()
+        .unwrap()
+        .to_owned();
+    fs::write(&policy_path, renewal_policy(&host)).unwrap();
+    let output = termivar()
+        .args([
+            "scan",
+            &server.application_url,
+            "--profile",
+            "web-review",
+            "--wordpress-review",
+            "--wordpress-discovery",
+            "--wordpress-supplied-session",
+        ])
+        .arg("--session-policy")
+        .arg(&policy_path)
+        .arg("--session-cookie-file")
+        .arg(&missing_secret)
+        .arg("--report-dir")
+        .arg(&destination)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("does not support renewal policies"));
+    assert!(!destination.exists());
+    assert!(server.requests.lock().unwrap().is_empty());
+    server.stop();
+}
+
 fn scan_form_login_bundle(
     server: &TestServer,
     policy_path: &Path,
@@ -595,6 +884,7 @@ fn assert_no_private_values(bytes: &[u8]) {
         "/app/health",
         "/app/login",
         "rotated-cookie-canary",
+        "COOKIE-OVERFLOW-CANARY",
     ] {
         assert!(!rendered.contains(private), "output retained private input");
     }

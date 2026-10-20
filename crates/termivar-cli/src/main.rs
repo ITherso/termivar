@@ -315,9 +315,18 @@ fn scan_wordpress_supplied_session_policy_conflict(
     selected: bool,
     version: termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,
 ) -> Option<&'static str> {
-    (selected
-        && version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3)
-        .then_some("`--wordpress-supplied-session` does not support bounded form-login policies")
+    if selected
+        && version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4
+    {
+        Some("`--wordpress-supplied-session` does not support renewal policies")
+    } else {
+        (selected
+            && version
+                == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3)
+            .then_some(
+                "`--wordpress-supplied-session` does not support bounded form-login policies",
+            )
+    }
 }
 
 #[cfg(feature = "wordpress-review")]
@@ -6029,6 +6038,13 @@ mod tests {
                 termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V2,
             ),
             None
+        );
+        assert_eq!(
+            scan_wordpress_supplied_session_policy_conflict(
+                true,
+                termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4
+            ),
+            Some("`--wordpress-supplied-session` does not support renewal policies")
         );
     }
 

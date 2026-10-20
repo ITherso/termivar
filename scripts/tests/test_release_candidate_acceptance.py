@@ -405,6 +405,7 @@ EXPECTED_SUPPLIED_SESSION_PREREQUISITES = (
     "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
     "V2: --session-cookie-file FILE",
     "V3: --session-login-file FILE",
+    "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
     "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
@@ -428,14 +429,18 @@ EXPECTED_SUPPLIED_SESSION_LIMITATION = (
     "authenticated-page fingerprint acquisition is not selected. Session loss, a "
     "selected post-login response-cookie "
     "update, or an unusable response-cookie classification stops later session work "
-    "without anonymous fallback. Outside initial V3 session establishment no response "
-    "cookie update is applied; no automatic renewal occurs. Cookie host/domain/path/Secure/"
+    "without anonymous fallback. V1/V2/V3 never apply post-establishment response cookie "
+    "updates or automatically renew. V4 alone accepts ready host-only nonpersistent cookies "
+    "and one explicitly scheduled bodyless same-application POST renewal, followed immediately "
+    "by new-epoch health. V4 selects at most three resources, shares the same nine-request/"
+    "five-checkpoint ceilings, never retries or replays a failed resource, and stops after "
+    "failed renewal without restoring the old credential. Cookie host/domain/path/Secure/"
     "expiry applicability is intersected with operator application authority; Domain never "
     "expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. "
     "Application-defined GET handling and the explicitly authorized login POST can have "
     "server-side effects. No browser-profile import, form discovery, credential guessing, "
     "OAuth, MFA bypass, exploit, or impact validation occurs. WordPress supplied-session "
-    "composition remains limited to V1/V2; V3 is rejected before its secret file is read."
+    "composition remains limited to V1/V2; V3/V4 are rejected before their secret files are read."
 )
 EXPECTED_WORDPRESS_OPTIONS = (
     "--wordpress-review",
@@ -4710,8 +4715,8 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (
                 "limitation",
                 EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
-                    "Outside initial V3 session establishment no response cookie update is "
-                    "applied; no automatic renewal occurs.",
+                    "V1/V2/V3 never apply post-establishment response cookie updates or "
+                    "automatically renew.",
                     "Response cookie updates are applied automatically.",
                 ),
             ),
@@ -4775,8 +4780,8 @@ class CapabilityInventoryContractTests(unittest.TestCase):
             (
                 "limitation",
                 EXPECTED_SUPPLIED_SESSION_LIMITATION.replace(
-                    "WordPress supplied-session composition remains limited to V1/V2; V3 is "
-                    "rejected before its secret file is read.",
+                    "WordPress supplied-session composition remains limited to V1/V2; V3/V4 are "
+                    "rejected before their secret files are read.",
                     "WordPress supplied-session composition accepts V3.",
                 ),
             ),

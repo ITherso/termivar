@@ -16,6 +16,12 @@ use super::{
 
 mod audits;
 
+pub(super) fn validate_supplied_session_renewal(
+    value: &Value,
+) -> Result<super::ImportedSuppliedSessionAudit, ComparisonError> {
+    audits::validate_supplied_session_renewal(value, &BTreeMap::new())
+}
+
 // Mirrors assessment_item.rs and assessment_report.rs without depending on the
 // scanning feature or importing the authoritative projection types.
 pub(super) const MAX_ITEMS: usize = 4_096;

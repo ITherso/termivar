@@ -280,6 +280,29 @@ impl CollectedHttpResponse {
         )
     }
 
+    /// Extracts only the exact declared V4 host-only replacement cookie set.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) fn supplied_session_renewal_cookies(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        now_unix_seconds: i64,
+    ) -> Result<SuppliedSessionCookies, SuppliedSessionCookieError> {
+        if policy.version() != crate::supplied_session_review::SuppliedSessionPolicyVersion::V4
+            || !self.body_complete()
+            || self.status() != 200
+        {
+            return Err(SuppliedSessionCookieError::MalformedSecret);
+        }
+        SuppliedSessionCookies::from_form_login_set_cookie_fields(
+            policy,
+            self.headers
+                .get_all(reqwest::header::SET_COOKIE)
+                .iter()
+                .map(reqwest::header::HeaderValue::as_bytes),
+            now_unix_seconds,
+        )
+    }
+
     /// Reuses the current bounded defense observer without exposing response
     /// headers or body bytes outside the HTTP evidence boundary. A fingerprint
     /// alone is deliberately not execution authority or interference.

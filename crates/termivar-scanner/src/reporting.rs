@@ -131,10 +131,11 @@ use crate::{
         SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
         SuppliedSessionLoginSubmitOutcome, SuppliedSessionPredicateOutcome,
         SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
-        WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
-        MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES,
-        SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
-        SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+        WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
+        MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
+        MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
     },
 };
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
@@ -9867,6 +9868,8 @@ struct AssessmentSuppliedSessionAuditDocument {
     cookie_lifecycle: Option<AssessmentSuppliedSessionCookieLifecycleDocument>,
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<AssessmentSuppliedSessionLoginDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    renewal: Option<AssessmentSuppliedSessionRenewalDocument>,
     health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
     outcome: &'static str,
     coverage: &'static str,
@@ -10162,6 +10165,46 @@ struct AssessmentSuppliedSessionCheckpointDocument {
     body_state: &'static str,
     predicate: &'static str,
     response_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<u8>,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+#[derive(Serialize)]
+struct AssessmentSuppliedSessionRenewalDocument {
+    renewal_reference: String,
+    after_resource_count: u8,
+    attempt_count: u8,
+    status: Option<u16>,
+    body_state: &'static str,
+    outcome: &'static str,
+    response_bytes: u64,
+    applied_cookie_count: u8,
+    initial_epoch: u8,
+    final_epoch: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    health: Option<AssessmentSuppliedSessionCheckpointDocument>,
+}
+
+#[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+impl AssessmentSuppliedSessionCheckpointDocument {
+    fn from_checkpoint(
+        checkpoint: &WebAssessmentSuppliedSessionCheckpointAudit,
+        renewal: bool,
+    ) -> Self {
+        Self {
+            sequence: checkpoint.sequence(),
+            phase: supplied_session_checkpoint_phase_token(checkpoint.phase()),
+            after_subject_count: checkpoint.after_subject_count(),
+            evidence_reference: checkpoint.evidence_reference().map(str::to_owned),
+            outcome: supplied_session_health_outcome_token(checkpoint.outcome()),
+            status: checkpoint.status(),
+            body_state: supplied_session_body_state_token(checkpoint.body_state()),
+            predicate: supplied_session_predicate_outcome_token(checkpoint.predicate()),
+            response_bytes: checkpoint.response_bytes(),
+            epoch: renewal.then_some(checkpoint.epoch()),
+        }
+    }
 }
 
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
@@ -10250,6 +10293,23 @@ impl AssessmentSuppliedSessionAuditDocument {
                     final_epoch: login.final_epoch(),
                     pre_session_cookie_applied: login.pre_session_cookie_applied(),
                 }),
+            renewal: audit
+                .renewal()
+                .map(|renewal| AssessmentSuppliedSessionRenewalDocument {
+                    renewal_reference: renewal.renewal_reference().to_owned(),
+                    after_resource_count: renewal.after_resource_count(),
+                    attempt_count: renewal.attempt_count(),
+                    status: renewal.status(),
+                    body_state: supplied_session_body_state_token(renewal.body_state()),
+                    outcome: supplied_session_login_submit_outcome_token(renewal.outcome()),
+                    response_bytes: renewal.response_bytes(),
+                    applied_cookie_count: renewal.applied_cookie_count(),
+                    initial_epoch: renewal.initial_epoch(),
+                    final_epoch: renewal.final_epoch(),
+                    health: renewal.health().map(|health| {
+                        AssessmentSuppliedSessionCheckpointDocument::from_checkpoint(health, true)
+                    }),
+                }),
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: supplied_session_health_oracle_kind_token(audit.health_oracle().kind()),
                 field_reference: audit.health_oracle().field_reference().to_owned(),
@@ -10259,16 +10319,11 @@ impl AssessmentSuppliedSessionAuditDocument {
             checkpoints: audit
                 .checkpoints()
                 .iter()
-                .map(|checkpoint| AssessmentSuppliedSessionCheckpointDocument {
-                    sequence: checkpoint.sequence(),
-                    phase: supplied_session_checkpoint_phase_token(checkpoint.phase()),
-                    after_subject_count: checkpoint.after_subject_count(),
-                    evidence_reference: checkpoint.evidence_reference().map(str::to_owned),
-                    outcome: supplied_session_health_outcome_token(checkpoint.outcome()),
-                    status: checkpoint.status(),
-                    body_state: supplied_session_body_state_token(checkpoint.body_state()),
-                    predicate: supplied_session_predicate_outcome_token(checkpoint.predicate()),
-                    response_bytes: checkpoint.response_bytes(),
+                .map(|checkpoint| {
+                    AssessmentSuppliedSessionCheckpointDocument::from_checkpoint(
+                        checkpoint,
+                        audit.renewal().is_some(),
+                    )
                 })
                 .collect(),
             resources: audit
@@ -10302,6 +10357,26 @@ impl AssessmentSuppliedSessionAuditDocument {
     }
 
     fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        if self.schema == SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA {
+            if items
+                .iter()
+                .any(|item| item.capability_id == SUPPLIED_SESSION_CAPABILITY_ID)
+            {
+                return Err(ReportError::Serialization);
+            }
+            let value = serde_json::to_value(self).map_err(|_| ReportError::Serialization)?;
+            return comparison::validate_supplied_session_renewal(&value)
+                .map(|_| ())
+                .map_err(|_| ReportError::Serialization);
+        }
+        if self.renewal.is_some()
+            || self
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.epoch.is_some())
+        {
+            return Err(ReportError::Serialization);
+        }
         let resource_response_bytes = self
             .resources
             .iter()
@@ -10744,6 +10819,31 @@ impl AssessmentSuppliedSessionAuditDocument {
                 ),
             ]);
         }
+        if let Some(renewal) = self.renewal.as_ref() {
+            metadata.extend([
+                ("Renewal reference", renewal.renewal_reference.clone()),
+                (
+                    "Renewal after resource count",
+                    renewal.after_resource_count.to_string(),
+                ),
+                ("Renewal attempt count", renewal.attempt_count.to_string()),
+                ("Renewal response bytes", renewal.response_bytes.to_string()),
+                (
+                    "Renewal applied cookie count",
+                    renewal.applied_cookie_count.to_string(),
+                ),
+                ("Renewal initial epoch", renewal.initial_epoch.to_string()),
+                ("Renewal final epoch", renewal.final_epoch.to_string()),
+                (
+                    "Renewal health",
+                    renewal
+                        .health
+                        .as_ref()
+                        .map_or("not_dispatched", |health| health.outcome)
+                        .to_owned(),
+                ),
+            ]);
+        }
         if let Some(login) = self.login.as_ref() {
             metadata.extend([
                 ("Login reference", login.login_reference.clone()),
@@ -10865,6 +10965,7 @@ const fn supplied_session_audit_outcome_token(value: SuppliedSessionAuditOutcome
         SuppliedSessionAuditOutcome::LoginFormUnavailable => "login_form_unavailable",
         SuppliedSessionAuditOutcome::LoginSubmitUnavailable => "login_submit_unavailable",
         SuppliedSessionAuditOutcome::LoginCookieUnavailable => "login_cookie_unavailable",
+        SuppliedSessionAuditOutcome::RenewalUnavailable => "renewal_unavailable",
     }
 }
 
@@ -10919,6 +11020,7 @@ const fn supplied_session_checkpoint_phase_token(
         SuppliedSessionHealthCheckpointPhase::Startup => "startup",
         SuppliedSessionHealthCheckpointPhase::SubjectBoundary => "subject_boundary",
         SuppliedSessionHealthCheckpointPhase::Terminal => "terminal",
+        SuppliedSessionHealthCheckpointPhase::Renewal => "renewal",
     }
 }
 
@@ -21213,6 +21315,7 @@ mod tests {
             cookie_policy: None,
             cookie_lifecycle: None,
             login: None,
+            renewal: None,
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: "json_boolean_true",
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
@@ -21233,6 +21336,7 @@ mod tests {
                     body_state: "complete",
                     predicate: "matched",
                     response_bytes: 17,
+                    epoch: None,
                 },
                 AssessmentSuppliedSessionCheckpointDocument {
                     sequence: 1,
@@ -21247,6 +21351,7 @@ mod tests {
                     body_state: "complete",
                     predicate: "matched",
                     response_bytes: 19,
+                    epoch: None,
                 },
             ],
             resources: vec![AssessmentSuppliedSessionResourceDocument {
@@ -23114,6 +23219,7 @@ mod tests {
                 body_state: "complete",
                 predicate: "matched",
                 response_bytes: 31,
+                epoch: None,
             });
         duplicate_resource
             .resources
@@ -23662,6 +23768,7 @@ mod tests {
                 body_state: "complete",
                 predicate: "matched",
                 response_bytes: 31,
+                epoch: None,
             },
         );
         session.checkpoints[2].sequence = 2;

@@ -2426,6 +2426,49 @@ fn supplied_session_review_source_contract_violations(
     let compact_import = squash_ascii_whitespace(import);
     let compact_audit_import = squash_ascii_whitespace(audit_import);
 
+    for (source, markers) in [
+        (
+            compact_core.as_str(),
+            &[
+                "security.supplied-session-policy/v4",
+                "wire.max_renewal_attempts!=1",
+                "usize::from(wire.max_session_requests)!=3+2*wire.resources.len()",
+                "policy.admits_execution_target(&renewal_url)",
+            ][..],
+        ),
+        (
+            compact_runtime_production,
+            &[
+                "security.supplied-session-audit/v4",
+                "collect_supplied_session_renewal_for_runtime(",
+                "update.kind==SuppliedSessionResponseCookieUpdateKind::Selected",
+                "renewal.final_epoch=2;self.epoch=2;",
+            ][..],
+        ),
+        (
+            compact_broker.as_str(),
+            &[
+                "pub(crate)asyncfncollect_supplied_session_renewal_for_runtime(",
+                "descriptor.purpose()!=SuppliedSessionRequestPurpose::Renewal",
+            ][..],
+        ),
+        (
+            compact_audit_import.as_str(),
+            &[
+                "validate_supplied_session_renewal(",
+                "check(!resource_references.contains(string(renewal,\"renewal_reference\")?))?;",
+                "selected_updates==u64::from(applied>0)+1&&classification_failures==0",
+            ][..],
+        ),
+    ] {
+        require_markers(
+            &mut violations,
+            source,
+            markers,
+            "supplied-session V4 renewal lost its policy-bound one-attempt, classifier, epoch, or strict saved-accounting contract",
+        );
+    }
+
     require_markers(
         &mut violations,
         &compact_core,
@@ -2536,7 +2579,7 @@ fn supplied_session_review_source_contract_violations(
             "filter(|resource|resource.outcome==SuppliedSessionResourceOutcome::Committed)",
             "response_byte_limit_exceeded:self.response_bytes>response_byte_limit",
             "anonymous_fallback_performed:false",
-            "refresh_performed:false",
+            "refresh_performed:self.renewal.as_ref().is_some_and(|renewal|renewal.applied_cookie_count>0)",
             "continuous_authentication_established:false",
             "exploit_execution_performed:false",
             "impact_validation_performed:false",
@@ -6355,6 +6398,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ),
             ("login", "Option<AssessmentSuppliedSessionLoginDocument>"),
             (
+                "renewal",
+                "Option<AssessmentSuppliedSessionRenewalDocument>",
+            ),
+            (
                 "health_oracle",
                 "AssessmentSuppliedSessionHealthOracleDocument",
             ),
@@ -6437,6 +6484,26 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
         ],
     ),
     (
+        "AssessmentSuppliedSessionRenewalDocument",
+        &[],
+        &[
+            ("renewal_reference", "String"),
+            ("after_resource_count", "u8"),
+            ("attempt_count", "u8"),
+            ("status", "Option<u16>"),
+            ("body_state", "&'static str"),
+            ("outcome", "&'static str"),
+            ("response_bytes", "u64"),
+            ("applied_cookie_count", "u8"),
+            ("initial_epoch", "u8"),
+            ("final_epoch", "u8"),
+            (
+                "health",
+                "Option<AssessmentSuppliedSessionCheckpointDocument>",
+            ),
+        ],
+    ),
+    (
         "AssessmentSuppliedSessionHealthOracleDocument",
         &[],
         &[("kind", "&'static str"), ("field_reference", "String")],
@@ -6454,6 +6521,7 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             ("body_state", "&'static str"),
             ("predicate", "&'static str"),
             ("response_bytes", "u64"),
+            ("epoch", "Option<u8>"),
         ],
     ),
     (
@@ -7762,6 +7830,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSuppliedSessionCookiePolicyDocument"
                 | "AssessmentSuppliedSessionCookieLifecycleDocument"
                 | "AssessmentSuppliedSessionLoginDocument"
+                | "AssessmentSuppliedSessionRenewalDocument"
                 | "AssessmentSuppliedSessionHealthOracleDocument"
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument"
@@ -7911,6 +7980,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                 | "AssessmentSuppliedSessionCookiePolicyDocument"
                 | "AssessmentSuppliedSessionCookieLifecycleDocument"
                 | "AssessmentSuppliedSessionLoginDocument"
+                | "AssessmentSuppliedSessionRenewalDocument"
                 | "AssessmentSuppliedSessionHealthOracleDocument"
                 | "AssessmentSuppliedSessionCheckpointDocument"
                 | "AssessmentSuppliedSessionResourceDocument" => {
@@ -8211,9 +8281,14 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                                     | "cookie_policy"
                                     | "cookie_lifecycle"
                                     | "login"
+                                    | "renewal"
                             ))
                         || (name == "AssessmentSuppliedSessionLoginDocument"
                             && field_name == "form_error_code")
+                        || (name == "AssessmentSuppliedSessionRenewalDocument"
+                            && field_name == "health")
+                        || (name == "AssessmentSuppliedSessionCheckpointDocument"
+                            && field_name == "epoch")
                         || (name == "AssessmentRestAuditDocument"
                             && matches!(
                                 field_name.as_str(),
@@ -10864,8 +10939,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 656_329;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xe074_c96a_581a_65cd_cf4b_4ac8_353f_167a;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 659_710;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5cfd_7994_0d00_2afe_fded_298f_56b0_46fa;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -11087,6 +11162,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
     "crate::web_runtime::SuppliedSessionBodyState",
@@ -11104,6 +11180,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "crate::web_runtime::WebAssessmentTlsNegotiationReviewAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
+    "crate::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit",
     "crate::web_runtime::WebAssessmentTlsObservationAudit",
     "crate::web_runtime::WebAssessmentWebSocketReviewAudit",
     "crate::web_runtime::WordPressAssetFingerprintExecution",
@@ -11344,6 +11421,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentSecretExposureAudit",
     "AssessmentWordPressAssetFingerprintAuditDocument::from_execution",
     "AssessmentSuppliedSessionAuditDocument::from_audit",
+    "AssessmentSuppliedSessionCheckpointDocument::from_checkpoint",
+    "comparison::validate_supplied_session_renewal",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
     "WordPressSuppliedSessionPageCollectionDocument::validate",
@@ -11469,6 +11548,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionAuditOutcome::CredentialUpdateRequired",
     "SuppliedSessionAuditOutcome::CredentialUpdateUnusable",
     "SuppliedSessionAuditOutcome::LoginCookieUnavailable",
+    "SuppliedSessionAuditOutcome::RenewalUnavailable",
     "SuppliedSessionAuditOutcome::LoginFormUnavailable",
     "SuppliedSessionAuditOutcome::LoginSubmitUnavailable",
     "SuppliedSessionAuditOutcome::ResourceUnavailable",
@@ -11488,6 +11568,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionCredentialAcquisition::SuppliedCookieJar",
     "SuppliedSessionHealthCheckpointPhase::Startup",
     "SuppliedSessionHealthCheckpointPhase::SubjectBoundary",
+    "SuppliedSessionHealthCheckpointPhase::Renewal",
     "SuppliedSessionHealthCheckpointPhase::Terminal",
     "SuppliedSessionHealthOracleKind::JsonBooleanTrue",
     "SuppliedSessionHealthOutcome::Healthy",
@@ -11793,6 +11874,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
     "crate::web_runtime::SuppliedSessionBodyState",
@@ -11810,6 +11892,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentOpenApiAudit",
     "crate::web_runtime::WebAssessmentRestAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
+    "crate::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
     "crate::web_runtime::WebAssessmentWordPressAudit",
@@ -11929,6 +12012,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "sha2::Sha256",
     "serde_json::to_writer",
     "serde_json::to_string",
+    "serde_json::to_value",
     "std::collections::BTreeMap",
     "std::collections::BTreeMap::new",
     "Vec::len",
@@ -11980,6 +12064,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
+    "AssessmentSuppliedSessionCheckpointDocument::from_checkpoint",
+    "comparison::validate_supplied_session_renewal",
     "AssessmentTlsNegotiationReviewAuditDocument::from_audit",
     "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
@@ -12099,6 +12185,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "run_status_token",
     "serde_json::to_writer",
     "serde_json::to_string",
+    "serde_json::to_value",
     "severity_token",
     "secret_exposure_capability",
     "secret_exposure_capability_for_class",
@@ -12243,6 +12330,11 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "after_resource_count",
+    "applied_cookie_count",
+    "health",
+    "renewal_reference",
+    "renewal",
     "accounted_ingress_tls_bytes",
     "active_request_count",
     "attempted_connection_count",
@@ -13298,6 +13390,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
                     | "crate::web_runtime::SuppliedSessionAuditOutcome"
                     | "crate::web_runtime::SuppliedSessionBodyState"
@@ -13311,6 +13404,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::SuppliedSessionPrincipalAssurance"
                     | "crate::web_runtime::SuppliedSessionResourceOutcome"
                     | "crate::web_runtime::WebAssessmentSuppliedSessionAudit"
+                    | "crate::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit"
             )
             });
         let wordpress_import = !paths.is_empty()
@@ -15343,6 +15437,50 @@ mod tests {
         };
         let violations = supplied_session_review_source_contract_violations(sources);
         assert!(violations.is_empty(), "{violations:#?}");
+
+        for (from, to, target) in [
+            (
+                "wire.max_renewal_attempts != 1",
+                "wire.max_renewal_attempts > 9",
+                0,
+            ),
+            (
+                "update.kind == SuppliedSessionResponseCookieUpdateKind::Selected",
+                "true",
+                1,
+            ),
+            ("renewal.final_epoch = 2;", "renewal.final_epoch = 1;", 1),
+            (
+                "selected_updates == u64::from(applied > 0) + 1 && classification_failures == 0",
+                "true",
+                2,
+            ),
+        ] {
+            let original = match target {
+                0 => core,
+                1 => runtime,
+                _ => audit_import,
+            };
+            let mutated = original.replacen(from, to, 1);
+            assert_ne!(mutated, original, "stale renewal mutation: {from}");
+            let changed = match target {
+                0 => SuppliedSessionSources {
+                    core: &mutated,
+                    ..sources
+                },
+                1 => SuppliedSessionSources {
+                    runtime: &mutated,
+                    ..sources
+                },
+                _ => SuppliedSessionSources {
+                    audit_import: &mutated,
+                    ..sources
+                },
+            };
+            assert!(supplied_session_review_source_contract_violations(changed)
+                .iter()
+                .any(|violation| violation.contains("V4 renewal")));
+        }
 
         let widened_reader = audit_import.replace(
             "const MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT: u64 = 256 * 1024;",
@@ -18120,10 +18258,12 @@ mod tests {
                     SuppliedSessionLoginFormOutcome, SuppliedSessionLoginSubmitOutcome,
                     SuppliedSessionPredicateOutcome, SuppliedSessionPrincipalAssurance,
                     SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
+                    WebAssessmentSuppliedSessionCheckpointAudit,
                     MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
                     MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+                    SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
                 },
             };
             #[cfg(all(feature = "scanning", feature = "websocket-review"))]
@@ -19348,6 +19488,8 @@ mod tests {
                 cookie_lifecycle: Option<AssessmentSuppliedSessionCookieLifecycleDocument>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 login: Option<AssessmentSuppliedSessionLoginDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                renewal: Option<AssessmentSuppliedSessionRenewalDocument>,
                 health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
                 outcome: &'static str,
                 coverage: &'static str,
@@ -19423,6 +19565,22 @@ mod tests {
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]
+            struct AssessmentSuppliedSessionRenewalDocument {
+                renewal_reference: String,
+                after_resource_count: u8,
+                attempt_count: u8,
+                status: Option<u16>,
+                body_state: &'static str,
+                outcome: &'static str,
+                response_bytes: u64,
+                applied_cookie_count: u8,
+                initial_epoch: u8,
+                final_epoch: u8,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                health: Option<AssessmentSuppliedSessionCheckpointDocument>,
+            }
+            #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+            #[derive(Serialize)]
             struct AssessmentSuppliedSessionCheckpointDocument {
                 sequence: u8,
                 phase: &'static str,
@@ -19433,6 +19591,8 @@ mod tests {
                 body_state: &'static str,
                 predicate: &'static str,
                 response_bytes: u64,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                epoch: Option<u8>,
             }
             #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
             #[derive(Serialize)]

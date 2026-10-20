@@ -21,6 +21,8 @@ pub const SUPPLIED_SESSION_POLICY_SCHEMA: &str = "security.supplied-session-poli
 pub const SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA: &str = "security.supplied-session-policy/v2";
 /// Strict V3 bounded form-login policy schema.
 pub const SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA: &str = "security.supplied-session-policy/v3";
+/// Strict V4 supplied-cookie session with one explicitly scheduled renewal.
+pub const SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA: &str = "security.supplied-session-policy/v4";
 /// Maximum accepted policy bytes.
 pub const HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES: usize = 64 * 1024;
 /// Maximum accepted supplied-cookie secret bytes.
@@ -50,6 +52,7 @@ pub(crate) const SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID: &str =
     "web.review.supplied-session.login-page";
 pub(crate) const SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID: &str =
     "web.review.supplied-session.login-submit";
+pub(crate) const SUPPLIED_SESSION_RENEWAL_ACTION_ID: &str = "web.review.supplied-session.renewal";
 
 const MAX_PRINCIPAL_ALIAS_BYTES: usize = 128;
 const MAX_HEALTH_FIELD_BYTES: usize = 128;
@@ -94,6 +97,8 @@ pub enum SuppliedSessionPolicyVersion {
     V2,
     /// One bounded form login that establishes a cookie session.
     V3,
+    /// Supplied host-only cookies and one bounded scheduled renewal.
+    V4,
 }
 
 impl SuppliedSessionPolicyVersion {
@@ -103,6 +108,7 @@ impl SuppliedSessionPolicyVersion {
             Self::V1 => SUPPLIED_SESSION_POLICY_SCHEMA,
             Self::V2 => SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA,
             Self::V3 => SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA,
+            Self::V4 => SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA,
         }
     }
 }
@@ -461,7 +467,10 @@ impl SuppliedSessionCookies {
         now_unix_seconds: i64,
     ) -> Result<Self, SuppliedSessionCookieError> {
         if policy.credential_mechanism != SuppliedSessionCredentialMechanism::CookieJar
-            || policy.version != SuppliedSessionPolicyVersion::V2
+            || !matches!(
+                policy.version,
+                SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V4
+            )
             || policy.cookies.is_empty()
         {
             return Err(SuppliedSessionCookieError::PolicyMismatch);
@@ -569,9 +578,10 @@ impl SuppliedSessionCookies {
     where
         I: IntoIterator<Item = &'a [u8]>,
     {
-        if policy.version != SuppliedSessionPolicyVersion::V3
-            || policy.credential_acquisition
-                != SuppliedSessionCredentialAcquisition::BoundedFormLogin
+        if !((policy.version == SuppliedSessionPolicyVersion::V3
+            && policy.credential_acquisition
+                == SuppliedSessionCredentialAcquisition::BoundedFormLogin)
+            || (policy.version == SuppliedSessionPolicyVersion::V4 && policy.renewal.is_some()))
             || policy.cookies.is_empty()
         {
             return Err(SuppliedSessionCookieError::PolicyMismatch);
@@ -705,7 +715,9 @@ impl SuppliedSessionCookies {
     fn matches_policy(&self, policy: &SuppliedSessionPolicy) -> bool {
         matches!(
             policy.version,
-            SuppliedSessionPolicyVersion::V2 | SuppliedSessionPolicyVersion::V3
+            SuppliedSessionPolicyVersion::V2
+                | SuppliedSessionPolicyVersion::V3
+                | SuppliedSessionPolicyVersion::V4
         ) && policy.credential_mechanism == SuppliedSessionCredentialMechanism::CookieJar
             && self.policy_reference == policy.policy_reference
             && self.principal_alias == policy.principal_alias
@@ -914,6 +926,7 @@ pub struct SuppliedSessionPolicy {
     cookie_update_policy: Option<SuppliedSessionCookieUpdatePolicy>,
     cookies: Vec<SuppliedSessionCookieMetadata>,
     login: Option<SuppliedSessionLoginPolicy>,
+    renewal: Option<SuppliedSessionRenewalPolicy>,
     policy_reference: String,
     application_reference: String,
     principal_reference: String,
@@ -1159,6 +1172,11 @@ struct SuppliedSessionLoginPolicy {
     max_attempts: u8,
 }
 
+struct SuppliedSessionRenewalPolicy {
+    url: Url,
+    after_resource_count: u8,
+}
+
 impl SuppliedSessionPolicy {
     /// Parses and resolves a strict policy beneath `application_url`.
     pub fn parse_toml(
@@ -1189,6 +1207,9 @@ impl SuppliedSessionPolicy {
                     .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
                     .and_then(|wire| Self::from_v3_wire(application_url, wire))
             },
+            SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA => toml::from_str::<WireRenewalPolicy>(source)
+                .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
+                .and_then(|wire| Self::from_v4_wire(application_url, wire)),
             _ => Err(SuppliedSessionPolicyError::UnsupportedSchema),
         }
     }
@@ -1264,6 +1285,7 @@ impl SuppliedSessionPolicy {
             cookie_update_policy: None,
             cookies: Vec::new(),
             login: None,
+            renewal: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1408,6 +1430,7 @@ impl SuppliedSessionPolicy {
             cookie_update_policy: Some(cookie_update_policy),
             cookies,
             login: None,
+            renewal: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1510,6 +1533,7 @@ impl SuppliedSessionPolicy {
                 csrf_field: wire.csrf_field,
                 max_attempts: wire.max_login_attempts,
             }),
+            renewal: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1527,6 +1551,73 @@ impl SuppliedSessionPolicy {
             max_response_body_bytes: wire.max_response_body_bytes,
             max_wall_time_ms: wire.max_wall_time_ms,
         })
+    }
+
+    fn from_v4_wire(
+        application_url: &Url,
+        wire: WireRenewalPolicy,
+    ) -> Result<Self, SuppliedSessionPolicyError> {
+        if wire.schema != SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA
+            || wire.renewal_method != "post"
+            || wire.max_renewal_attempts != 1
+            || wire.renewal_after_resource_count == 0
+            || usize::from(wire.renewal_after_resource_count) >= wire.resources.len()
+            || wire.resources.len() > 3
+            || usize::from(wire.max_session_requests) != 3 + 2 * wire.resources.len()
+        {
+            return Err(SuppliedSessionPolicyError::InvalidFormLogin);
+        }
+        let renewal_url = resolve_safe_path(application_url, &wire.renewal_path)?;
+        let after_resource_count = wire.renewal_after_resource_count;
+        let mut policy = Self::from_v2_wire(
+            application_url,
+            WireCookiePolicy {
+                schema: SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA.to_owned(),
+                principal_alias: wire.principal_alias,
+                credential_mechanism: wire.credential_mechanism,
+                cookie_update_policy: wire.cookie_update_policy,
+                health_path: wire.health_path,
+                health_json_field: wire.health_json_field,
+                resources: wire.resources,
+                cookies: wire.cookies,
+                max_session_requests: wire.max_session_requests,
+                max_total_response_bytes: wire.max_total_response_bytes,
+                max_response_body_bytes: wire.max_response_body_bytes,
+                max_wall_time_ms: wire.max_wall_time_ms,
+            },
+        )?;
+        if policy.admits_execution_target(&renewal_url)
+            || policy.cookies.iter().any(|cookie| {
+                !cookie.host_only
+                    || cookie.expires_unix_seconds.is_some()
+                    || cookie.secure != (application_url.scheme() == "https")
+                    || !cookie.http_only
+                    || !matches!(
+                        cookie.same_site,
+                        SuppliedSessionCookieSameSite::Strict | SuppliedSessionCookieSameSite::Lax
+                    )
+                    || !cookie_path_matches(&cookie.path, renewal_url.path())
+                    || !policy
+                        .execution_targets()
+                        .all(|target| cookie_path_matches(&cookie.path, target.path()))
+            })
+        {
+            return Err(SuppliedSessionPolicyError::InvalidCookieMetadata);
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"security.supplied-session-policy.reference.v4\0");
+        hash_field(&mut digest, policy.policy_reference.as_bytes());
+        hash_field(&mut digest, renewal_url.as_str().as_bytes());
+        hash_field(&mut digest, &[after_resource_count]);
+        hash_field(&mut digest, b"post;max_attempts=1");
+        policy.policy_reference =
+            format!("supplied-session-policy-sha256:{}", hex(digest.finalize()));
+        policy.version = SuppliedSessionPolicyVersion::V4;
+        policy.renewal = Some(SuppliedSessionRenewalPolicy {
+            url: renewal_url,
+            after_resource_count,
+        });
+        Ok(policy)
     }
 
     /// Policy schema generation.
@@ -1647,11 +1738,17 @@ impl SuppliedSessionPolicy {
     }
 
     fn execution_targets(&self) -> impl Iterator<Item = &Url> {
-        std::iter::once(&self.health_url).chain(self.resources.iter().map(|resource| &resource.url))
+        std::iter::once(&self.health_url)
+            .chain(self.resources.iter().map(|resource| &resource.url))
+            .chain(self.renewal.iter().map(|renewal| &renewal.url))
     }
 
     fn admits_execution_target(&self, target: &Url) -> bool {
         self.health_url == *target
+            || self
+                .renewal
+                .as_ref()
+                .is_some_and(|renewal| renewal.url == *target)
             || self
                 .resources
                 .iter()
@@ -1660,6 +1757,12 @@ impl SuppliedSessionPolicy {
 
     pub(crate) fn is_selected_cookie_name(&self, name: &str) -> bool {
         self.cookies.iter().any(|cookie| cookie.name == name)
+    }
+
+    pub(crate) fn renewal_after_resource_count(&self) -> Option<u8> {
+        self.renewal
+            .as_ref()
+            .map(|renewal| renewal.after_resource_count)
     }
 }
 
@@ -1694,6 +1797,7 @@ impl fmt::Debug for SuppliedSessionPolicy {
 pub(crate) enum SuppliedSessionRequestPurpose {
     LoginPage,
     LoginSubmit,
+    Renewal,
     Health,
     Resource,
 }
@@ -1715,6 +1819,30 @@ pub(crate) struct SuppliedSessionRequestDescriptor {
 }
 
 impl SuppliedSessionRequestDescriptor {
+    pub(crate) fn renewal(policy: &SuppliedSessionPolicy) -> Option<Self> {
+        let target = policy.renewal.as_ref()?.url.clone();
+        let purpose = SuppliedSessionRequestPurpose::Renewal;
+        let descriptor = Self {
+            application_url: policy.application_url.clone(),
+            target_reference: reference(
+                RESOURCE_REFERENCE_DOMAIN,
+                target.as_str(),
+                "supplied-session-resource-sha256",
+            ),
+            purpose_binding: request_descriptor_reference(
+                &policy.application_url,
+                &target,
+                purpose,
+                policy.credential_mechanism,
+                &policy.policy_reference,
+            ),
+            target,
+            purpose,
+            credential_mechanism: policy.credential_mechanism,
+            policy_reference: policy.policy_reference.clone(),
+        };
+        descriptor.validate_against(policy).then_some(descriptor)
+    }
     pub(crate) fn login_page(policy: &SuppliedSessionPolicy) -> Option<Self> {
         Self::login(policy, SuppliedSessionRequestPurpose::LoginPage)
     }
@@ -1859,6 +1987,13 @@ impl SuppliedSessionRequestDescriptor {
             && self.application_url == policy.application_url
             && self.credential_mechanism == policy.credential_mechanism
             && match self.purpose {
+                SuppliedSessionRequestPurpose::Renewal => {
+                    policy.version == SuppliedSessionPolicyVersion::V4
+                        && policy
+                            .renewal
+                            .as_ref()
+                            .is_some_and(|renewal| renewal.url == self.target)
+                },
                 SuppliedSessionRequestPurpose::LoginPage
                 | SuppliedSessionRequestPurpose::LoginSubmit => {
                     policy.version == SuppliedSessionPolicyVersion::V3
@@ -1932,6 +2067,27 @@ struct WireCookiePolicy {
     principal_alias: String,
     credential_mechanism: String,
     cookie_update_policy: String,
+    health_path: String,
+    health_json_field: String,
+    resources: Vec<String>,
+    cookies: Vec<WireCookieMetadata>,
+    max_session_requests: u8,
+    max_total_response_bytes: u64,
+    max_response_body_bytes: usize,
+    max_wall_time_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireRenewalPolicy {
+    schema: String,
+    principal_alias: String,
+    credential_mechanism: String,
+    cookie_update_policy: String,
+    renewal_path: String,
+    renewal_method: String,
+    renewal_after_resource_count: u8,
+    max_renewal_attempts: u8,
     health_path: String,
     health_json_field: String,
     resources: Vec<String>,
@@ -2372,6 +2528,7 @@ fn request_descriptor_reference(
         match purpose {
             SuppliedSessionRequestPurpose::LoginPage => b"login_page",
             SuppliedSessionRequestPurpose::LoginSubmit => b"login_submit",
+            SuppliedSessionRequestPurpose::Renewal => b"renewal",
             SuppliedSessionRequestPurpose::Health => b"health",
             SuppliedSessionRequestPurpose::Resource => b"resource",
         },
@@ -2579,6 +2736,123 @@ fn http_token_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub(crate) fn renewal_policy() -> SuppliedSessionPolicy {
+        SuppliedSessionPolicy::parse_toml(
+            &Url::parse("https://example.test/app/").unwrap(),
+            renewal_source().as_bytes(),
+        )
+        .unwrap()
+    }
+
+    fn renewal_source() -> String {
+        r#"schema = "security.supplied-session-policy/v4"
+principal_alias = "renewal-reader"
+credential_mechanism = "cookie_jar"
+cookie_update_policy = "stop_on_selected_cookie"
+renewal_path = "/app/renew"
+renewal_method = "post"
+renewal_after_resource_count = 1
+max_renewal_attempts = 1
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/before", "/app/after"]
+max_session_requests = 7
+max_total_response_bytes = 131072
+max_response_body_bytes = 32768
+max_wall_time_ms = 5000
+[[cookies]]
+id = "session"
+name = "session"
+domain = "example.test"
+host_only = true
+path = "/app/"
+secure = true
+http_only = true
+same_site = "lax"
+"#
+        .to_owned()
+    }
+
+    #[test]
+    fn renewal_policy_is_closed_bounded_and_retains_private_cookie_scope() {
+        let policy = renewal_policy();
+        assert_eq!(policy.version(), SuppliedSessionPolicyVersion::V4);
+        assert_eq!(policy.max_session_requests(), 7);
+        let descriptor = SuppliedSessionRequestDescriptor::renewal(&policy).unwrap();
+        assert!(descriptor.validate_against(&policy));
+        assert_eq!(
+            descriptor.target().as_str(),
+            "https://example.test/app/renew"
+        );
+        let initial =
+            SuppliedSessionCookies::parse_tsv(&policy, b"session\tinitial-canary".to_vec(), 0)
+                .unwrap();
+        assert!(initial
+            .sensitive_header_for_target(&policy, descriptor.target(), 0)
+            .is_ok());
+        let replacement = SuppliedSessionCookies::from_form_login_set_cookie_fields(
+            &policy,
+            [
+                b"session=replacement-canary; Path=/app/; Secure; HttpOnly; SameSite=Lax"
+                    .as_slice(),
+            ],
+            0,
+        )
+        .unwrap();
+        assert_eq!(replacement.cookie_count(), 1);
+        for (from, to) in [
+            ("max_session_requests = 7", "max_session_requests = 9"),
+            ("renewal_method = \"post\"", "renewal_method = \"get\""),
+            ("max_renewal_attempts = 1", "max_renewal_attempts = 2"),
+            (
+                "renewal_after_resource_count = 1",
+                "renewal_after_resource_count = 0",
+            ),
+            (
+                "renewal_after_resource_count = 1",
+                "renewal_after_resource_count = 2",
+            ),
+            (
+                "renewal_path = \"/app/renew\"",
+                "renewal_path = \"/app-evil/renew\"",
+            ),
+            (
+                "renewal_path = \"/app/renew\"",
+                "renewal_path = \"/app/%2e%2e/renew\"",
+            ),
+            (
+                "renewal_path = \"/app/renew\"",
+                "renewal_path = \"/app/health\"",
+            ),
+            ("host_only = true", "host_only = false"),
+            ("secure = true", "secure = false"),
+            ("http_only = true", "http_only = false"),
+            ("same_site = \"lax\"", "same_site = \"none\""),
+            ("path = \"/app/\"", "path = \"/app/before\""),
+        ] {
+            assert!(
+                SuppliedSessionPolicy::parse_toml(
+                    &Url::parse("https://example.test/app/").unwrap(),
+                    renewal_source().replace(from, to).as_bytes()
+                )
+                .is_err(),
+                "accepted mutation {from}"
+            );
+        }
+        for field in [
+            b"session=rotated; Path=/app/; HttpOnly; SameSite=Lax".as_slice(),
+            b"session=rotated; Path=/app/; Secure; HttpOnly; SameSite=Lax; Domain=example.test",
+            b"session=rotated; Path=/app/; Secure; HttpOnly; SameSite=Lax; Max-Age=10",
+            b"session=rotated; Path=/app/; Secure; HttpOnly; SameSite=Lax; Secure",
+            b"other=rotated; Path=/app/; Secure; HttpOnly; SameSite=Lax",
+        ] {
+            assert!(
+                SuppliedSessionCookies::from_form_login_set_cookie_fields(&policy, [field], 0)
+                    .is_err()
+            );
+        }
+    }
 
     fn policy() -> &'static [u8] {
         br#"schema = "security.supplied-session-policy/v1"

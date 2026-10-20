@@ -1652,6 +1652,48 @@ impl HttpRequestBroker {
         policy: &SuppliedSessionPolicy,
         credential: &SuppliedSessionCredential,
     ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
+        if descriptor.purpose() == SuppliedSessionRequestPurpose::Renewal {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        self.collect_supplied_session_for_runtime(
+            stage, origin, limits, descriptor, policy, credential,
+        )
+        .await
+    }
+
+    /// One policy-bound bodyless renewal POST; never a generic authenticated POST.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) async fn collect_supplied_session_renewal_for_runtime(
+        &self,
+        limits: DecisionExecutionLimits,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+        credential: &SuppliedSessionCredential,
+    ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
+        if descriptor.purpose() != SuppliedSessionRequestPurpose::Renewal {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        self.collect_supplied_session_for_runtime(
+            DecisionExecutionStage::Active,
+            None,
+            limits,
+            descriptor,
+            policy,
+            credential,
+        )
+        .await
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    async fn collect_supplied_session_for_runtime(
+        &self,
+        stage: DecisionExecutionStage,
+        origin: Option<DecisionActionOrigin>,
+        limits: DecisionExecutionLimits,
+        descriptor: &SuppliedSessionRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+        credential: &SuppliedSessionCredential,
+    ) -> Result<CollectedHttpResponse, SuppliedSessionRequestError> {
         let (action_id, purpose_contract_valid) = match descriptor.purpose() {
             SuppliedSessionRequestPurpose::Health => (
                 SUPPLIED_SESSION_HEALTH_ACTION_ID,
@@ -1664,6 +1706,10 @@ impl HttpRequestBroker {
                 SUPPLIED_SESSION_RESOURCE_ACTION_ID,
                 origin == Some(DecisionActionOrigin::Planned),
             ),
+            SuppliedSessionRequestPurpose::Renewal => (
+                crate::supplied_session_review::SUPPLIED_SESSION_RENEWAL_ACTION_ID,
+                origin.is_none(),
+            ),
             SuppliedSessionRequestPurpose::LoginPage
             | SuppliedSessionRequestPurpose::LoginSubmit => {
                 return Err(SuppliedSessionRequestError::InvalidDescriptor);
@@ -1671,7 +1717,12 @@ impl HttpRequestBroker {
         };
         let target = descriptor.target();
         if !descriptor.validate_against(policy)
-            || stage != DecisionExecutionStage::Passive
+            || stage
+                != if descriptor.purpose() == SuppliedSessionRequestPurpose::Renewal {
+                    DecisionExecutionStage::Active
+                } else {
+                    DecisionExecutionStage::Passive
+                }
             || !purpose_contract_valid
             || !authenticated_transport_is_allowed(target)
             || descriptor.credential_mechanism() != policy.credential_mechanism()
@@ -1684,7 +1735,12 @@ impl HttpRequestBroker {
             .supplied_session_no_proxy_client
             .as_ref()
             .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
-        let mut request = client.request(Method::GET, target.clone());
+        let method = if descriptor.purpose() == SuppliedSessionRequestPurpose::Renewal {
+            Method::POST
+        } else {
+            Method::GET
+        };
+        let mut request = client.request(method, target.clone());
         if let Some(authorization) = credential.authorization() {
             let mut authorization =
                 HeaderValue::from_str(authorization.as_str()).map_err(|_| {

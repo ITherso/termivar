@@ -1879,7 +1879,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
-    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\")}";
+    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\",)}}";
     if compact.matches(wordpress_v3_preflight).count() != 1 {
         violations.push(
             "CLI must reject WordPress composition with a prepared V3 policy before output reservation or form-login secret acquisition"
@@ -4361,8 +4361,13 @@ mod tests {
                 "exact V1/V2/V3 supplied-session source union",
             ),
             (
-                "SuppliedSessionPolicyVersion::V3)\n        .then_some(\"`--wordpress-supplied-session` does not support bounded form-login policies\")",
-                "SuppliedSessionPolicyVersion::V2)\n        .then_some(\"`--wordpress-supplied-session` does not support bounded form-login policies\")",
+                "SuppliedSessionPolicyVersion::V3)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
+                "SuppliedSessionPolicyVersion::V2)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
+                "reject WordPress composition with a prepared V3 policy",
+            ),
+            (
+                "SuppliedSessionPolicyVersion::V4\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
+                "SuppliedSessionPolicyVersion::V2\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
                 "reject WordPress composition with a prepared V3 policy",
             ),
             (

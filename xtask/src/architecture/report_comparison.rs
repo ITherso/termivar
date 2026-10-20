@@ -719,6 +719,7 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_RENDERED_REPORT_BYTES",
                 ][..],
                 "reporting/comparison/import.rs" => &[
+                    "super::ImportedSuppliedSessionAudit",
                     "super::ComparisonError",
                     "super::EvidenceMetadata",
                     "super::ImportedDocument",
@@ -730,6 +731,7 @@ impl ComparisonVisitor<'_> {
                     "super::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY",
                 ][..],
                 "reporting/comparison/import/audits.rs" => &[
+                    "super::super::validate_supplied_session_renewal",
                     "super::array",
                     "super::boolean",
                     "super::check",

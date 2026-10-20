@@ -17,6 +17,13 @@ use super::{render_serializable_json, write_markdown_code_span, RenderBuffer, Re
 
 mod html;
 mod import;
+
+/// Applies the same closed, feature-independent V4 wire validation before publication.
+pub(super) fn validate_supplied_session_renewal(
+    value: &Value,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    import::validate_supplied_session_renewal(value)
+}
 #[cfg(test)]
 #[path = "comparison_tests.rs"]
 mod tests;

@@ -5463,6 +5463,10 @@ pub(super) fn validate_supplied_session(
 ) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
     let fields = object(value)?;
     let schema = string(fields, "schema")?;
+    if schema == "security.supplied-session-audit/v4" {
+        check(count(items, SUPPLIED_SESSION_CAPABILITY) == 0)?;
+        return super::super::validate_supplied_session_renewal(value);
+    }
     let (cookie_audit, form_v3) = match schema {
         SUPPLIED_SESSION_AUDIT_SCHEMA_V1 => {
             keys(
@@ -6040,6 +6044,537 @@ fn valid_supplied_session_principal_alias(value: &str) -> bool {
 #[derive(Clone, Copy)]
 struct ValidatedSuppliedSessionCookiePolicy {
     declared_count: u64,
+}
+
+/// V4 is a closed extension, not a permissive interpretation of historical audits.
+pub(super) fn validate_supplied_session_renewal(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    let fields = object(value)?;
+    keys(
+        fields,
+        &[
+            "schema",
+            "capability_id",
+            "policy_reference",
+            "application_reference",
+            "principal_reference",
+            "principal_alias",
+            "principal_assurance",
+            "credential_mechanism",
+            "cookie_policy",
+            "cookie_lifecycle",
+            "renewal",
+            "health_oracle",
+            "outcome",
+            "coverage",
+            "checkpoints",
+            "resources",
+            "selected_resource_count",
+            "dispatched_resource_count",
+            "committed_resource_count",
+            "dispatched_request_count",
+            "response_bytes",
+            "response_byte_limit",
+            "response_byte_limit_exceeded",
+            "refresh_performed",
+            "anonymous_fallback_performed",
+            "continuous_authentication_established",
+            "exploit_execution",
+            "impact_validation",
+        ],
+        &[],
+    )?;
+    check(string(fields, "schema")? == "security.supplied-session-audit/v4")?;
+    check(
+        string(fields, "capability_id")? == SUPPLIED_SESSION_CAPABILITY
+            && count(items, SUPPLIED_SESSION_CAPABILITY) == 0,
+    )?;
+    check(digest(
+        text(fields, "policy_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-policy-sha256:",
+    ))?;
+    check(digest(
+        text(fields, "application_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-application-sha256:",
+    ))?;
+    check(string(fields, "principal_reference")? == "supplied-session-principal-0001")?;
+    check(valid_supplied_session_principal_alias(text(
+        fields,
+        "principal_alias",
+        128,
+    )?))?;
+    check(
+        string(fields, "principal_assurance")? == "operator_declared"
+            && string(fields, "credential_mechanism")? == "cookie_jar",
+    )?;
+    validate_supplied_session_health_oracle(required(fields, "health_oracle")?)?;
+    let cookie_policy =
+        validate_supplied_session_cookie_policy(required(fields, "cookie_policy")?)?;
+    validate_supplied_session_form_cookie_policy(required(fields, "cookie_policy")?)?;
+    let selected = number(fields, "selected_resource_count", 3)?;
+    check((2..=3).contains(&selected))?;
+    let outcome = token(
+        fields,
+        "outcome",
+        &[
+            "complete",
+            "startup_unhealthy",
+            "session_lost",
+            "resource_unavailable",
+            "runtime_limit",
+            "cancelled",
+            "credential_update_required",
+            "credential_update_unusable",
+            "renewal_unavailable",
+        ],
+    )?;
+    let coverage = token(fields, "coverage", &["complete", "partial", "none"])?;
+    let renewal = object(required(fields, "renewal")?)?;
+    keys(
+        renewal,
+        &[
+            "renewal_reference",
+            "after_resource_count",
+            "attempt_count",
+            "status",
+            "body_state",
+            "outcome",
+            "response_bytes",
+            "applied_cookie_count",
+            "initial_epoch",
+            "final_epoch",
+        ],
+        &["health"],
+    )?;
+    check(digest(
+        text(renewal, "renewal_reference", MAX_IDENTIFIER_BYTES)?,
+        "supplied-session-resource-sha256:",
+    ))?;
+    let boundary = number(renewal, "after_resource_count", selected - 1)?;
+    check(boundary > 0 && number(renewal, "initial_epoch", 1)? == 1)?;
+    let attempt = number(renewal, "attempt_count", 1)?;
+    let status = optional_http_status(renewal, "status")?;
+    let body = token(
+        renewal,
+        "body_state",
+        &["complete", "incomplete", "unavailable"],
+    )?;
+    let renewal_bytes = number(renewal, "response_bytes", u64::MAX)?;
+    let applied = number(
+        renewal,
+        "applied_cookie_count",
+        cookie_policy.declared_count,
+    )?;
+    let renewal_outcome = token(
+        renewal,
+        "outcome",
+        &[
+            "not_dispatched",
+            "cookie_acquired",
+            "cookie_unavailable",
+            "http_error",
+            "redirect_refused",
+            "incomplete",
+            "transport_failed",
+            "runtime_limit",
+            "cancelled",
+        ],
+    )?;
+    check(applied == 0 || applied == cookie_policy.declared_count)?;
+    let final_epoch = number(renewal, "final_epoch", 2)?;
+    check(final_epoch == if applied > 0 { 2 } else { 1 })?;
+    check(match body {
+        "complete" | "incomplete" => attempt == 1 && status.is_some(),
+        "unavailable" => status.is_none(),
+        _ => false,
+    })?;
+    check(
+        attempt != 0
+            || (status.is_none() && body == "unavailable" && applied == 0 && renewal_bytes == 0),
+    )?;
+    check(applied == 0 || (attempt == 1 && status == Some(200) && body == "complete"))?;
+    check(match renewal_outcome {
+        "cookie_acquired" => {
+            applied > 0 && attempt == 1 && status == Some(200) && body == "complete"
+        },
+        "cookie_unavailable" => {
+            applied == 0 && attempt == 1 && status == Some(200) && body == "complete"
+        },
+        "http_error" => {
+            applied == 0
+                && attempt == 1
+                && status.is_some_and(|status| status != 200 && !(300..400).contains(&status))
+                && body == "complete"
+        },
+        "redirect_refused" => {
+            applied == 0
+                && attempt == 1
+                && status.is_some_and(|status| (300..400).contains(&status))
+        },
+        "incomplete" => {
+            applied == 0
+                && attempt == 1
+                && status.is_some_and(|status| !(300..400).contains(&status))
+                && body == "incomplete"
+        },
+        "transport_failed" => {
+            applied == 0 && attempt == 1 && status.is_none() && body == "unavailable"
+        },
+        "runtime_limit" | "cancelled" => applied == 0 && status.is_none() && body == "unavailable",
+        "not_dispatched" => {
+            attempt == 0 && applied == 0 && status.is_none() && body == "unavailable"
+        },
+        _ => false,
+    })?;
+
+    let source_checkpoints = array(fields, "checkpoints")?;
+    check(source_checkpoints.len() <= selected as usize + 1)?;
+    let mut normalized_checkpoints = Vec::with_capacity(source_checkpoints.len());
+    let mut checkpoint_epochs = Vec::with_capacity(source_checkpoints.len());
+    for (index, checkpoint) in source_checkpoints.iter().enumerate() {
+        let original = object(checkpoint)?;
+        let epoch = number(original, "epoch", 2)?;
+        check(
+            epoch
+                == if applied > 0 && index as u64 > boundary {
+                    2
+                } else {
+                    1
+                },
+        )?;
+        let mut normalized = original.clone();
+        normalized.remove("epoch");
+        normalized_checkpoints.push(Value::Object(normalized));
+        checkpoint_epochs.push(epoch);
+    }
+    let checkpoints = normalized_checkpoints
+        .iter()
+        .enumerate()
+        .map(|(index, checkpoint)| {
+            validate_supplied_session_checkpoint(checkpoint, index, selected)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut evidence = BTreeSet::new();
+    let mut response_bytes = renewal_bytes;
+    for checkpoint in &checkpoints {
+        if let Some(reference) = checkpoint.evidence_reference {
+            check(evidence.insert(reference.to_owned()))?;
+        }
+        response_bytes = response_bytes
+            .checked_add(checkpoint.response_bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+    }
+    let renewal_health = if let Some(value) = renewal.get("health") {
+        check(applied > 0)?;
+        let original = object(value)?;
+        check(number(original, "epoch", 2)? == 2 && string(original, "phase")? == "renewal")?;
+        check(number(original, "sequence", MAX_SUPPLIED_SESSION_CHECKPOINTS - 1)? == boundary + 1)?;
+        check(number(original, "after_subject_count", selected)? == boundary)?;
+        let mut normalized = original.clone();
+        normalized.remove("epoch");
+        normalized.insert("sequence".into(), Value::from(boundary));
+        normalized.insert("phase".into(), Value::from("subject_boundary"));
+        let normalized = Value::Object(normalized);
+        let validated =
+            validate_supplied_session_checkpoint(&normalized, boundary as usize, selected)?;
+        if let Some(reference) = validated.evidence_reference {
+            check(evidence.insert(reference.to_owned()))?;
+        }
+        response_bytes = response_bytes
+            .checked_add(validated.response_bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        Some(validated.outcome)
+    } else {
+        None
+    };
+    check(
+        source_checkpoints.len() + usize::from(renewal_health.is_some())
+            <= MAX_SUPPLIED_SESSION_CHECKPOINTS as usize,
+    )?;
+
+    let source_resources = array(fields, "resources")?;
+    check(source_resources.len() == selected as usize)?;
+    let mut normalized_resources = Vec::with_capacity(source_resources.len());
+    let mut resource_epochs = Vec::with_capacity(source_resources.len());
+    for (index, resource) in source_resources.iter().enumerate() {
+        let original = object(resource)?;
+        let epoch = number(original, "epoch", 2)?;
+        check(
+            epoch
+                == if applied > 0 && index as u64 >= boundary {
+                    2
+                } else {
+                    1
+                },
+        )?;
+        let mut normalized = original.clone();
+        normalized.insert("epoch".into(), Value::from(1));
+        normalized_resources.push(Value::Object(normalized));
+        resource_epochs.push(epoch);
+    }
+    let resources = normalized_resources
+        .iter()
+        .enumerate()
+        .map(|(index, resource)| validate_supplied_session_resource(resource, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut resource_references = BTreeSet::new();
+    for (index, resource) in resources.iter().enumerate() {
+        check(resource_references.insert(resource.reference))?;
+        if let Some(reference) = resource.evidence_reference {
+            check(evidence.insert(reference.to_owned()))?;
+        }
+        response_bytes = response_bytes
+            .checked_add(resource.response_bytes)
+            .ok_or(ComparisonError::InvalidDocument)?;
+        if resource.dispatched {
+            check(
+                checkpoints
+                    .first()
+                    .is_some_and(|checkpoint| checkpoint.outcome == "healthy"),
+            )?;
+            if index as u64 >= boundary {
+                check(applied > 0 && renewal_health == Some("healthy"))?;
+            }
+        }
+        if resource.committed {
+            check(
+                checkpoints
+                    .get(index + 1)
+                    .is_some_and(|checkpoint| checkpoint.outcome == "healthy"),
+            )?;
+            check(checkpoint_epochs.get(index + 1) == resource_epochs.get(index))?;
+        }
+    }
+    check(!resource_references.contains(string(renewal, "renewal_reference")?))?;
+    let dispatched = resources
+        .iter()
+        .filter(|resource| resource.dispatched)
+        .count() as u64;
+    let committed = resources
+        .iter()
+        .filter(|resource| resource.committed)
+        .count() as u64;
+    check(
+        resources
+            .iter()
+            .take(committed as usize)
+            .all(|resource| resource.committed),
+    )?;
+    check(
+        resources
+            .iter()
+            .skip(committed as usize)
+            .all(|resource| !resource.committed),
+    )?;
+    check(
+        resources
+            .iter()
+            .skip_while(|resource| resource.dispatched)
+            .all(|resource| !resource.dispatched),
+    )?;
+    check(dispatched <= committed + 1)?;
+    if attempt > 0 || applied > 0 {
+        check(
+            committed >= boundary
+                && checkpoints
+                    .get(boundary as usize)
+                    .is_some_and(|checkpoint| checkpoint.outcome == "healthy"),
+        )?;
+    }
+    let requests =
+        dispatched + checkpoints.len() as u64 + attempt + u64::from(renewal_health.is_some());
+    check(number(fields, "dispatched_resource_count", selected)? == dispatched)?;
+    check(number(fields, "committed_resource_count", selected)? == committed)?;
+    check(
+        number(
+            fields,
+            "dispatched_request_count",
+            MAX_SUPPLIED_SESSION_REQUESTS,
+        )? == requests,
+    )?;
+    check(number(fields, "response_bytes", u64::MAX)? == response_bytes)?;
+    let limit = number(
+        fields,
+        "response_byte_limit",
+        MAX_SUPPLIED_SESSION_RESPONSE_BYTE_LIMIT,
+    )?;
+    check(
+        limit > 0 && boolean(fields, "response_byte_limit_exceeded")? == (response_bytes > limit),
+    )?;
+    check(match coverage {
+        "complete" => outcome == "complete" && committed == selected,
+        "partial" => committed > 0 && (committed < selected || outcome != "complete"),
+        "none" => committed == 0,
+        _ => false,
+    })?;
+    if outcome == "complete" {
+        check(
+            committed == selected
+                && applied > 0
+                && renewal_health == Some("healthy")
+                && checkpoints
+                    .iter()
+                    .all(|checkpoint| checkpoint.outcome == "healthy"),
+        )?;
+    } else if outcome == "renewal_unavailable" {
+        check(
+            committed == boundary
+                && dispatched == boundary
+                && checkpoints.len() as u64 == boundary + 1
+                && applied == 0
+                && renewal_health.is_none(),
+        )?;
+    } else if applied > 0
+        && (renewal_health != Some("healthy")
+            || (matches!(
+                outcome,
+                "credential_update_required" | "credential_update_unusable"
+            ) && committed == boundary
+                && dispatched == boundary
+                && checkpoints.len() as u64 == boundary + 1))
+    {
+        check(
+            committed == boundary
+                && dispatched == boundary
+                && checkpoints.len() as u64 == boundary + 1,
+        )?;
+        check(matches!(
+            outcome,
+            "session_lost"
+                | "resource_unavailable"
+                | "runtime_limit"
+                | "cancelled"
+                | "credential_update_required"
+                | "credential_update_unusable"
+        ))?;
+    } else {
+        validate_supplied_session_outcome(outcome, &checkpoints, &resources)?;
+    }
+    let lifecycle = object(required(fields, "cookie_lifecycle")?)?;
+    let mut normalized_lifecycle = lifecycle.clone();
+    check(
+        number(lifecycle, "initial_epoch", 1)? == 1
+            && number(lifecycle, "final_epoch", 2)? == final_epoch,
+    )?;
+    check(number(lifecycle, "updates_applied", 1)? == u64::from(applied > 0))?;
+    let selected_updates = number(lifecycle, "selected_update_response_count", requests)?;
+    check(selected_updates >= u64::from(applied > 0))?;
+    let classification_failures =
+        number(lifecycle, "update_classification_failure_count", requests)?;
+    check(match outcome {
+        "credential_update_required" => {
+            selected_updates == u64::from(applied > 0) + 1 && classification_failures == 0
+        },
+        "credential_update_unusable" => {
+            selected_updates == u64::from(applied > 0) && classification_failures == 1
+        },
+        "renewal_unavailable" => selected_updates + classification_failures <= 1,
+        _ => selected_updates == u64::from(applied > 0) && classification_failures == 0,
+    })?;
+    if outcome == "complete" {
+        check(
+            selected_updates == 1
+                && number(lifecycle, "update_classification_failure_count", requests)? == 0,
+        )?;
+    }
+    check(selected_updates <= 2)?;
+    normalized_lifecycle.insert("final_epoch".into(), Value::from(1));
+    normalized_lifecycle.insert("updates_applied".into(), Value::from(0));
+    validate_supplied_session_cookie_lifecycle(&Value::Object(normalized_lifecycle), requests, 1)?;
+    check(boolean(fields, "refresh_performed")? == (applied > 0))?;
+    check(
+        !boolean(fields, "anonymous_fallback_performed")?
+            && !boolean(fields, "continuous_authentication_established")?,
+    )?;
+    check(
+        string(fields, "exploit_execution")? == "not_performed"
+            && string(fields, "impact_validation")? == "not_performed",
+    )?;
+    let renewal_policy = Value::Object(
+        [
+            (
+                "renewal_reference".to_owned(),
+                required(renewal, "renewal_reference")?.clone(),
+            ),
+            ("after_resource_count".to_owned(), Value::from(boundary)),
+            ("max_attempts".to_owned(), Value::from(1)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let final_epoch = Value::from(final_epoch);
+    let resource_bindings = resources
+        .iter()
+        .enumerate()
+        .map(|(index, resource)| {
+            (
+                resource.reference.to_owned(),
+                SuppliedSessionResourceBinding {
+                    evidence_reference: if resource.committed {
+                        resource.evidence_reference.map(str::to_owned)
+                    } else {
+                        None
+                    },
+                    response_bytes: resource.response_bytes,
+                    epoch: resource_epochs[index],
+                },
+            )
+        })
+        .collect();
+    Ok(ImportedSuppliedSessionAudit {
+        context: selected_object(
+            fields,
+            &[
+                "schema",
+                "capability_id",
+                "policy_reference",
+                "application_reference",
+                "principal_reference",
+                "principal_alias",
+                "principal_assurance",
+                "credential_mechanism",
+                "health_oracle",
+                "cookie_policy",
+            ],
+            &[
+                ("session_epoch", Some(&final_epoch)),
+                ("renewal_policy", Some(&renewal_policy)),
+            ],
+        )?,
+        health_and_coverage: selected_object(
+            fields,
+            &[
+                "outcome",
+                "coverage",
+                "checkpoints",
+                "resources",
+                "cookie_lifecycle",
+                "renewal",
+            ],
+            &[],
+        )?,
+        accounting: selected_object(
+            fields,
+            &[
+                "selected_resource_count",
+                "dispatched_resource_count",
+                "committed_resource_count",
+                "dispatched_request_count",
+                "response_bytes",
+                "response_byte_limit",
+                "response_byte_limit_exceeded",
+                "refresh_performed",
+                "anonymous_fallback_performed",
+                "continuous_authentication_established",
+                "exploit_execution",
+                "impact_validation",
+            ],
+            &[],
+        )?,
+        resources: resource_bindings,
+    })
 }
 
 fn validate_supplied_session_cookie_policy(
@@ -14324,6 +14859,191 @@ mod tests {
         audit["response_bytes"] = Value::from(10_u64);
         audit["cookie_lifecycle"]["unselected_update_response_count"] = Value::from(0_u64);
         audit
+    }
+
+    // Original synthetic audit: literal 10/11/12 checkpoint bytes, 13/14 resource
+    // bytes, seven renewal bytes and eight new-epoch health bytes sum to 75.
+    fn complete_renewal_supplied_session_audit() -> Value {
+        let mut audit = complete_cookie_supplied_session_audit();
+        audit["schema"] = Value::from("security.supplied-session-audit/v4");
+        audit["cookie_policy"] = serde_json::json!({
+            "declared_count": 1, "host_only_count": 1, "domain_count": 0,
+            "secure_count": 1, "http_only_count": 1, "session_count": 1, "persistent_count": 0,
+            "same_site_missing_count": 0, "same_site_strict_count": 0, "same_site_lax_count": 1, "same_site_none_count": 0,
+            "update_policy": "stop_on_selected_cookie", "browser_semantics": "attributes_preserved_not_browser_csrf_emulation",
+        });
+        audit["cookie_lifecycle"] = serde_json::json!({
+            "initial_epoch": 1, "final_epoch": 2, "selected_update_response_count": 1,
+            "unselected_update_response_count": 0, "update_classification_failure_count": 0, "updates_applied": 1,
+        });
+        audit["checkpoints"][0]["epoch"] = Value::from(1);
+        audit["checkpoints"][1]["epoch"] = Value::from(1);
+        audit["checkpoints"][2]["epoch"] = Value::from(2);
+        audit["resources"][1]["epoch"] = Value::from(2);
+        audit["renewal"] = serde_json::json!({
+            "renewal_reference": supplied_session_reference("supplied-session-resource-sha256:", 'c'),
+            "after_resource_count": 1, "attempt_count": 1, "status": 200, "body_state": "complete", "outcome": "cookie_acquired",
+            "response_bytes": 7, "applied_cookie_count": 1, "initial_epoch": 1, "final_epoch": 2,
+            "health": {
+                "sequence": 2, "phase": "renewal", "after_subject_count": 1,
+                "evidence_reference": supplied_session_reference("supplied-session-checkpoint-evidence-sha256:", 'b'),
+                "outcome": "healthy", "status": 200, "body_state": "complete", "predicate": "matched", "response_bytes": 8, "epoch": 2,
+            },
+        });
+        audit["refresh_performed"] = Value::from(true);
+        audit["dispatched_request_count"] = Value::from(7);
+        audit["response_bytes"] = Value::from(75);
+        audit
+    }
+
+    #[test]
+    fn supplied_session_renewal_v4_reader_conserves_epochs_bytes_and_closed_groups() {
+        let valid = complete_renewal_supplied_session_audit();
+        let imported = validate_supplied_session(&valid, &BTreeMap::new()).unwrap();
+        assert_eq!(imported.context["session_epoch"], Value::from(2));
+        assert_eq!(
+            imported.accounting["dispatched_request_count"],
+            Value::from(7)
+        );
+        assert_eq!(imported.accounting["response_bytes"], Value::from(75));
+        let reference = valid["resources"][1]["resource_reference"]
+            .as_str()
+            .unwrap();
+        assert_eq!(imported.resources[reference].epoch, 2);
+        let mutations = [
+            ("/renewal/attempt_count", Value::Bool(true)),
+            ("/renewal/attempt_count", Value::from(2)),
+            ("/renewal/after_resource_count", Value::from(0)),
+            ("/renewal/final_epoch", Value::from(1)),
+            ("/renewal/applied_cookie_count", Value::from(0)),
+            ("/renewal/outcome", Value::from("not_dispatched")),
+            ("/renewal/health/phase", Value::from("terminal")),
+            ("/renewal/health/epoch", Value::from(1)),
+            ("/renewal/health/outcome", Value::from("unhealthy")),
+            ("/checkpoints/2/epoch", Value::from(1)),
+            ("/resources/1/epoch", Value::from(1)),
+            ("/cookie_lifecycle/final_epoch", Value::from(1)),
+            ("/cookie_lifecycle/updates_applied", Value::from(0)),
+            (
+                "/cookie_lifecycle/selected_update_response_count",
+                Value::from(120),
+            ),
+            ("/response_bytes", Value::from(74)),
+            ("/dispatched_request_count", Value::from(6)),
+            ("/refresh_performed", Value::Bool(false)),
+            ("/anonymous_fallback_performed", Value::Bool(true)),
+        ];
+        for (path, replacement) in mutations {
+            let mut invalid = valid.clone();
+            *invalid.pointer_mut(path).unwrap() = replacement;
+            assert!(
+                validate_supplied_session(&invalid, &BTreeMap::new()).is_err(),
+                "accepted mutation {path}"
+            );
+        }
+        for path in ["renewal", "cookie_lifecycle", "checkpoints", "resources"] {
+            let mut invalid = valid.clone();
+            invalid.as_object_mut().unwrap().remove(path);
+            assert!(
+                validate_supplied_session(&invalid, &BTreeMap::new()).is_err(),
+                "accepted missing {path}"
+            );
+        }
+        for key in ["health", "outcome", "applied_cookie_count"] {
+            let mut invalid = valid.clone();
+            invalid["renewal"].as_object_mut().unwrap().remove(key);
+            assert!(
+                validate_supplied_session(&invalid, &BTreeMap::new()).is_err(),
+                "accepted missing renewal {key}"
+            );
+        }
+        let mut duplicate = valid.clone();
+        duplicate["resources"][1]["resource_reference"] =
+            duplicate["resources"][0]["resource_reference"].clone();
+        assert!(validate_supplied_session(&duplicate, &BTreeMap::new()).is_err());
+        let mut unknown = valid.clone();
+        unknown["renewal"]["unknown"] = Value::Bool(true);
+        assert!(validate_supplied_session(&unknown, &BTreeMap::new()).is_err());
+        let mut historical = valid;
+        historical["schema"] = Value::from(SUPPLIED_SESSION_AUDIT_SCHEMA_V2);
+        assert!(validate_supplied_session(&historical, &BTreeMap::new()).is_err());
+    }
+
+    fn renewal_cookie_stop_audit(at_health: bool, unusable: bool) -> Value {
+        let mut audit = complete_renewal_supplied_session_audit();
+        audit["outcome"] = Value::from(if unusable {
+            "credential_update_unusable"
+        } else {
+            "credential_update_required"
+        });
+        audit["coverage"] = Value::from("partial");
+        audit["checkpoints"].as_array_mut().unwrap().truncate(2);
+        audit["committed_resource_count"] = Value::from(1);
+        audit["cookie_lifecycle"]["selected_update_response_count"] =
+            Value::from(if unusable { 1 } else { 2 });
+        audit["cookie_lifecycle"]["update_classification_failure_count"] =
+            Value::from(u64::from(unusable));
+        if at_health {
+            audit["resources"][1]["outcome"] = Value::from("not_dispatched");
+            audit["resources"][1]["status"] = Value::Null;
+            audit["resources"][1]["evidence_reference"] = Value::Null;
+            audit["resources"][1]["response_bytes"] = Value::from(0);
+            audit["dispatched_resource_count"] = Value::from(1);
+            audit["dispatched_request_count"] = Value::from(5);
+            audit["response_bytes"] = Value::from(49);
+        } else {
+            audit["resources"][1]["outcome"] = Value::from("health_unqualified");
+            audit["dispatched_request_count"] = Value::from(6);
+            audit["response_bytes"] = Value::from(63);
+        }
+        audit
+    }
+
+    #[test]
+    fn renewal_reader_rejects_endpoint_collision_and_cookie_stop_counter_substitution() {
+        let mut collision = complete_renewal_supplied_session_audit();
+        collision["renewal"]["renewal_reference"] =
+            collision["resources"][0]["resource_reference"].clone();
+        assert!(
+            validate_supplied_session(&collision, &BTreeMap::new()).is_err(),
+            "renewal endpoint collides with resource"
+        );
+    }
+
+    #[test]
+    fn renewal_reader_rejects_cookie_stop_counter_substitution() {
+        for unusable in [false, true] {
+            let valid = renewal_cookie_stop_audit(false, unusable);
+            assert!(validate_supplied_session(&valid, &BTreeMap::new()).is_ok());
+            let mut invalid = valid;
+            invalid["cookie_lifecycle"][if unusable {
+                "update_classification_failure_count"
+            } else {
+                "selected_update_response_count"
+            }] = Value::from(if unusable { 0 } else { 1 });
+            assert!(
+                validate_supplied_session(&invalid, &BTreeMap::new()).is_err(),
+                "accepted missing stopped-cookie count"
+            );
+        }
+    }
+
+    #[test]
+    fn renewal_reader_accepts_healthy_marker_but_stopped_cookie_update_without_later_work() {
+        for unusable in [false, true] {
+            let valid = renewal_cookie_stop_audit(true, unusable);
+            assert!(
+                validate_supplied_session(&valid, &BTreeMap::new()).is_ok(),
+                "healthy marker does not override cookie stop"
+            );
+            let mut invalid = valid;
+            invalid["cookie_lifecycle"][if unusable {
+                "update_classification_failure_count"
+            } else {
+                "selected_update_response_count"
+            }] = Value::from(if unusable { 0 } else { 1 });
+            assert!(validate_supplied_session(&invalid, &BTreeMap::new()).is_err());
+        }
     }
 
     fn positive_authorization_audit() -> Value {

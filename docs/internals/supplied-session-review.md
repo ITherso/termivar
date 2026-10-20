@@ -21,6 +21,47 @@ Application-defined `GET` handling and the explicitly authorized V3 login
 selected sequence. A principal alias is an operator assertion, not
 authenticated identity.
 
+V4 adds one separately selected **scheduled cookie renewal**, not login discovery
+or an automatic retry after session loss. It starts with a supplied cookie jar,
+reuses the existing `--session-policy` / `--session-cookie-file` command below,
+and permits one bodyless same-application POST between healthy resource windows.
+Only exact declared host-only, HttpOnly, nonpersistent Strict/Lax cookies are
+accepted. The replacement advances the credential epoch immediately, then an
+independent health GET must succeed before another resource is collected. A
+failed renewal or new-epoch health check never restores or retries the old jar.
+
+## Policy V4: one scheduled renewal
+
+Use the V2 policy fields and cookie TSV shape with these explicit differences:
+
+```toml
+schema = "security.supplied-session-policy/v4"
+renewal_path = "/app/renew"
+renewal_method = "post"
+renewal_after_resource_count = 1
+max_renewal_attempts = 1
+# With two resources: startup + two resource/health pairs + renewal + health.
+max_session_requests = 7
+```
+
+This is an excerpt, not a complete policy. Resources must number two or three;
+the boundary must follow at least one and precede the final resource. The exact
+request allowance is `3 + 2 * resource_count`, within the unchanged nine-request
+ceiling. There are at most five health checkpoints including renewal health.
+All selected cookies must cover health, resources and the renewal path, remain
+host-only and nonpersistent, and preserve the exact configured security
+attributes. Domain, Max-Age/Expires, extensions, undeclared cookies, missing or
+duplicated selected cookies fail closed at renewal. No browser cookie jar is used.
+The explicitly authorized POST may have application-defined side effects.
+
+`security.supplied-session-audit/v4` records value-free renewal outcome, attempt,
+bytes, applied-cookie count, epochs and the immediate health receipt. Epoch
+identifies this run's credential context, not authenticated identity. Earlier
+resources remain qualified only by their original same-epoch health evidence.
+The new policy is initially rejected by the WordPress and WebSocket session
+consumers before secret/output acquisition; v1–v3 behavior is unchanged. It
+remains non-default, outside `release-bundle` and unpublished.
+
 ## Build and invoke
 
 Build an isolated candidate with the feature selected explicitly:
@@ -63,7 +104,7 @@ termivar scan https://app.example.test/app/ \
 ```
 
 The policy and credential acquisition mechanism must agree, and exactly one
-credential source is required. V1/V2/V3 source mismatches and V3 combined with
+credential source is required. V1/V2/V3/V4 source mismatches and V3/V4 combined with
 `--wordpress-supplied-session` are rejected after policy validation but before
 output reservation or secret-file acquisition. There is no raw credential
 argument, cookie environment source, browser import, or cookie stdin source.
