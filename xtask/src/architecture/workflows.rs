@@ -255,6 +255,8 @@ const WORDPRESS_DISCOVERY_SMOKE_GATE: &str = r#"      - name: Exercise opt-in Wo
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture"#;
 const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in supplied-session review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
+const SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE: &str = r#"      - name: Exercise supplied-session WordPress preflight boundaries
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,wordpress-review --test supplied_session_cli wordpress -- --nocapture"#;
 const AUTHORIZATION_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in resource authorization review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review --test authorization_review_cli -- --nocapture"#;
 const WINDOWS_ASSESSMENT_STACK_SMOKE_GATE: &str = r#"      - name: Guard the native Windows all-feature assessment stack
@@ -951,6 +953,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact feature-minimal supplied-session CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise supplied-session WordPress preflight boundaries",
+        SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact unsuppressed supplied-session WordPress preflight boundaries"
         ));
     }
     if !job_has_exact_step(
@@ -4043,6 +4055,60 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("supplied-session CLI"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn supplied_session_wordpress_preflight_native_gate_is_exact() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let violations =
+            capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), valid.clone())]);
+        assert!(violations.is_empty(), "{violations:?}");
+        assert_eq!(
+            valid
+                .matches(SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE)
+                .count(),
+            1
+        );
+        for mutation in [
+            valid.replacen(SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE, "", 1),
+            valid.replacen(
+                SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE,
+                &SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE.replace(
+                    "supplied-session-review,wordpress-review",
+                    "supplied-session-review",
+                ),
+                1,
+            ),
+            valid.replacen(
+                SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE,
+                &SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE.replace(
+                    "supplied_session_cli wordpress --",
+                    "supplied_session_cli nonexistent --",
+                ),
+                1,
+            ),
+            valid.replacen(
+                SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE,
+                &format!(
+                    "{SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE}\n        continue-on-error: true"
+                ),
+                1,
+            ),
+            valid.replacen(
+                SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE,
+                &format!("{SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE}\n        if: false"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("WordPress preflight boundaries"),
                 "{violations:?}"
             );
         }

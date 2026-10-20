@@ -385,6 +385,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review,supplied-session-review --test supplied_session_cli passive_secret_review_does_not_select_authenticated_session_bodies -- --exact --nocapture
       - name: Exercise supplied-session WordPress integration CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review --test wordpress_supplied_session_cli -- --nocapture
+      - name: Exercise supplied-session WordPress preflight boundaries
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,wordpress-review --test supplied_session_cli wordpress -- --nocapture
       - name: Exercise supplied-session and OAST preflight composition
         run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review,ssrf-oast-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture
       - name: Exercise delayed native OAST replay polling
