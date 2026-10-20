@@ -261,7 +261,7 @@ const AUTHORIZATION_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in r
         run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review --test authorization_review_cli -- --nocapture"#;
 const WINDOWS_ASSESSMENT_STACK_SMOKE_GATE: &str = r#"      - name: Guard the native Windows all-feature assessment stack
         if: runner.os == 'Windows'
-        run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli --test websocket_review_cli --test websocket_supplied_session_cli -- --nocapture"#;
+        run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli --test websocket_review_cli --test websocket_supplied_session_cli --test supplied_session_cli -- --nocapture"#;
 const SECRET_EXPOSURE_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture"#;
 const VALUE_FREE_GRAPHQL_SMOKE_GATE: &str = r#"      - name: Exercise value-free GraphQL privacy composition CLI
@@ -4147,13 +4147,22 @@ mod tests {
     #[test]
     fn windows_assessment_stack_smoke_rejects_omission_substitution_and_suppression() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
-        assert!(capabilities_workflow_policy_violations(&[(
-            TESTS_WORKFLOW.to_owned(),
-            valid.clone()
-        )])
-        .is_empty());
+        let violations =
+            capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), valid.clone())]);
+        assert!(violations.is_empty(), "{violations:?}");
         for mutation in [
             valid.replacen(WINDOWS_ASSESSMENT_STACK_SMOKE_GATE, "", 1),
+            valid.replacen(
+                WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+                &WINDOWS_ASSESSMENT_STACK_SMOKE_GATE.replace(" --test supplied_session_cli", ""),
+                1,
+            ),
+            valid.replacen(
+                WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+                &WINDOWS_ASSESSMENT_STACK_SMOKE_GATE
+                    .replace("--test supplied_session_cli", "--test secret_exposure_cli"),
+                1,
+            ),
             valid.replacen(
                 WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
                 &WINDOWS_ASSESSMENT_STACK_SMOKE_GATE

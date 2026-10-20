@@ -2664,6 +2664,15 @@ fn login_dispatch_result(
     }
 }
 
+// Construct the selected broker future outside dispatch's poll frame. The
+// one-shot factory runs immediately and retains no independent execution.
+#[inline(never)]
+fn boxed_dispatch_execution<F: std::future::Future>(
+    make: impl FnOnce() -> F,
+) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 async fn dispatch(
     context: &DispatchContext<'_>,
     descriptor: &SuppliedSessionRequestDescriptor,
@@ -2705,7 +2714,7 @@ async fn dispatch(
     }
     let limits = DecisionExecutionLimits::new().with_max_response_body_bytes(response_limit);
     let before = context.authority.request_accounting().snapshot();
-    let execution = async {
+    let execution = boxed_dispatch_execution(|| async {
         if expected_purpose == SuppliedSessionRequestPurpose::Renewal {
             context
                 .requests
@@ -2729,7 +2738,7 @@ async fn dispatch(
                 )
                 .await
         }
-    };
+    });
     let result = super::await_execution(
         context.authority.cancellation(),
         context.deadline,
