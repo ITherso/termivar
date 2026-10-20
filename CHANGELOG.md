@@ -27,10 +27,15 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ### Fixed
 
+- Updated the certificate verifier and web-PKI trust roots for the current
+  RustSec distrust advisories. WebSocket TLS now receives the equivalent
+  explicit verified Rustls connector using the maintained roots, without the
+  obsolete compatibility crate or a switch to operating-system trust.
+- Updated the XML parser used only by the external fuzz target to its patched
+  release line, and refreshed the yanked ChaCha20 patch in the three lockfiles.
 - Updated the workspace, fuzz, and current-head compatibility lockfiles to
   `quinn-proto 0.11.18` and `rustls 0.23.46` for the published RustSec fixes,
-  without changing dependency features, the Rust 1.88 minimum, or package
-  composition.
+  without changing the Rust 1.88 minimum or curated package composition.
 - Corrected the non-default SSRF OAST review's polling-phase completion: the
   candidate phase stops after its expected fresh event, while the replay phase
   requires both distinct expected events or an existing bound/terminal state.

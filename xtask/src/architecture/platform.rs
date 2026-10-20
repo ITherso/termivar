@@ -1055,7 +1055,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         "termivar-scanner",
         "webpki-roots",
         webpki_roots_requirement.as_deref(),
-        "^1.0.8",
+        "^1.0.10",
     ));
     let cli = packages
         .iter()
@@ -14367,6 +14367,8 @@ mod tests {
                 "scanning".to_owned(),
                 "dep:futures".to_owned(),
                 "dep:tokio-tungstenite".to_owned(),
+                "dep:tokio-rustls".to_owned(),
+                "dep:webpki-roots".to_owned(),
             ],
         );
         features.insert(
@@ -16870,6 +16872,30 @@ mod tests {
             .unwrap()
             .iter()
             .any(|violation| violation.contains("HARD_MAX_MEMORY_BYTES")));
+    }
+
+    #[test]
+    fn webpki_roots_requirement_rejects_the_old_floor_and_other_contracts() {
+        assert!(exact_dependency_requirement_violations(
+            "termivar-scanner",
+            "webpki-roots",
+            Some("^1.0.10"),
+            "^1.0.10",
+        )
+        .is_empty());
+        for actual in [None, Some("^1.0.8"), Some("^0.26"), Some("*"), Some("^2")] {
+            assert_eq!(
+                exact_dependency_requirement_violations(
+                    "termivar-scanner",
+                    "webpki-roots",
+                    actual,
+                    "^1.0.10",
+                )
+                .len(),
+                1,
+                "unexpected roots requirement must not pass: {actual:?}",
+            );
+        }
     }
 
     #[test]

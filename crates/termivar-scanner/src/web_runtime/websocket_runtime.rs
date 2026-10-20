@@ -22,6 +22,7 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{lookup_host, TcpStream},
 };
+use tokio_rustls::rustls::{self, ClientConfig, RootCertStore};
 use tokio_tungstenite::{
     client_async_tls_with_config,
     tungstenite::{
@@ -30,7 +31,7 @@ use tokio_tungstenite::{
         protocol::WebSocketConfig,
         Error as TungsteniteError, Message,
     },
-    MaybeTlsStream, WebSocketStream,
+    Connector, MaybeTlsStream, WebSocketStream,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -1264,6 +1265,13 @@ impl WebSocketReviewRuntime {
             .max_message_size(Some(max_inbound))
             .max_frame_size(Some(max_inbound))
             .accept_unmasked_frames(false);
+        let tls_connector = match websocket_tls_connector(&self.endpoint) {
+            Ok(connector) => connector,
+            Err(failure) => {
+                self.audit.fail(failure);
+                return TransportDispatchOutcome::TransportFailure;
+            },
+        };
 
         let Some(host) = self.endpoint.host_str().map(str::to_owned) else {
             self.audit
@@ -1345,7 +1353,7 @@ impl WebSocketReviewRuntime {
         let connected = bounded(
             &self.cancellation,
             deadline,
-            client_async_tls_with_config(request, stream, Some(websocket_config), None),
+            client_async_tls_with_config(request, stream, Some(websocket_config), tls_connector),
         )
         .await;
         let accounting = self.observe_transport_delta(lease, &counters, before);
@@ -2047,6 +2055,28 @@ fn fallback_audit(
     };
     audit.fail(failure);
     audit
+}
+
+fn websocket_root_store() -> RootCertStore {
+    RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned())
+}
+
+fn websocket_tls_connector(
+    endpoint: &url::Url,
+) -> Result<Option<Connector>, WebSocketReviewFailureKind> {
+    if endpoint.scheme() != "wss" {
+        return Ok(None);
+    }
+    // Preserve the existing Mozilla Web-PKI trust and no-client-auth policy,
+    // while selecting the reviewed crypto provider and current roots directly.
+    // This does not install process-global providers or consult native roots.
+    let config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|_| WebSocketReviewFailureKind::InternalInvariant)?
+            .with_root_certificates(websocket_root_store())
+            .with_no_client_auth();
+    Ok(Some(Connector::Rustls(Arc::new(config))))
 }
 
 fn classify_connect_error(error: &TungsteniteError) -> WebSocketReviewFailureKind {
@@ -3040,6 +3070,36 @@ mod tests {
         assert!(deadline.is_consistent());
     }
 
+    #[test]
+    fn websocket_tls_uses_current_webpki_roots_and_no_client_auth_only_for_wss() {
+        // Literal subject from the Mozilla root set, independent of the
+        // connector's construction. An empty/native-only replacement fails.
+        let digicert_subject = b"1\x0b0\t\x06\x03U\x04\x06\x13\x02US1\x170\x15\x06\x03U\x04\n\x13\x0eDigiCert, Inc.1&0$\x06\x03U\x04\x03\x13\x1dDigiCert TLS ECC P384 Root G5";
+        let roots = websocket_root_store();
+        assert!(roots
+            .roots
+            .iter()
+            .any(|root| root.subject.as_ref() == digicert_subject));
+        let distrusted_subject = b"emSign ECC Root CA - G3";
+        assert!(roots.roots.iter().all(|root| !root
+            .subject
+            .as_ref()
+            .windows(distrusted_subject.len())
+            .any(|part| part == distrusted_subject)));
+
+        let endpoint = url::Url::parse("wss://example.com/application/socket").unwrap();
+        let Some(Connector::Rustls(config)) = websocket_tls_connector(&endpoint).unwrap() else {
+            panic!("wss must use the explicitly reviewed Rustls connector");
+        };
+        assert!(!config.client_auth_cert_resolver.has_certs());
+        assert!(config.alpn_protocols.is_empty());
+        assert!(!config.enable_early_data);
+        assert!(config.enable_sni);
+
+        let endpoint = url::Url::parse("ws://127.0.0.1/application/socket").unwrap();
+        assert!(websocket_tls_connector(&endpoint).unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn self_signed_wss_server_is_not_added_to_the_trust_store() {
         use rcgen::{CertificateParams, KeyPair};
@@ -3086,7 +3146,12 @@ mod tests {
             .unwrap();
 
         assert!(server_result.is_err());
+        assert_eq!(audit.request_attempt_count(), 1);
+        assert_eq!(audit.request_admitted_count(), 1);
+        assert_eq!(audit.connection_attempt_count(), 1);
         assert_eq!(audit.handshake_completed_count(), 0);
+        assert_eq!(audit.outbound_message_count(), 0);
+        assert_eq!(audit.inbound_message_count(), 0);
         assert_eq!(
             audit.first_failure(),
             Some(WebSocketReviewFailureKind::ConnectionFailed)
