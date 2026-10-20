@@ -257,6 +257,9 @@ const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in suppl
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
 const AUTHORIZATION_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in resource authorization review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review --test authorization_review_cli -- --nocapture"#;
+const WINDOWS_ASSESSMENT_STACK_SMOKE_GATE: &str = r#"      - name: Guard the native Windows all-feature assessment stack
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli --test websocket_review_cli --test websocket_supplied_session_cli -- --nocapture"#;
 const SECRET_EXPOSURE_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture"#;
 const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
@@ -966,6 +969,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact release-profile feature-minimal passive secret-exposure CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Guard the native Windows all-feature assessment stack",
+        WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: Windows runtime smoke must execute the exact all-feature debug assessment regression without stack overrides or suppression"
         ));
     }
     if !job_has_exact_step(
@@ -4048,6 +4061,52 @@ mod tests {
                     .filter(|violation| violation.contains("resource authorization CLI"))
                     .count(),
                 1,
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_assessment_stack_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert!(capabilities_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            valid.clone()
+        )])
+        .is_empty());
+        for mutation in [
+            valid.replacen(WINDOWS_ASSESSMENT_STACK_SMOKE_GATE, "", 1),
+            valid.replacen(
+                WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+                &WINDOWS_ASSESSMENT_STACK_SMOKE_GATE
+                    .replace("--all-features", "--features authorization-review"),
+                1,
+            ),
+            valid.replacen(
+                WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+                &WINDOWS_ASSESSMENT_STACK_SMOKE_GATE.replace(
+                    "--test authorization_review_cli",
+                    "--release --test authorization_review_cli",
+                ),
+                1,
+            ),
+            valid.replacen(
+                WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+                &WINDOWS_ASSESSMENT_STACK_SMOKE_GATE.replace("runner.os == 'Windows'", "false"),
+                1,
+            ),
+            valid.replacen(
+                WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
+                &format!("{WINDOWS_ASSESSMENT_STACK_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("all-feature debug assessment"),
                 "{violations:?}"
             );
         }

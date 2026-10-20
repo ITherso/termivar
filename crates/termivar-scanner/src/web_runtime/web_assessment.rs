@@ -82,7 +82,8 @@ use super::ssrf_oast_runtime::{
 };
 #[cfg(feature = "supplied-session-review")]
 use super::supplied_session_runtime::{
-    SuppliedSessionRuntimeConfig, WebAssessmentSuppliedSessionAudit,
+    SuppliedSessionCommittedResourceObserver, SuppliedSessionRuntimeConfig,
+    WebAssessmentSuppliedSessionAudit,
 };
 #[cfg(feature = "tls-negotiation-review")]
 use super::tls_negotiation_review::{
@@ -208,6 +209,74 @@ mod normalization_transform_catalog;
 mod reflection_context;
 mod semantic;
 mod xss_probe_catalog;
+
+/// Keep child-future construction temporaries out of the assessment poll frame.
+/// The existing assessment still polls and cancels the same borrowed child;
+/// there is no spawned task, separate runtime or new accounting authority.
+#[inline(never)]
+fn boxed_child_analysis(
+    runtime: &mut StandardWebDecisionRuntime,
+) -> std::pin::Pin<
+    Box<
+        impl std::future::Future<
+                Output = Result<
+                    crate::StandardWebDecisionRunReport,
+                    StandardWebDecisionRuntimeError,
+                >,
+            > + '_,
+    >,
+> {
+    Box::pin(runtime.analyze())
+}
+
+// Construct selected optional children on their own synchronous frame. Passing
+// a future value here would still reserve its construction copies in analyze's
+// poll frame; the one-shot factory is called immediately and is never retained.
+#[inline(never)]
+fn boxed_optional_child<F: std::future::Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
+#[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
+#[inline(never)]
+fn boxed_session_websocket<'a>(
+    session: SuppliedSessionRuntimeConfig,
+    authority: &'a SharedWebRuntimeAuthority,
+    websocket: &'a WebSocketReviewPolicy,
+) -> std::pin::Pin<
+    Box<
+        impl std::future::Future<
+                Output = (
+                    WebAssessmentSuppliedSessionAudit,
+                    WebAssessmentWebSocketReviewAudit,
+                ),
+            > + 'a,
+    >,
+> {
+    // An unselected optional child must not reserve its large future-construction
+    // copies in every assessment poll. Selection, ownership and epoch rules stay
+    // with the existing child; only its allocation boundary is moved.
+    Box::pin(session.execute_with_websocket(authority, websocket))
+}
+
+#[cfg(feature = "supplied-session-review")]
+#[inline(never)]
+fn boxed_session_review<'a>(
+    session: SuppliedSessionRuntimeConfig,
+    authority: &'a SharedWebRuntimeAuthority,
+    observer: Option<&'a dyn SuppliedSessionCommittedResourceObserver>,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = WebAssessmentSuppliedSessionAudit> + 'a>> {
+    Box::pin(session.execute(authority, observer))
+}
+
+#[cfg(feature = "websocket-review")]
+#[inline(never)]
+fn boxed_websocket_review<'a>(
+    authority: &'a SharedWebRuntimeAuthority,
+    policy: &'a WebSocketReviewPolicy,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = WebAssessmentWebSocketReviewAudit> + 'a>> {
+    Box::pin(execute_websocket_review(authority, policy))
+}
 
 pub(super) use attribute_boundary_matcher::{
     match_exact_xss_attribute_boundary_document, ExactXssAttributeBoundaryMatch,
@@ -3696,7 +3765,8 @@ impl WebAssessmentRuntime {
         #[cfg(feature = "supplied-session-review")]
         if !defer_supplied_session {
             if let Some(session) = self.supplied_session_review.take() {
-                self.supplied_session_audit = Some(session.execute(&self.authority, None).await);
+                self.supplied_session_audit =
+                    Some(boxed_session_review(session, &self.authority, None).await);
             }
         }
         #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
@@ -3709,9 +3779,8 @@ impl WebAssessmentRuntime {
                 .websocket_review
                 .take()
                 .expect("combined WebSocket inputs were validated during build");
-            let (session_audit, websocket_audit) = session
-                .execute_with_websocket(&self.authority, &websocket)
-                .await;
+            let (session_audit, websocket_audit) =
+                boxed_session_websocket(session, &self.authority, &websocket).await;
             self.supplied_session_audit = Some(session_audit);
             self.websocket_review_audit = Some(websocket_audit);
         }
@@ -3723,12 +3792,12 @@ impl WebAssessmentRuntime {
         // the ordinary assessment.
         #[cfg(feature = "jwt-target-acceptance-review")]
         if let Some(review) = self.jwt_target_acceptance_review.take() {
-            match review.execute(&self.authority).await {
+            match boxed_optional_child(|| review.execute(&self.authority)).await {
                 Ok(audit) => self.jwt_target_acceptance_audit = Some(audit),
                 Err(failure) => {
                     self.jwt_target_acceptance_audit = failure.into_partial_audit();
                     return Err(WebAssessmentRuntimeError::JwtTargetAcceptanceExecution {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             subject_reports,
                             forms,
@@ -3739,7 +3808,7 @@ impl WebAssessmentRuntime {
                             ),
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 },
             }
@@ -3754,9 +3823,10 @@ impl WebAssessmentRuntime {
             let subject = EntityId::new(format!("endpoint:{}", self.root.url()))
                 .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
             let selected_application = self.root.url().clone();
-            match review
-                .execute(&self.authority, subject, &selected_application)
-                .await
+            match boxed_optional_child(|| {
+                review.execute(&self.authority, subject, &selected_application)
+            })
+            .await
             {
                 Ok(XmlExternalEntityRuntimeResult::Complete { audit, committed }) => {
                     self.xml_external_entity_review_audit = Some(audit);
@@ -3773,7 +3843,7 @@ impl WebAssessmentRuntime {
                 },
                 Err(_) => {
                     return Err(WebAssessmentRuntimeError::XmlExternalEntityExecution {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             subject_reports,
                             forms,
@@ -3784,7 +3854,7 @@ impl WebAssessmentRuntime {
                             ),
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 },
             }
@@ -3814,7 +3884,7 @@ impl WebAssessmentRuntime {
                     envelope.subjects.get_mut(subject.url.as_str())
                 else {
                     return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             subject_reports,
                             forms,
@@ -3825,7 +3895,7 @@ impl WebAssessmentRuntime {
                             ),
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 };
                 current_envelope_subject.executed = true;
@@ -4053,7 +4123,7 @@ impl WebAssessmentRuntime {
                 };
                 if self.ledger.mark_executed(&subject).is_err() {
                     return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             subject_reports,
                             forms,
@@ -4064,7 +4134,7 @@ impl WebAssessmentRuntime {
                             ),
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 }
                 progress_executed_subjects = progress_executed_subjects.saturating_add(1);
@@ -4073,7 +4143,7 @@ impl WebAssessmentRuntime {
                     progress_executed_subjects,
                     progress_processed_subjects,
                 );
-                let standard_result = runtime.analyze().await;
+                let standard_result = boxed_child_analysis(&mut runtime).await;
                 #[cfg(feature = "authorization-review")]
                 let resource_authorization_binding = runtime.take_resource_authorization_review();
                 #[cfg(feature = "openapi-review")]
@@ -4123,14 +4193,14 @@ impl WebAssessmentRuntime {
                 if !defense_valid {
                     let parts = standard.into_assessment_parts();
                     return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             subject_reports,
                             forms,
                             WebAssessmentSubjectReport::complete(subject, parts),
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 }
                 #[cfg(feature = "authorization-review")]
@@ -4176,14 +4246,14 @@ impl WebAssessmentRuntime {
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     WebAssessmentSubjectReport::complete(subject, parts),
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         },
                     }
@@ -4225,14 +4295,14 @@ impl WebAssessmentRuntime {
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     WebAssessmentSubjectReport::complete(subject, parts),
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         },
                     }
@@ -4274,14 +4344,14 @@ impl WebAssessmentRuntime {
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     WebAssessmentSubjectReport::complete(subject, parts),
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         },
                     }
@@ -4323,14 +4393,14 @@ impl WebAssessmentRuntime {
                         Err(_) => {
                             let parts = standard.into_assessment_parts();
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     WebAssessmentSubjectReport::complete(subject, parts),
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         },
                     }
@@ -4388,14 +4458,14 @@ impl WebAssessmentRuntime {
                         Err(()) => {
                             let parts = standard.into_assessment_parts();
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     WebAssessmentSubjectReport::complete(subject, parts),
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         },
                     }
@@ -4450,7 +4520,7 @@ impl WebAssessmentRuntime {
                         )
                         .with_assessment_defense_enforcement(self.defense_enforcement);
                     let mut xss_runtime = compose_child(xss_builder)?;
-                    let xss_result = xss_runtime.analyze().await;
+                    let xss_result = boxed_child_analysis(&mut xss_runtime).await;
                     let xss_defense = xss_runtime.assessment_defense_controller().cloned();
                     let xss_planner = xss_runtime.assessment_planner().clone();
                     match xss_result {
@@ -4578,7 +4648,8 @@ impl WebAssessmentRuntime {
                         )
                         .with_assessment_defense_enforcement(self.defense_enforcement);
                     let mut normalization_runtime = compose_child(normalization_builder)?;
-                    let normalization_result = normalization_runtime.analyze().await;
+                    let normalization_result =
+                        boxed_child_analysis(&mut normalization_runtime).await;
                     let normalization_defense = normalization_runtime
                         .assessment_defense_controller()
                         .cloned();
@@ -4714,14 +4785,14 @@ impl WebAssessmentRuntime {
                             .is_err()
                         {
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     subject_report,
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         }
                         if self
@@ -4734,14 +4805,14 @@ impl WebAssessmentRuntime {
                             .is_err()
                         {
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     subject_reports,
                                     forms,
                                     subject_report,
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         }
                         #[cfg(feature = "wordpress-review")]
@@ -4798,14 +4869,14 @@ impl WebAssessmentRuntime {
                                 .transpose();
                             if discovery_committed.is_err() || fingerprints_committed.is_err() {
                                 return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                    receipt: Box::new(self.failure_receipt(
+                                    receipt: self.failure_receipt(
                                         &known_subjects,
                                         subject_reports,
                                         forms,
                                         subject_report,
                                         failed_reasons(&reasons),
                                         started_at,
-                                    )),
+                                    ),
                                 });
                             }
                         }
@@ -4825,24 +4896,28 @@ impl WebAssessmentRuntime {
                             let session = self.supplied_session_review.take();
                             let (Some(binding), Some(session)) = (binding, session) else {
                                 return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                    receipt: Box::new(self.failure_receipt(
+                                    receipt: self.failure_receipt(
                                         &known_subjects,
                                         subject_reports,
                                         forms,
                                         subject_report,
                                         failed_reasons(&reasons),
                                         started_at,
-                                    )),
+                                    ),
                                 });
                             };
-                            self.supplied_session_audit =
-                                Some(session.execute(&self.authority, Some(&binding)).await);
+                            self.supplied_session_audit = Some(
+                                boxed_session_review(session, &self.authority, Some(&binding))
+                                    .await,
+                            );
                         }
                         if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot
                             && !should_stop
                         {
                             let api_visibility_result = match self.root_api_visibility.as_mut() {
-                                Some(runtime) => Some(runtime.execute().await),
+                                Some(runtime) => {
+                                    Some(boxed_optional_child(|| runtime.execute()).await)
+                                },
                                 None => None,
                             };
                             if let Some(api_visibility_result) = api_visibility_result {
@@ -4873,28 +4948,28 @@ impl WebAssessmentRuntime {
                                     Ok(RootApiVisibilityOutcome::ContractMismatch) => {
                                         return Err(
                                             WebAssessmentRuntimeError::ProjectionInvariant {
-                                                receipt: Box::new(self.failure_receipt(
+                                                receipt: self.failure_receipt(
                                                     &known_subjects,
                                                     subject_reports,
                                                     forms,
                                                     subject_report,
                                                     failed_reasons(&reasons),
                                                     started_at,
-                                                )),
+                                                ),
                                             },
                                         );
                                     },
                                     Err(source) => {
                                         return Err(
                                             WebAssessmentRuntimeError::ApiVisibilityRunFailed {
-                                                receipt: Box::new(self.failure_receipt(
+                                                receipt: self.failure_receipt(
                                                     &known_subjects,
                                                     subject_reports,
                                                     forms,
                                                     subject_report,
                                                     failed_reasons(&reasons),
                                                     started_at,
-                                                )),
+                                                ),
                                                 source: Box::new(source),
                                             },
                                         );
@@ -4917,13 +4992,14 @@ impl WebAssessmentRuntime {
                                                 WebAssessmentRuntimeError::NativeReviewComposition
                                             })?;
                                     Some(
-                                        review
-                                            .execute_discovery(
+                                        boxed_optional_child(|| {
+                                            review.execute_discovery(
                                                 root_subject,
                                                 &self.authority,
                                                 timing.deadline(),
                                             )
-                                            .await,
+                                        })
+                                        .await,
                                     )
                                 },
                                 _ => None,
@@ -4973,14 +5049,14 @@ impl WebAssessmentRuntime {
                                 },
                                 Some(Err(_)) => {
                                     return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                        receipt: Box::new(self.failure_receipt(
+                                        receipt: self.failure_receipt(
                                             &known_subjects,
                                             subject_reports,
                                             forms,
                                             subject_report,
                                             failed_reasons(&reasons),
                                             started_at,
-                                        )),
+                                        ),
                                     });
                                 },
                             }
@@ -5033,14 +5109,14 @@ impl WebAssessmentRuntime {
                     },
                     Err(()) => {
                         return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                            receipt: Box::new(self.failure_receipt(
+                            receipt: self.failure_receipt(
                                 &known_subjects,
                                 subject_reports,
                                 forms,
                                 subject_report,
                                 failed_reasons(&reasons),
                                 started_at,
-                            )),
+                            ),
                         });
                     },
                 }
@@ -5139,14 +5215,14 @@ impl WebAssessmentRuntime {
                     .filter(WebAssessmentSubjectReport::was_executed)
                     .collect();
                 return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                    receipt: Box::new(self.failure_receipt(
+                    receipt: self.failure_receipt(
                         &known_subjects,
                         completed_subjects,
                         forms,
                         current_subject,
                         failed_reasons(&reasons),
                         started_at,
-                    )),
+                    ),
                 });
             },
         }
@@ -5162,9 +5238,14 @@ impl WebAssessmentRuntime {
                     let root_subject = EntityId::new(format!("endpoint:{}", self.root.url))
                         .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
                     Some(
-                        review
-                            .execute_discovery(root_subject, &self.authority, timing.deadline())
-                            .await,
+                        boxed_optional_child(|| {
+                            review.execute_discovery(
+                                root_subject,
+                                &self.authority,
+                                timing.deadline(),
+                            )
+                        })
+                        .await,
                     )
                 },
                 _ => None,
@@ -5198,14 +5279,14 @@ impl WebAssessmentRuntime {
                         .filter(WebAssessmentSubjectReport::was_executed)
                         .collect();
                     return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             completed_subjects,
                             forms,
                             current_subject,
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 },
             }
@@ -5217,13 +5298,14 @@ impl WebAssessmentRuntime {
                     let root_subject = EntityId::new(format!("endpoint:{}", self.root.url))
                         .map_err(|_| WebAssessmentRuntimeError::NativeReviewComposition)?;
                     Some(
-                        review
-                            .execute_asset_fingerprints(
+                        boxed_optional_child(|| {
+                            review.execute_asset_fingerprints(
                                 root_subject,
                                 &self.authority,
                                 timing.deadline(),
                             )
-                            .await,
+                        })
+                        .await,
                     )
                 },
                 _ => None,
@@ -5255,14 +5337,14 @@ impl WebAssessmentRuntime {
                         .filter(WebAssessmentSubjectReport::was_executed)
                         .collect();
                     return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(self.failure_receipt(
+                        receipt: self.failure_receipt(
                             &known_subjects,
                             completed_subjects,
                             forms,
                             current_subject,
                             failed_reasons(&reasons),
                             started_at,
-                        )),
+                        ),
                     });
                 },
             }
@@ -5357,14 +5439,14 @@ impl WebAssessmentRuntime {
                                 .filter(WebAssessmentSubjectReport::was_executed)
                                 .collect();
                             return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                                receipt: Box::new(self.failure_receipt(
+                                receipt: self.failure_receipt(
                                     &known_subjects,
                                     completed_subjects,
                                     forms,
                                     current_subject,
                                     failed_reasons(&reasons),
                                     started_at,
-                                )),
+                                ),
                             });
                         },
                     }
@@ -5478,14 +5560,14 @@ impl WebAssessmentRuntime {
                     .filter(WebAssessmentSubjectReport::was_executed)
                     .collect();
                 return Err(WebAssessmentRuntimeError::ProjectionInvariant {
-                    receipt: Box::new(self.failure_receipt(
+                    receipt: self.failure_receipt(
                         &known_subjects,
                         completed_subjects,
                         forms,
                         current_subject,
                         failed_reasons(&reasons),
                         started_at,
-                    )),
+                    ),
                 });
             },
         };
@@ -5512,7 +5594,7 @@ impl WebAssessmentRuntime {
         #[cfg(feature = "websocket-review")]
         if let Some(policy) = self.websocket_review.take() {
             self.websocket_review_audit = Some(if reasons.is_empty() {
-                execute_websocket_review(&self.authority, &policy).await
+                boxed_websocket_review(&self.authority, &policy).await
             } else {
                 websocket_review_not_run(
                     &policy,
@@ -5735,14 +5817,14 @@ impl WebAssessmentRuntime {
                 let current_report =
                     WebAssessmentSubjectReport::failed(current_subject, parts, true);
                 return WebAssessmentRuntimeError::ProjectionInvariant {
-                    receipt: Box::new(self.failure_receipt(
+                    receipt: self.failure_receipt(
                         known_subjects,
                         completed_subjects,
                         forms,
                         current_report,
                         failed_reasons(reasons),
                         started_at,
-                    )),
+                    ),
                 };
             }
         }
@@ -5781,9 +5863,7 @@ impl WebAssessmentRuntime {
                         incomplete_reasons,
                         started_at,
                     );
-                    return WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(receipt),
-                    };
+                    return WebAssessmentRuntimeError::ProjectionInvariant { receipt };
                 }
                 if self
                     .semantic_evidence
@@ -5802,9 +5882,7 @@ impl WebAssessmentRuntime {
                         incomplete_reasons,
                         started_at,
                     );
-                    return WebAssessmentRuntimeError::ProjectionInvariant {
-                        receipt: Box::new(receipt),
-                    };
+                    return WebAssessmentRuntimeError::ProjectionInvariant { receipt };
                 }
                 if let Some(projection) = projection {
                     projection.add_reasons(&mut incomplete_reasons);
@@ -5849,9 +5927,7 @@ impl WebAssessmentRuntime {
                     incomplete_reasons,
                     started_at,
                 );
-                return WebAssessmentRuntimeError::ProjectionInvariant {
-                    receipt: Box::new(receipt),
-                };
+                return WebAssessmentRuntimeError::ProjectionInvariant { receipt };
             },
         }
         let receipt = self.failure_receipt(
@@ -5864,13 +5940,11 @@ impl WebAssessmentRuntime {
         );
         if receipt.inventory_consistent() {
             WebAssessmentRuntimeError::RunFailed {
-                receipt: Box::new(receipt),
+                receipt,
                 source: Box::new(source),
             }
         } else {
-            WebAssessmentRuntimeError::ProjectionInvariant {
-                receipt: Box::new(receipt),
-            }
+            WebAssessmentRuntimeError::ProjectionInvariant { receipt }
         }
     }
 
@@ -5882,7 +5956,7 @@ impl WebAssessmentRuntime {
         current_subject: WebAssessmentSubjectReport,
         mut incomplete_reasons: BTreeSet<WebAssessmentIncompleteReason>,
         started_at: tokio::time::Instant,
-    ) -> WebAssessmentFailureReceipt {
+    ) -> Box<WebAssessmentFailureReceipt> {
         let semantics =
             self.extract_semantics_and_refresh_limits(&mut incomplete_reasons, started_at);
         let completed_urls: BTreeSet<_> = completed_subjects
@@ -5969,7 +6043,7 @@ impl WebAssessmentRuntime {
             .iter()
             .map(String::len)
             .sum();
-        WebAssessmentFailureReceipt {
+        Box::new(WebAssessmentFailureReceipt {
             completed_subjects,
             pending_subjects,
             forms,
@@ -5990,7 +6064,7 @@ impl WebAssessmentRuntime {
             committed_passive_observations: self.passive_ledger.observations().len(),
             usage,
             transport: self.authority.request_accounting().dispatch_audit(),
-        }
+        })
     }
 
     fn usage(

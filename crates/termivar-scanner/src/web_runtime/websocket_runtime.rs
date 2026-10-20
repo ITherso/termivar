@@ -1175,7 +1175,7 @@ impl WebSocketReviewRuntime {
     }
 
     pub(super) async fn execute(self) -> WebAssessmentWebSocketReviewAudit {
-        self.execute_inner(None).await
+        boxed_websocket_child(|| self.execute_inner(None)).await
     }
 
     #[cfg(feature = "supplied-session-review")]
@@ -1183,7 +1183,7 @@ impl WebSocketReviewRuntime {
         self,
         authorization: &SuppliedSessionAuthorization,
     ) -> WebAssessmentWebSocketReviewAudit {
-        self.execute_inner(Some(authorization)).await
+        boxed_websocket_child(|| self.execute_inner(Some(authorization))).await
     }
 
     async fn execute_inner(
@@ -1934,13 +1934,22 @@ impl WebSocketReviewRuntime {
     }
 }
 
+// Allocate the child before polling it, including its construction copies. The
+// immediate factory retains no independent task, authority, lease or retry loop.
+#[inline(never)]
+fn boxed_websocket_child<F: std::future::Future>(
+    make: impl FnOnce() -> F,
+) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 /// Executes one selected policy or returns a value-free authority refusal audit.
 pub(crate) async fn execute_websocket_review(
     authority: &SharedWebRuntimeAuthority,
     policy: &WebSocketReviewPolicy,
 ) -> WebAssessmentWebSocketReviewAudit {
     match authority.mint_websocket_review(policy) {
-        Ok(runtime) => runtime.execute().await,
+        Ok(runtime) => boxed_websocket_child(|| runtime.execute()).await,
         Err(error) => {
             let audit = WebSocketReviewRuntime::new(
                 policy,
@@ -1971,9 +1980,10 @@ pub(super) async fn execute_supplied_session_websocket_review(
 ) -> WebAssessmentWebSocketReviewAudit {
     match authority.mint_supplied_session_websocket(policy, permit) {
         Ok(runtime) => {
-            runtime
-                .execute_with_supplied_authorization(permit.authorization())
-                .await
+            boxed_websocket_child(|| {
+                runtime.execute_with_supplied_authorization(permit.authorization())
+            })
+            .await
         },
         Err(error) => {
             let audit = WebSocketReviewRuntime::new(

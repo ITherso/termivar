@@ -1293,7 +1293,24 @@ pub(crate) struct ProfileScanRuntimeOptions {
 /// [`ProfileScanOutput`] deliberately avoids coupling this module to the
 /// CLI-local argument enums. The absence-of-`--profile` compatibility path
 /// must never call this function.
-pub(crate) async fn run_profile_scan(
+#[inline(never)]
+pub(crate) fn run_profile_scan(
+    target: Url,
+    profile: ScanProfileV1,
+    output: ProfileScanOutput,
+    runtime_options: ProfileScanRuntimeOptions,
+) -> std::pin::Pin<
+    Box<impl std::future::Future<Output = Result<AssessmentScanExecution, Box<dyn Error>>>>,
+> {
+    Box::pin(run_profile_scan_inner(
+        target,
+        profile,
+        output,
+        runtime_options,
+    ))
+}
+
+async fn run_profile_scan_inner(
     target: Url,
     profile: ScanProfileV1,
     output: ProfileScanOutput,
@@ -1693,6 +1710,73 @@ async fn run_web_review(
     target: Url,
     options: WebReviewRunOptions,
 ) -> Result<AssessmentScanExecution, Box<dyn Error>> {
+    let PreparedWebReview {
+        mut runtime,
+        mut progress,
+        finish,
+    } = prepare_web_review(target, options)?;
+    let runtime_result = {
+        let mut analysis = boxed_web_review_analysis(runtime.as_mut());
+        if let Some(session) = progress.as_mut() {
+            let mut cadence = ProgressCadence::new(tokio::time::Instant::now(), PROGRESS_PERIOD);
+            let timer = tokio::time::sleep_until(cadence.deadline());
+            tokio::pin!(timer);
+            loop {
+                tokio::select! {
+                    biased;
+                    result = &mut analysis => break result,
+                    () = &mut timer => {
+                        session.periodic_snapshot();
+                        cadence.advance_after_emission(tokio::time::Instant::now());
+                        timer.as_mut().reset(cadence.deadline());
+                    },
+                }
+            }
+        } else {
+            analysis.await
+        }
+    };
+    finish_web_review(runtime_result, finish, progress)
+}
+
+/// Construct the analysis future before polling it, so the temporary used by
+/// Box::pin is not part of the poll frame that calls the assessment recursively.
+#[inline(never)]
+fn boxed_web_review_analysis(
+    runtime: &mut WebAssessmentRuntime,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = WebReviewRuntimeResult> + '_>> {
+    Box::pin(runtime.analyze())
+}
+
+type WebReviewRuntimeResult =
+    Result<WebAssessmentRunReport, termivar_scanner::web_runtime::WebAssessmentRuntimeError>;
+
+/// Setup and rendering must not reserve their large debug-build temporaries on
+/// the stack while the assessment future is polled. Boxing only future storage
+/// does not shrink the poll frame. These synchronous seams retain one runtime,
+/// one cancellation owner and the original request/publication order.
+struct PreparedWebReview {
+    runtime: Box<WebAssessmentRuntime>,
+    progress: Option<ProgressSession>,
+    finish: Box<WebReviewFinishOptions>,
+}
+
+struct WebReviewFinishOptions {
+    target_origin: String,
+    profile: ScanProfileV1,
+    output: ProfileScanOutput,
+    #[cfg(feature = "jwt-policy-review")]
+    jwt_policy_review: Option<JwtPolicyReviewAudit>,
+    #[cfg(feature = "control-reference-mapping")]
+    control_reference_mapping: bool,
+    #[cfg(feature = "recon-snapshot-import")]
+    recon_snapshot: Option<ReconSnapshot>,
+}
+
+fn prepare_web_review(
+    target: Url,
+    options: WebReviewRunOptions,
+) -> Result<PreparedWebReview, Box<dyn Error>> {
     let WebReviewRunOptions {
         target_origin,
         profile,
@@ -1879,12 +1963,8 @@ async fn run_web_review(
     if wordpress_supplied_session {
         builder = builder.with_wordpress_supplied_session();
     }
-    // Keep the composed runtime and its analysis future off the executable's
-    // main-thread stack. Windows reserves a smaller main stack than the other
-    // native targets, while feature-gated audit state still belongs to this
-    // one runtime and can grow independently of the CLI dispatch frame.
     let mut runtime = Box::new(builder.build()?);
-    let mut progress = if progress_requested {
+    let progress = if progress_requested {
         let observer = runtime.progress_observer().ok_or_else(|| {
             std::io::Error::other("assessment progress observer could not be created")
         })?;
@@ -1892,25 +1972,39 @@ async fn run_web_review(
     } else {
         None
     };
-    let mut analysis = Box::pin(runtime.analyze());
-    let runtime_result = if let Some(session) = progress.as_mut() {
-        let mut cadence = ProgressCadence::new(tokio::time::Instant::now(), PROGRESS_PERIOD);
-        let timer = tokio::time::sleep_until(cadence.deadline());
-        tokio::pin!(timer);
-        loop {
-            tokio::select! {
-                biased;
-                result = &mut analysis => break result,
-                () = &mut timer => {
-                    session.periodic_snapshot();
-                    cadence.advance_after_emission(tokio::time::Instant::now());
-                    timer.as_mut().reset(cadence.deadline());
-                },
-            }
-        }
-    } else {
-        analysis.await
-    };
+    Ok(PreparedWebReview {
+        runtime,
+        progress,
+        finish: Box::new(WebReviewFinishOptions {
+            target_origin,
+            profile,
+            output,
+            #[cfg(feature = "jwt-policy-review")]
+            jwt_policy_review,
+            #[cfg(feature = "control-reference-mapping")]
+            control_reference_mapping,
+            #[cfg(feature = "recon-snapshot-import")]
+            recon_snapshot,
+        }),
+    })
+}
+
+fn finish_web_review(
+    runtime_result: WebReviewRuntimeResult,
+    finish: Box<WebReviewFinishOptions>,
+    mut progress: Option<ProgressSession>,
+) -> Result<AssessmentScanExecution, Box<dyn Error>> {
+    let WebReviewFinishOptions {
+        target_origin,
+        profile,
+        output,
+        #[cfg(feature = "jwt-policy-review")]
+        jwt_policy_review,
+        #[cfg(feature = "control-reference-mapping")]
+        control_reference_mapping,
+        #[cfg(feature = "recon-snapshot-import")]
+        recon_snapshot,
+    } = *finish;
     match runtime_result {
         Ok(report) if matches!(report.completion(), WebAssessmentCompletion::Complete) => {
             if let Some(session) = progress.as_mut() {

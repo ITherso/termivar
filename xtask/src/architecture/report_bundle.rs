@@ -38,6 +38,16 @@ fn assessment_flow_violations(source: &str) -> Result<Vec<String>, syn::Error> {
             "web-review report bundle boundary must retain `run_web_review`".to_owned(),
         ]);
     };
+    let split_names = [
+        "prepare_web_review",
+        "boxed_web_review_analysis",
+        "finish_web_review",
+    ];
+    if syntax.items.iter().any(|item| {
+        matches!(item, Item::Fn(item) if split_names.iter().any(|name| item.sig.ident == *name))
+    }) {
+        return Ok(split_assessment_flow_violations(&syntax, &functions));
+    }
     let mut visitor = AssessmentFlowVisitor::default();
     visitor.visit_block(&function.block);
     if functions.len() != 1
@@ -62,8 +72,119 @@ fn assessment_flow_violations(source: &str) -> Result<Vec<String>, syn::Error> {
     }
 }
 
+/// Follow only the three named private allocation seams, not arbitrary helpers
+/// or whole-file substrings. Setup, one awaited analysis and composition retain
+/// separate roles and an exact caller order.
+fn split_assessment_flow_violations(syntax: &syn::File, entry: &[&ItemFn]) -> Vec<String> {
+    let find = |name: &str| {
+        let matches: Vec<_> = syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            })
+            .collect();
+        (matches.len() == 1).then(|| matches[0])
+    };
+    let error = || {
+        vec![
+        "split web-review output must retain the exact private prepare -> heap-pinned analysis -> finish chain with one runtime, one awaited analysis, one composition and one bundle render".to_owned(),
+    ]
+    };
+    let (Some(prepare), Some(factory), Some(finish)) = (
+        find("prepare_web_review"),
+        find("boxed_web_review_analysis"),
+        find("finish_web_review"),
+    ) else {
+        return error();
+    };
+    if entry.len() != 1
+        || entry[0].sig.asyncness.is_none()
+        || [entry[0], prepare, factory, finish].iter().any(|function| {
+            !matches!(function.vis, Visibility::Inherited)
+                || function.sig.unsafety.is_some()
+                || function.sig.abi.is_some()
+        })
+        || [prepare, factory, finish]
+            .iter()
+            .any(|function| function.sig.asyncness.is_some())
+        || factory.block.stmts.len() != 1
+        || !factory.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("inline")
+                && matches!(&attribute.meta, syn::Meta::List(list) if list.tokens.to_string() == "never")
+        })
+        || !matches!(&factory.block.stmts[0], syn::Stmt::Expr(Expr::Call(call), None)
+            if expression_path(call.func.as_ref()).as_deref() == Some("Box::pin")
+                && call.args.len() == 1
+                && call.args.first().is_some_and(is_runtime_analysis))
+        || factory.sig.inputs.len() != 1
+        || !matches!(factory.sig.inputs.first(), Some(syn::FnArg::Typed(argument))
+            if matches!(argument.pat.as_ref(), syn::Pat::Ident(binding) if binding.ident == "runtime")
+                && matches!(argument.ty.as_ref(), Type::Reference(reference)
+                    if reference.mutability.is_some()
+                        && matches!(reference.elem.as_ref(), Type::Path(path)
+                            if path.path.is_ident("WebAssessmentRuntime"))))
+    {
+        return error();
+    }
+    let mut run = AssessmentFlowVisitor {
+        split: true,
+        ..AssessmentFlowVisitor::default()
+    };
+    run.visit_block(&entry[0].block);
+    let mut setup = AssessmentFlowVisitor::default();
+    setup.visit_block(&prepare.block);
+    let mut output = AssessmentFlowVisitor::default();
+    output.visit_block(&finish.block);
+    let no_analysis = |visitor: &AssessmentFlowVisitor| {
+        visitor.analyze == 0
+            && visitor.analysis_future == 0
+            && visitor.analysis_pin == 0
+            && visitor.analysis_heap_pin == 0
+            && visitor.analysis_select == 0
+            && visitor.analysis_await == 0
+            && visitor.split_calls.is_empty()
+    };
+    if run.invalid
+        || setup.invalid
+        || output.invalid
+        || run.split_calls != ["prepare", "analysis", "finish"]
+        || run.prepared_binding != 1
+        || run.result_binding != 1
+        || run.order != ["analyze"]
+        || run.runtime_heap != 0
+        || run.analyze != 1
+        || run.analysis_future != 1
+        || run.analysis_pin != 1
+        || run.analysis_heap_pin != 1
+        || run.analysis_select != 1
+        || run.analysis_await != 1
+        || run.compose != 0
+        || run.bundle != 0
+        || setup.runtime_heap != 1
+        || !no_analysis(&setup)
+        || setup.compose != 0
+        || setup.bundle != 0
+        || !setup.order.is_empty()
+        || output.runtime_heap != 0
+        || !no_analysis(&output)
+        || output.compose != 1
+        || output.bundle != 1
+        || output.order != ["compose", "bundle"]
+    {
+        error()
+    } else {
+        Vec::new()
+    }
+}
+
 #[derive(Default)]
 struct AssessmentFlowVisitor {
+    split: bool,
+    split_calls: Vec<&'static str>,
+    prepared_binding: usize,
+    result_binding: usize,
     runtime_heap: usize,
     analyze: usize,
     analysis_future: usize,
@@ -79,6 +200,25 @@ struct AssessmentFlowVisitor {
 
 impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
     fn visit_local(&mut self, item: &'ast syn::Local) {
+        if self.split {
+            if item.init.as_ref().is_some_and(|initialization| {
+                matches!(initialization.expr.as_ref(), Expr::Try(attempt)
+                    if matches!(attempt.expr.as_ref(), Expr::Call(call)
+                        if expression_path(call.func.as_ref()).as_deref() == Some("prepare_web_review")))
+            }) && prepared_state_pattern_is_exact(&item.pat)
+            {
+                self.prepared_binding += 1;
+            }
+            if matches!(&item.pat, syn::Pat::Ident(binding) if binding.ident == "runtime_result") {
+                if item.init.as_ref().is_some_and(|initialization| {
+                    analysis_result_block_is_exact(initialization.expr.as_ref())
+                }) {
+                    self.result_binding += 1;
+                } else {
+                    self.invalid = true;
+                }
+            }
+        }
         let is_heap_runtime = matches!(&item.pat, syn::Pat::Ident(binding)
             if binding.ident == "runtime")
             && item.init.as_ref().is_some_and(|initialization| {
@@ -106,15 +246,31 @@ impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
                     && call.args.len() == 1
                     && call.args.first().is_some_and(is_runtime_analysis))
         });
-        let is_analysis_binding = is_direct_analysis || is_heap_pinned_analysis;
+        let is_factory_analysis = self.split
+            && analysis_initializer.is_some_and(|expression| {
+                matches!(expression, Expr::Call(call)
+                    if expression_path(call.func.as_ref()).as_deref() == Some("boxed_web_review_analysis")
+                        && call.args.len() == 1
+                        && matches!(call.args.first(), Some(Expr::MethodCall(argument))
+                            if expression_is_path(argument.receiver.as_ref(), "runtime")
+                                && argument.method == "as_mut" && argument.args.is_empty()))
+            });
+        let is_analysis_binding =
+            is_direct_analysis || is_heap_pinned_analysis || is_factory_analysis;
         if is_analysis_binding {
+            if self.split && !is_factory_analysis {
+                self.invalid = true;
+            }
             self.analyze += 1;
             self.analysis_future += 1;
-            if is_heap_pinned_analysis {
+            if is_heap_pinned_analysis || is_factory_analysis {
                 self.analysis_pin += 1;
                 self.analysis_heap_pin += 1;
             }
             self.order.push("analyze");
+            if is_factory_analysis {
+                self.split_calls.push("analysis");
+            }
             return;
         }
         syn::visit::visit_local(self, item);
@@ -132,6 +288,11 @@ impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
     }
 
     fn visit_expr_method_call(&mut self, item: &'ast syn::ExprMethodCall) {
+        if item.method == "build" {
+            // The one recognized Box::new(builder.build()?) local is consumed
+            // above. Any additional build is outside the closed runtime seam.
+            self.invalid = true;
+        }
         if item.method == "analyze" {
             self.analyze += 1;
             self.order.push("analyze");
@@ -142,6 +303,21 @@ impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
 
     fn visit_expr_call(&mut self, item: &'ast syn::ExprCall) {
         match expression_path(item.func.as_ref()).as_deref() {
+            Some("prepare_web_review") => {
+                self.split_calls.push("prepare");
+                if !self.split || !call_arguments_are_paths(item, &["target", "options"]) {
+                    self.invalid = true;
+                }
+            },
+            Some("finish_web_review") => {
+                self.split_calls.push("finish");
+                if !self.split
+                    || !call_arguments_are_paths(item, &["runtime_result", "finish", "progress"])
+                {
+                    self.invalid = true;
+                }
+            },
+            Some("boxed_web_review_analysis") => self.invalid = true,
             Some("ReportGenerator::compose_assessment") => {
                 self.compose += 1;
                 self.order.push("compose");
@@ -185,6 +361,54 @@ impl<'ast> Visit<'ast> for AssessmentFlowVisitor {
         }
         syn::visit::visit_macro(self, item);
     }
+}
+
+fn prepared_state_pattern_is_exact(pattern: &syn::Pat) -> bool {
+    let syn::Pat::Struct(pattern) = pattern else {
+        return false;
+    };
+    if !pattern.path.is_ident("PreparedWebReview")
+        || pattern.rest.is_some()
+        || pattern.fields.len() != 3
+    {
+        return false;
+    }
+    let mut names = BTreeSet::new();
+    pattern.fields.iter().all(|field| {
+        let (syn::Member::Named(name), syn::Pat::Ident(binding)) =
+            (&field.member, field.pat.as_ref())
+        else {
+            return false;
+        };
+        name == &binding.ident
+            && binding.by_ref.is_none()
+            && binding.subpat.is_none()
+            && names.insert(name.to_string())
+    }) && names
+        == BTreeSet::from([
+            "finish".to_owned(),
+            "progress".to_owned(),
+            "runtime".to_owned(),
+        ])
+}
+
+fn analysis_result_block_is_exact(expression: &Expr) -> bool {
+    let Expr::Block(block) = expression else {
+        return false;
+    };
+    if block.label.is_some() || block.block.stmts.len() != 2 {
+        return false;
+    }
+    let [syn::Stmt::Local(analysis), syn::Stmt::Expr(Expr::If(branch), None)] =
+        block.block.stmts.as_slice()
+    else {
+        return false;
+    };
+    matches!(&analysis.pat, syn::Pat::Ident(binding) if binding.ident == "analysis")
+        && matches!(&branch.else_branch, Some((_, otherwise))
+            if matches!(otherwise.as_ref(), Expr::Block(block)
+                if matches!(block.block.stmts.as_slice(), [syn::Stmt::Expr(Expr::Await(awaited), None)]
+                    if expression_is_path(awaited.base.as_ref(), "analysis"))))
 }
 
 fn is_runtime_analysis(expression: &Expr) -> bool {
@@ -980,6 +1204,34 @@ mod tests {
         }
     "#;
 
+    const VALID_SPLIT_ASSESSMENT_FLOW: &str = r#"
+        async fn run_web_review(target: Url, options: Options) {
+            let PreparedWebReview { mut runtime, finish, mut progress } = prepare_web_review(target, options)?;
+            let runtime_result = {
+                let mut analysis = boxed_web_review_analysis(runtime.as_mut());
+                if show_progress {
+                    tokio::select! { result = &mut analysis => result }
+                } else {
+                    analysis.await
+                }
+            };
+            finish_web_review(runtime_result, finish, progress)
+        }
+        fn prepare_web_review(target: Url, options: Options) {
+            let mut runtime = Box::new(builder.build()?);
+            PreparedWebReview { runtime, finish, progress }
+        }
+        #[inline(never)]
+        fn boxed_web_review_analysis(runtime: &mut WebAssessmentRuntime) -> Pin<Box<impl Future>> {
+            Box::pin(runtime.analyze())
+        }
+        fn finish_web_review(runtime_result: Result, finish: Finish, progress: Progress) {
+            let report = runtime_result?;
+            let product = ReportGenerator::compose_assessment(report, profile);
+            report_bundle::render_report_bundle(&product)
+        }
+    "#;
+
     const VALID: &str = r#"
         use same_file::Handle;
         use sha2::{Digest, Sha256};
@@ -1243,6 +1495,99 @@ mod tests {
                 .is_empty(),
             "accepted the stack-pinned runtime analysis regression"
         );
+    }
+
+    #[test]
+    fn split_assessment_flow_keeps_closed_roles_and_single_borrowed_analysis() {
+        assert!(assessment_flow_violations(VALID_SPLIT_ASSESSMENT_FLOW)
+            .unwrap()
+            .is_empty());
+        for (from, to) in [
+            (
+                "prepare_web_review(target, options)?",
+                "prepare_web_review(other_target, options)?",
+            ),
+            ("runtime.as_mut()", "other_runtime.as_mut()"),
+            ("Box::pin(runtime.analyze())", "Box::new(runtime.analyze())"),
+            (
+                "fn boxed_web_review_analysis",
+                "pub fn boxed_web_review_analysis",
+            ),
+            ("#[inline(never)]", "#[inline(always)]"),
+            (
+                "runtime: &mut WebAssessmentRuntime",
+                "runtime: &mut OtherRuntime",
+            ),
+            ("fn prepare_web_review", "async fn prepare_web_review"),
+            ("fn finish_web_review", "async fn finish_web_review"),
+            (
+                "let mut runtime = Box::new(builder.build()?);",
+                "let mut runtime = builder.build()?;",
+            ),
+            (
+                "let mut runtime = Box::new(builder.build()?);",
+                "let mut runtime = Box::new(builder.build()?); let other = builder.build()?;",
+            ),
+            ("analysis.await", "other_analysis.await"),
+            (
+                "finish_web_review(runtime_result, finish, progress)",
+                "finish_web_review(other_result, finish, progress)",
+            ),
+            (
+                "ReportGenerator::compose_assessment(report, profile)",
+                "ReportGenerator::compose_assessment(report, other_profile)",
+            ),
+            (
+                "report_bundle::render_report_bundle(&product)",
+                "report_bundle::render_report_bundle(&report)",
+            ),
+            (
+                "Box::pin(runtime.analyze())",
+                "Box::pin(runtime.analyze()); Box::pin(runtime.analyze())",
+            ),
+        ] {
+            let changed = VALID_SPLIT_ASSESSMENT_FLOW.replacen(from, to, 1);
+            assert_ne!(
+                changed, VALID_SPLIT_ASSESSMENT_FLOW,
+                "missing mutation anchor: {from}"
+            );
+            assert!(
+                !assessment_flow_violations(&changed).unwrap().is_empty(),
+                "accepted {to}"
+            );
+        }
+        let duplicate = format!("{VALID_SPLIT_ASSESSMENT_FLOW}\nfn prepare_web_review() {{}}");
+        assert!(!assessment_flow_violations(&duplicate).unwrap().is_empty());
+        let early_finish = VALID_SPLIT_ASSESSMENT_FLOW.replacen(
+            "let runtime_result = {",
+            "finish_web_review(runtime_result, finish, progress); let runtime_result = {",
+            1,
+        );
+        assert!(!assessment_flow_violations(&early_finish)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn split_assessment_flow_rejects_discarded_or_substituted_helper_results() {
+        for (from, to) in [
+            (
+                "= prepare_web_review(target, options)?;",
+                "= alternate_prepare(target, options)?; let _ = prepare_web_review(target, options)?;",
+            ),
+            ("let runtime_result = {", "let _discarded_result = {"),
+        ] {
+            let mut changed = VALID_SPLIT_ASSESSMENT_FLOW.replacen(from, to, 1);
+            assert_ne!(changed, VALID_SPLIT_ASSESSMENT_FLOW, "missing mutation anchor: {from}");
+            if to.contains("_discarded_result") {
+                changed = changed.replacen(
+                    "finish_web_review(runtime_result, finish, progress)",
+                    "let runtime_result = unrelated_report(); finish_web_review(runtime_result, finish, progress)",
+                    1,
+                );
+            }
+            assert!(!assessment_flow_violations(&changed).unwrap().is_empty(), "accepted {to}");
+        }
     }
 
     #[test]

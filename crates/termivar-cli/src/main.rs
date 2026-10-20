@@ -1454,6 +1454,15 @@ enum Commands {
     },
 }
 
+/// Construct the owned scan future outside the command poll frame. This leaves
+/// its existing input/preflight sequence and single assessment runtime intact.
+#[inline(never)]
+fn boxed_scan(
+    invocation: ScanArgs,
+) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<(), Box<dyn std::error::Error>>>>> {
+    Box::pin(run_deterministic_scan(invocation))
+}
+
 async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std::error::Error>> {
     let ScanArgs {
         target,
@@ -2733,7 +2742,7 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn run_existing_command(command: Option<Commands>) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        Some(Commands::Scan(args)) => run_deterministic_scan(*args).await?,
+        Some(Commands::Scan(args)) => boxed_scan(*args).await?,
         Some(Commands::Capabilities(_)) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
