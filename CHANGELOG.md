@@ -27,6 +27,10 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ### Fixed
 
+- Updated the workspace, fuzz, and current-head compatibility lockfiles to
+  `quinn-proto 0.11.18` and `rustls 0.23.46` for the published RustSec fixes,
+  without changing dependency features, the Rust 1.88 minimum, or package
+  composition.
 - Corrected the non-default SSRF OAST review's polling-phase completion: the
   candidate phase stops after its expected fresh event, while the replay phase
   requires both distinct expected events or an existing bound/terminal state.
