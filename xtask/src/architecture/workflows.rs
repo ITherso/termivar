@@ -262,6 +262,8 @@ const WINDOWS_ASSESSMENT_STACK_SMOKE_GATE: &str = r#"      - name: Guard the nat
         run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli --test websocket_review_cli --test websocket_supplied_session_cli -- --nocapture"#;
 const SECRET_EXPOSURE_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture"#;
+const VALUE_FREE_GRAPHQL_SMOKE_GATE: &str = r#"      - name: Exercise value-free GraphQL privacy composition CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features graphql-review,secret-exposure-review --test graphql_secret_exposure_cli -- --nocapture"#;
 const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture"#;
 const TLS_NEGOTIATION_OWNED_HTTPS_SMOKE_GATE: &str = r#"      - name: Exercise active TLS negotiation through the owned HTTPS profile
@@ -969,6 +971,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must compile and run the exact release-profile feature-minimal passive secret-exposure CLI integration test"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-smoke",
+        "Exercise value-free GraphQL privacy composition CLI",
+        VALUE_FREE_GRAPHQL_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact unsuppressed release-profile value-free GraphQL privacy composition CLI regression"
         ));
     }
     if !job_has_exact_step(
@@ -4147,6 +4159,53 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("secret-exposure"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_free_graphql_runtime_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        let violations =
+            capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), valid.clone())]);
+        assert!(violations.is_empty(), "{violations:?}");
+        assert_eq!(valid.matches(VALUE_FREE_GRAPHQL_SMOKE_GATE).count(), 1);
+        for mutation in [
+            valid.replacen(VALUE_FREE_GRAPHQL_SMOKE_GATE, "", 1),
+            valid.replacen(
+                VALUE_FREE_GRAPHQL_SMOKE_GATE,
+                &VALUE_FREE_GRAPHQL_SMOKE_GATE.replace(
+                    "--features graphql-review,secret-exposure-review",
+                    "--features graphql-review",
+                ),
+                1,
+            ),
+            valid.replacen(
+                VALUE_FREE_GRAPHQL_SMOKE_GATE,
+                &VALUE_FREE_GRAPHQL_SMOKE_GATE.replace(
+                    "--test graphql_secret_exposure_cli",
+                    "--test secret_exposure_cli",
+                ),
+                1,
+            ),
+            valid.replacen(
+                VALUE_FREE_GRAPHQL_SMOKE_GATE,
+                &format!("{VALUE_FREE_GRAPHQL_SMOKE_GATE}\n        continue-on-error: true"),
+                1,
+            ),
+            valid.replacen(
+                VALUE_FREE_GRAPHQL_SMOKE_GATE,
+                &format!("{VALUE_FREE_GRAPHQL_SMOKE_GATE}\n        if: false"),
+                1,
+            ),
+        ] {
+            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("value-free GraphQL"),
                 "{violations:?}"
             );
         }

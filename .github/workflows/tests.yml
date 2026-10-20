@@ -337,6 +337,8 @@ jobs:
         run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli --test websocket_review_cli --test websocket_supplied_session_cli -- --nocapture
       - name: Exercise opt-in passive secret-exposure review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture
+      - name: Exercise value-free GraphQL privacy composition CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features graphql-review,secret-exposure-review --test graphql_secret_exposure_cli -- --nocapture
       - name: Exercise opt-in passive TLS observation CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture
       - name: Exercise trusted passive TLS observation broker path
