@@ -15,6 +15,17 @@ Current `main` is the unreleased `0.10.0-alpha.3` development line. Main-workflo
 archives named with `termivar-main-...` remain temporary candidate evidence,
 not published release downloads.
 
+For an already acquired current development executable, the
+[one-command local demo](GETTING_STARTED.md#one-command-development-demo) runs
+`python scripts/local_demo.py --binary PATH_TO_EXECUTABLE --output FRESH_DIRECTORY`.
+It uses only the fixed benign loopback fixture, publishes one report bundle,
+checks no-overwrite, then shuts the fixture down before native offline Verify
+and self-Compare. It neither downloads/builds a candidate nor changes host
+security controls. Its observed version/hash and optional declared source ref
+remain separate; passing this demo is not archive provenance, complete feature
+qualification, publication, or S16 closeout. The preserved alpha.2 acquisition
+and walkthrough contracts below remain unchanged.
+
 The CLI's default feature list is empty; its scanner dependency enables
 `scanning` and `reporting`. The current untagged alpha.3 development
 `release-bundle` additionally compiles `artifact-adapter`,

@@ -5,6 +5,49 @@ demonstration. It is credential-free and uses only numeric loopback
 `127.0.0.1`. It demonstrates command behavior and report reading, not detection
 accuracy or the security of an application.
 
+## One-command development demo
+
+With Python **3.12.4 or newer**, a reviewed current tools checkout, and an
+already acquired local development executable, run:
+
+```bash
+python3 scripts/local_demo.py --binary ./target/release/termivar --output local-demo-output
+```
+
+Windows PowerShell:
+
+```powershell
+python scripts/local_demo.py --binary .\target\release\termivar.exe --output local-demo-output
+if ($LASTEXITCODE -ne 0) { throw "Local demo did not pass; inspect its private evidence" }
+```
+
+Select the actual binary path on your machine. The output directory must be
+fresh, and its parent must already be a trusted, private user-owned directory.
+The helper does not acquire or build a binary. Keep `local_demo.py`,
+`first_use.py`, and `report_bundle_example.py` together in the tools checkout.
+
+The command starts the fixed harmless numeric-loopback fixture, runs one
+`scan --profile web-review --report-dir` assessment, and checks that a repeated
+write is refused before target activity. It then **stops the fixture** and runs
+the executable's offline Report Verify and self-Compare commands. Success
+requires a complete, unchanged three-file bundle, matching integrity checks,
+and all source item identities in the four-array comparison. It does not
+request optional review capabilities or accept a target URL.
+
+Open `local-demo-output/bundle/assessment.html` yourself after success; the
+helper never opens a browser. `demo-evidence.json` and bounded `captures/`
+remain private inside the selected output directory. Captures contain local
+command paths and are not automatically safe to publish. The executable's
+version and SHA-256 are observed; optional `--source-ref FULL_SHA_OR_VERSION_TAG`
+is only an operator declaration, not source authentication. Trusted-parent and
+quiescent-file assumptions apply; hashes are not an atomic filesystem snapshot.
+
+A host-blocked executable or a binary without the required report commands
+produces a failed result with available private evidence. Leave host protections
+enabled. This demo qualifies its fixed command/report flow, not detection
+accuracy, a feature-enabled package, or the complete S16 program qualification.
+The pinned prerelease walkthrough below retains its historical identities.
+
 Choose one binary first:
 
 - [Published prerelease: v0.10.0-alpha.2](DISTRIBUTION.md#try-the-published-prerelease):
