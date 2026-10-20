@@ -222,9 +222,19 @@ impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
 }
 
 fn increment(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(1))
-    });
+    // Preserve the successful RMW even when saturation leaves the value unchanged.
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_add(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 /// Cache statistics snapshot.
@@ -240,6 +250,29 @@ pub struct CacheStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_saturating_cache_increment_preserves_zero_max_and_concurrent_updates() {
+        let counter = AtomicU64::new(0);
+        increment(&counter);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        counter.store(u64::MAX - 1, Ordering::Relaxed);
+        increment(&counter);
+        increment(&counter);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+
+        counter.store(0, Ordering::Relaxed);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..1000 {
+                        increment(&counter);
+                    }
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 4000);
+    }
 
     #[derive(Default)]
     struct TestClock {

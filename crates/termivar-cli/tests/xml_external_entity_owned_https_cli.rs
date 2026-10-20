@@ -928,7 +928,7 @@ async fn run_target_server(
                     )
                     .await
                 },
-                Err(error) => Err(error),
+                Err(error) => Err(note_target_error(TargetFailureStage::FirstRead, error)),
             };
             if result.is_err() {
                 errors.lock().unwrap().push("target_connection_failed");
@@ -950,6 +950,42 @@ struct FixtureRequest {
     cookie_header_present: bool,
 }
 
+#[derive(Clone, Copy)]
+enum TargetFailureStage {
+    FirstRead,
+    RequestRead,
+    Parser,
+    ResponseWrite,
+}
+
+fn target_failure_fact(stage: TargetFailureStage, kind: io::ErrorKind) -> String {
+    let stage = match stage {
+        TargetFailureStage::FirstRead => "first_application_read",
+        TargetFailureStage::RequestRead => "request_read",
+        TargetFailureStage::Parser => "expat_parser",
+        TargetFailureStage::ResponseWrite => "response_write",
+    };
+    format!("owned_https_target_failure stage={stage} kind={kind:?}")
+}
+
+fn note_target_error(stage: TargetFailureStage, error: io::Error) -> io::Error {
+    note_target_error_to(stage, error, &mut std::io::stderr())
+}
+
+fn note_target_error_to(
+    stage: TargetFailureStage,
+    error: io::Error,
+    output: &mut impl std::io::Write,
+) -> io::Error {
+    // Only closed stage/kind facts are printed. Preserve the original error,
+    // and never let a failed diagnostic write replace the acceptance failure.
+    let _ = output.write_fmt(format_args!(
+        "{}\n",
+        target_failure_fact(stage, error.kind())
+    ));
+    error
+}
+
 async fn handle_target_connection<S>(
     mut stream: S,
     provider_port: u16,
@@ -961,7 +997,9 @@ async fn handle_target_connection<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let request = read_request(&mut stream, provider_port, initial_bytes).await?;
+    let request = read_request(&mut stream, provider_port, initial_bytes)
+        .await
+        .map_err(|error| note_target_error(TargetFailureStage::RequestRead, error))?;
     let mode = ParserMode::from_atomic(parser_mode.load(Ordering::SeqCst));
     let (envelope_role, private_callback_sentinels) = if request.method == "POST" {
         classify_xml_envelope(&request.body)
@@ -969,7 +1007,9 @@ where
         (XmlEnvelopeRole::Invalid, Vec::new())
     };
     let external_entity_count = if request.method == "POST" {
-        run_expat_parser(&request.body, mode, provider_port).await?
+        run_expat_parser(&request.body, mode, provider_port)
+            .await
+            .map_err(|error| note_target_error(TargetFailureStage::Parser, error))?
     } else {
         0
     };
@@ -1000,7 +1040,9 @@ where
             b"<!doctype html><html><body><main>OWNED_XML_GET_RESPONSE_MUST_NOT_LEAK_2D8B64F0</main></body></html>".as_slice(),
         )
     };
-    write_response(&mut stream, content_type, body).await
+    write_response(&mut stream, content_type, body)
+        .await
+        .map_err(|error| note_target_error(TargetFailureStage::ResponseWrite, error))
 }
 
 async fn read_request<S>(
@@ -1667,6 +1709,47 @@ async fn verify_and_self_compare(scan: &CompletedScan, label: &str) {
         bundle_bytes(&scan.report_dir, &scan.private_sentinels),
         before_offline
     );
+}
+
+#[test]
+fn target_stage_diagnostic_is_bounded_value_free_and_preserves_the_original_error() {
+    for stage in [
+        TargetFailureStage::FirstRead,
+        TargetFailureStage::RequestRead,
+        TargetFailureStage::Parser,
+        TargetFailureStage::ResponseWrite,
+    ] {
+        let error = io::Error::new(io::ErrorKind::TimedOut, "PRIVATE_FIXTURE_ERROR_SENTINEL");
+        let fact = target_failure_fact(stage, error.kind());
+        assert!(fact.len() <= 128);
+        assert!(fact.ends_with("kind=TimedOut"));
+        assert!(!fact.contains("PRIVATE_FIXTURE_ERROR_SENTINEL"));
+        let mut diagnostics = Vec::new();
+        let original = note_target_error_to(stage, error, &mut diagnostics);
+        assert_eq!(diagnostics, format!("{fact}\n").as_bytes());
+        assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(original.to_string(), "PRIVATE_FIXTURE_ERROR_SENTINEL");
+    }
+    assert_eq!(
+        target_failure_fact(TargetFailureStage::Parser, io::ErrorKind::NotFound),
+        "owned_https_target_failure stage=expat_parser kind=NotFound"
+    );
+    struct FailedDiagnostic;
+    impl std::io::Write for FailedDiagnostic {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    let original = note_target_error_to(
+        TargetFailureStage::Parser,
+        io::Error::new(io::ErrorKind::TimedOut, "ORIGINAL_FIXTURE_ERROR"),
+        &mut FailedDiagnostic,
+    );
+    assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(original.to_string(), "ORIGINAL_FIXTURE_ERROR");
 }
 
 #[test]

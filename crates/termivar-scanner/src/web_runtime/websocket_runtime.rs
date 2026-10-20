@@ -938,9 +938,19 @@ impl TransportByteSnapshot {
 }
 
 fn saturating_atomic_add(counter: &AtomicU64, increment: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(increment))
-    });
+    // A zero increment or saturation still performs the original successful RMW.
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_add(increment),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 struct CountingStream<T> {
@@ -1244,8 +1254,12 @@ impl WebSocketReviewRuntime {
         );
         #[cfg(not(feature = "supplied-session-review"))]
         let request = self.client_request();
-        let request = match request {
-            Ok(request) => request,
+        let prepared_transport = request.and_then(|request| {
+            let tls_connector = websocket_tls_connector(&self.endpoint)?;
+            Ok((request, tls_connector))
+        });
+        let (request, tls_connector) = match prepared_transport {
+            Ok(prepared_transport) => prepared_transport,
             Err(failure) => {
                 self.audit.fail(failure);
                 return TransportDispatchOutcome::TransportFailure;
@@ -1265,13 +1279,6 @@ impl WebSocketReviewRuntime {
             .max_message_size(Some(max_inbound))
             .max_frame_size(Some(max_inbound))
             .accept_unmasked_frames(false);
-        let tls_connector = match websocket_tls_connector(&self.endpoint) {
-            Ok(connector) => connector,
-            Err(failure) => {
-                self.audit.fail(failure);
-                return TransportDispatchOutcome::TransportFailure;
-            },
-        };
 
         let Some(host) = self.endpoint.host_str().map(str::to_owned) else {
             self.audit
@@ -2070,13 +2077,18 @@ fn websocket_tls_connector(
     // Preserve the existing Mozilla Web-PKI trust and no-client-auth policy,
     // while selecting the reviewed crypto provider and current roots directly.
     // This does not install process-global providers or consult native roots.
-    let config =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(|_| WebSocketReviewFailureKind::InternalInvariant)?
-            .with_root_certificates(websocket_root_store())
-            .with_no_client_auth();
+    let config = websocket_tls_config(rustls::crypto::ring::default_provider())?;
     Ok(Some(Connector::Rustls(Arc::new(config))))
+}
+
+fn websocket_tls_config(
+    provider: rustls::crypto::CryptoProvider,
+) -> Result<ClientConfig, WebSocketReviewFailureKind> {
+    Ok(ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| WebSocketReviewFailureKind::InternalInvariant)?
+        .with_root_certificates(websocket_root_store())
+        .with_no_client_auth())
 }
 
 fn classify_connect_error(error: &TungsteniteError) -> WebSocketReviewFailureKind {
@@ -2144,6 +2156,34 @@ mod tests {
 
     use super::*;
     use crate::{websocket_review::WebSocketReviewPolicy, RuntimeBudget};
+
+    #[test]
+    fn atomic_saturating_transport_add_preserves_zero_max_and_concurrent_updates() {
+        let counter = AtomicU64::new(0);
+        saturating_atomic_add(&counter, 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        saturating_atomic_add(&counter, 7);
+        assert_eq!(counter.load(Ordering::Relaxed), 7);
+        counter.store(u64::MAX - 3, Ordering::Relaxed);
+        saturating_atomic_add(&counter, 2);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX - 1);
+        saturating_atomic_add(&counter, 2);
+        saturating_atomic_add(&counter, 0);
+        saturating_atomic_add(&counter, u64::MAX);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+
+        counter.store(0, Ordering::Relaxed);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..1000 {
+                        saturating_atomic_add(&counter, 3);
+                    }
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 12000);
+    }
 
     fn loopback_policy(
         application: &url::Url,
@@ -3068,6 +3108,72 @@ mod tests {
             WebSocketReviewTerminal::DeadlineReached
         );
         assert!(deadline.is_consistent());
+    }
+
+    #[test]
+    fn tls_config_constructor_unit_rejects_a_provider_without_cipher_suites() {
+        // Pure constructor unit test, not a network/TLS interoperability test.
+        // Production always supplies the unmodified, fixed ring provider above.
+        let mut provider = rustls::crypto::ring::default_provider();
+        provider.cipher_suites.clear();
+        assert!(matches!(
+            websocket_tls_config(provider),
+            Err(WebSocketReviewFailureKind::InternalInvariant)
+        ));
+    }
+
+    #[tokio::test]
+    async fn malformed_private_request_preparation_finishes_lease_without_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let application = url::Url::parse(&format!("http://{address}/application/")).unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/application/socket")).unwrap();
+        let policy = loopback_policy(&application, &endpoint, b"expected", 2_000);
+        let accounting =
+            RequestAccountingBroker::new(RuntimeBudget::default().with_max_total_requests(1));
+        let mut review = runtime(&policy, &application, accounting.clone());
+        // Corrupt only private post-mint state; public policy validation is unchanged.
+        review.application_origin = "invalid\r\norigin".to_owned();
+        let audit = review.execute().await;
+
+        assert_eq!(audit.terminal(), WebSocketReviewTerminal::Incomplete);
+        assert_eq!(
+            audit.first_failure(),
+            Some(WebSocketReviewFailureKind::RequestConstruction)
+        );
+        assert_eq!(audit.request_attempt_count(), 1);
+        assert_eq!(audit.request_admitted_count(), 1);
+        assert_eq!(audit.connection_attempt_count(), 0);
+        assert_eq!(audit.handshake_completed_count(), 0);
+        assert_eq!(audit.outbound_message_count(), 0);
+        assert_eq!(audit.inbound_message_count(), 0);
+        assert_eq!(audit.transport_read_bytes(), 0);
+        assert_eq!(audit.transport_write_bytes(), 0);
+        assert_eq!(audit.accounted_request_body_bytes(), 0);
+        assert_eq!(audit.accounted_response_bytes(), 0);
+        assert!(audit.is_consistent());
+
+        let snapshot = accounting.snapshot();
+        assert_eq!(snapshot.total_requests(), 1);
+        assert_eq!(snapshot.passive_requests(), 1);
+        assert_eq!(snapshot.request_body_bytes(), 0);
+        assert_eq!(snapshot.response_bytes(), 0);
+        let dispatch = accounting.dispatch_audit();
+        assert_eq!(dispatch.receipts().len(), 1);
+        let receipt = &dispatch.receipts()[0];
+        assert_eq!(receipt.action_id(), WEBSOCKET_REVIEW_ACTION_ID);
+        assert_eq!(receipt.stage(), DecisionExecutionStage::Passive);
+        assert_eq!(
+            receipt.outcome(),
+            TransportDispatchOutcome::TransportFailure
+        );
+        assert_eq!(receipt.request_body_bytes(), 0);
+        assert_eq!(receipt.response_bytes(), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
     }
 
     #[test]

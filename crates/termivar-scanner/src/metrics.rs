@@ -199,14 +199,52 @@ fn mean(samples: &[u64]) -> Option<f64> {
 }
 
 fn saturating_add(counter: &AtomicU64, increment: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        Some(current.saturating_add(increment))
-    });
+    // A zero increment or saturation still performs the original successful RMW.
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_add(increment),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_saturating_metrics_add_preserves_zero_max_and_concurrent_updates() {
+        let counter = AtomicU64::new(0);
+        saturating_add(&counter, 0);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        saturating_add(&counter, 7);
+        assert_eq!(counter.load(Ordering::Relaxed), 7);
+        counter.store(u64::MAX - 3, Ordering::Relaxed);
+        saturating_add(&counter, 2);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX - 1);
+        saturating_add(&counter, 2);
+        saturating_add(&counter, 0);
+        saturating_add(&counter, u64::MAX);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+
+        counter.store(0, Ordering::Relaxed);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..1000 {
+                        saturating_add(&counter, 3);
+                    }
+                });
+            }
+        });
+        assert_eq!(counter.load(Ordering::Relaxed), 12000);
+    }
 
     #[test]
     fn missing_denominators_produce_no_ratio() {
