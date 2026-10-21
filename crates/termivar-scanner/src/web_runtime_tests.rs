@@ -2222,7 +2222,23 @@ mod xml_external_entity_runtime_tests {
                 }
             }
         }
-        let _ = client.write_all(&response).await;
+        let Some(header_end) = response.windows(4).position(|part| part == b"\r\n\r\n") else {
+            return;
+        };
+        // This relay handles one request, so it must not advertise a reusable
+        // connection while its FIN races the client's next pooled operation.
+        let mut closing_response = Vec::with_capacity(response.len() + 19);
+        for line in response[..header_end].split(|byte| *byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let name = line.split(|byte| *byte == b':').next().unwrap_or_default();
+            if !name.eq_ignore_ascii_case(b"connection") {
+                closing_response.extend_from_slice(line);
+                closing_response.extend_from_slice(b"\r\n");
+            }
+        }
+        closing_response.extend_from_slice(b"Connection: close\r\n\r\n");
+        closing_response.extend_from_slice(&response[header_end + 4..]);
+        let _ = client.write_all(&closing_response).await;
         let _ = client.shutdown().await;
     }
 
@@ -2258,6 +2274,103 @@ mod xml_external_entity_runtime_tests {
                 return Some(request);
             }
         }
+    }
+
+    fn cancel_on_xml_target_request(
+        observed_requests: Arc<AsyncMutex<Vec<String>>>,
+        cancel_from_host: CancellationToken,
+        scan_terminated: CancellationToken,
+    ) -> JoinHandle<bool> {
+        tokio::spawn(async move {
+            loop {
+                if scan_terminated.is_cancelled() {
+                    return false;
+                }
+                if observed_requests
+                    .lock()
+                    .await
+                    .iter()
+                    .any(|request| request.starts_with("POST /application/xml "))
+                {
+                    if scan_terminated.is_cancelled() {
+                        return false;
+                    }
+                    cancel_from_host.cancel();
+                    return true;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn one_shot_provider_relay_closes_without_changing_fragmented_response() {
+        const REQUEST: &[u8] = b"GET /fixture HTTP/1.1\r\nHost: fixture\r\n\r\n";
+        const EXPECTED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}";
+        for upstream_response in [
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: keep-alive\r\n\r\n{\"ok\":true}".as_slice(),
+        ] {
+            let response = tokio::time::timeout(Duration::from_secs(5), async {
+                let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let provider_address = provider_listener.local_addr().unwrap();
+                let provider = tokio::spawn(async move {
+                    let (mut stream, _) = provider_listener.accept().await.unwrap();
+                    assert_eq!(read_request(&mut stream).await.unwrap(), REQUEST);
+                    for fragment in upstream_response.chunks(7) {
+                        stream.write_all(fragment).await.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                });
+                let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let proxy_address = proxy_listener.local_addr().unwrap();
+                let proxy = tokio::spawn(async move {
+                    let (client, _) = proxy_listener.accept().await.unwrap();
+                    proxy_provider_connection(
+                        client,
+                        provider_address,
+                        Arc::new(AsyncMutex::new(Vec::new())),
+                    )
+                    .await;
+                });
+                let mut client = tokio::net::TcpStream::connect(proxy_address).await.unwrap();
+                client.write_all(REQUEST).await.unwrap();
+                let mut response = Vec::new();
+                client.read_to_end(&mut response).await.unwrap();
+                proxy.await.unwrap();
+                provider.await.unwrap();
+                response
+            })
+            .await
+            .expect("owned provider relay exceeded its test watchdog");
+            assert_eq!(response, EXPECTED);
+        }
+    }
+
+    #[tokio::test]
+    async fn xml_canceller_exits_when_scan_ends_without_a_target_post() {
+        let observed_requests = Arc::new(AsyncMutex::new(Vec::new()));
+        let cancellation = CancellationToken::new();
+        let scan_terminated = CancellationToken::new();
+        let mut canceller = cancel_on_xml_target_request(
+            observed_requests.clone(),
+            cancellation.clone(),
+            scan_terminated.clone(),
+        );
+        scan_terminated.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut canceller).await;
+        if result.is_err() {
+            canceller.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(1), canceller)
+                .await
+                .expect("aborted XML canceller exceeded its test watchdog");
+        }
+        assert!(
+            matches!(result, Ok(Ok(false))),
+            "a completed scan without an XML POST must terminate its canceller"
+        );
+        assert!(!cancellation.is_cancelled());
+        assert!(observed_requests.lock().await.is_empty());
     }
 
     fn extract_attribute(body: &str, name: &str) -> Option<String> {
@@ -2369,8 +2482,20 @@ mod xml_external_entity_runtime_tests {
             .unwrap();
 
         let report = runtime.analyze().await.unwrap();
-        assert_eq!(report.completion(), &WebAssessmentCompletion::Complete);
         let audit = report.xml_external_entity_review_audit().unwrap();
+        assert_eq!(
+            report.completion(),
+            &WebAssessmentCompletion::Complete,
+            "XML outcome={:?} target_requests={} provider_requests={} preflight_clean={} cleanup_verified={} target_complete={} target_accounting_complete={} provider_accounting_complete={}",
+            audit.outcome(),
+            audit.target_request_count(),
+            audit.provider_request_count(),
+            audit.preflight_clean(),
+            audit.cleanup_verified(),
+            audit.target_complete(),
+            audit.target_accounting_complete(),
+            audit.provider_accounting_complete(),
+        );
         assert_eq!(audit.outcome(), XmlExternalEntityReviewOutcome::NoCallback);
         assert_eq!(audit.target_request_count(), 3);
         assert_eq!(audit.provider_request_count(), 9);
@@ -2540,22 +2665,13 @@ mod xml_external_entity_runtime_tests {
     async fn host_cancellation_interrupts_an_in_flight_xml_target_and_preserves_cleanup_audit() {
         let fixture = xml_loopback_fixture(ResolutionBehavior::StallTarget).await;
         let cancellation = CancellationToken::new();
-        let observed_requests = fixture.target_requests.clone();
-        let cancel_from_host = cancellation.clone();
-        let canceller = tokio::spawn(async move {
-            loop {
-                if observed_requests
-                    .lock()
-                    .await
-                    .iter()
-                    .any(|request| request.starts_with("POST /application/xml "))
-                {
-                    cancel_from_host.cancel();
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        });
+        let scan_terminated = CancellationToken::new();
+        let _scan_termination_guard = scan_terminated.clone().drop_guard();
+        let mut canceller = cancel_on_xml_target_request(
+            fixture.target_requests.clone(),
+            cancellation.clone(),
+            scan_terminated.clone(),
+        );
         let limits = WebAssessmentLimits::default()
             .with_max_wall_time(Duration::from_secs(5))
             .unwrap();
@@ -2566,9 +2682,27 @@ mod xml_external_entity_runtime_tests {
             .build()
             .unwrap();
 
-        let report = runtime.analyze().await.unwrap();
-        canceller.await.unwrap();
+        let scan_result = tokio::time::timeout(Duration::from_secs(10), runtime.analyze()).await;
+        scan_terminated.cancel();
+        let cancellation_issued =
+            tokio::time::timeout(Duration::from_secs(1), &mut canceller).await;
+        if cancellation_issued.is_err() {
+            canceller.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(1), canceller)
+                .await
+                .expect("aborted XML canceller exceeded its test watchdog");
+        }
+        let report = scan_result
+            .expect("XML cancellation assessment exceeded its test watchdog")
+            .unwrap();
         let audit = report.xml_external_entity_review_audit().unwrap();
+        assert!(
+            matches!(cancellation_issued, Ok(Ok(true))),
+            "XML cancellation was not issued in flight: outcome={:?} target_requests={} provider_requests={}",
+            audit.outcome(),
+            audit.target_request_count(),
+            audit.provider_request_count(),
+        );
         assert_eq!(audit.outcome(), XmlExternalEntityReviewOutcome::Cancelled);
         assert_eq!(audit.target_request_count(), 1);
         assert!(!audit.target_complete());
