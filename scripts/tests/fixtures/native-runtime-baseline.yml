@@ -1,0 +1,186 @@
+# Reviewed source-contract snapshot from f968db979c911d25e0ca615bbab51144ed6efe0c.
+# This is an independent literal oracle, not captured executable output.
+  platform-runtime-smoke:
+    name: Runtime Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build default CLI
+        run: cargo build --locked -p termivar-cli
+      - name: Exercise CLI metadata
+        run: |
+          cargo run --locked -p termivar-cli -- --version
+          cargo run --locked -p termivar-cli -- --help
+      - name: Exercise compiled CLI capabilities offline
+        run: cargo test --locked -p termivar-cli --test capabilities_cli
+      - name: Exercise opt-in live progress CLI
+        run: cargo test --locked -p termivar-cli --test progress_cli
+      - name: Exercise opt-in WordPress review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture
+      - name: Exercise opt-in WordPress discovery CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture
+      - name: Exercise opt-in supplied-session review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture
+      - name: Exercise opt-in resource authorization review CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review --test authorization_review_cli -- --nocapture
+      - name: Guard the native Windows all-feature assessment stack
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p termivar-cli --all-features --test authorization_review_cli --test websocket_review_cli --test websocket_supplied_session_cli --test supplied_session_cli -- --nocapture
+      - name: Exercise opt-in passive secret-exposure review CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture
+      - name: Exercise value-free GraphQL privacy composition CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features graphql-review,secret-exposure-review --test graphql_secret_exposure_cli -- --nocapture
+      - name: Exercise opt-in passive TLS observation CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture
+      - name: Exercise trusted passive TLS observation broker path
+        run: cargo test --locked -p termivar-scanner --no-default-features --features tls-observation web_runtime::authority::tests::selected_tls_observation_uses_verified_owned_loopback_response_without_extra_dispatch -- --exact --nocapture
+      - name: Exercise active TLS negotiation through the owned HTTPS profile
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile,tls-negotiation-review --test xml_external_entity_owned_https_cli tls_negotiation_review_runs_actual_cli_and_offline_bundle_commands -- --ignored --exact --nocapture
+      - name: Exercise opt-in active TLS negotiation capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: tls-negotiation-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features tls-negotiation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise isolated HTTP desynchronization parser-boundary laboratory
+        run: cargo test --release --locked -p termivar-scanner --no-default-features --features scanning --lib web_runtime::http_desynchronization_lab::tests::owned_loopback_matrix_is_bounded_and_reports_only_parser_boundaries -- --exact --nocapture
+      - name: Exercise opt-in local JWT policy review CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture
+      - name: Exercise opt-in JWT target-acceptance review CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-target-acceptance-review --test jwt_policy_cli -- --nocapture
+      - name: Exercise opt-in control-reference mapping CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features control-reference-mapping --test control_reference_mapping_cli -- --nocapture
+      - name: Exercise opt-in Cert Spotter CT provider CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features recon-ct-provider --test recon_ct_provider_cli -- --nocapture
+      - name: Exercise opt-in Cert Spotter CT provider capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: recon-ct-provider-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features recon-ct-provider --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise opt-in reconnaissance snapshot import CLI
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test recon_snapshot_cli -- --nocapture
+      - name: Exercise opt-in reconnaissance snapshot capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: recon-snapshot-import-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features recon-snapshot-import --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise bounded WebSocket review through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test websocket_review_cli -- --nocapture
+      - name: Exercise opt-in WebSocket capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise supplied-session WebSocket review through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test websocket_supplied_session_cli -- --nocapture
+      - name: Exercise supplied-session WebSocket capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: websocket-session
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features websocket-review,supplied-session-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Reject authenticated session bodies from the anonymous secret-exposure context
+        run: cargo test --locked -p termivar-cli --no-default-features --features secret-exposure-review,supplied-session-review --test supplied_session_cli passive_secret_review_does_not_select_authenticated_session_bodies -- --exact --nocapture
+      - name: Exercise supplied-session WordPress integration CLI
+        run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review,supplied-session-review --test wordpress_supplied_session_cli -- --nocapture
+      - name: Exercise supplied-session WordPress preflight boundaries
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,wordpress-review --test supplied_session_cli wordpress -- --nocapture
+      - name: Exercise supplied-session and OAST preflight composition
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,supplied-session-review,ssrf-oast-review --test supplied_session_cli oast_policy_precedes_every_compatible_secret_and_output_acquisition -- --exact --nocapture
+      - name: Exercise delayed native OAST replay polling
+        run: cargo test --locked -p termivar-scanner --no-default-features --features ssrf-oast-review --lib web_runtime::ssrf_oast_runtime::tests::polling_waits_for_the_expected_replay_event_after_an_empty_first_poll -- --exact --nocapture
+      - name: Exercise opt-in XML external-entity CLI preflight contracts
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test xml_external_entity_review_cli -- --nocapture
+      - name: Exercise bounded XML external-entity runtime through an owned loopback fixture
+        run: cargo test --release --locked -p termivar-scanner --no-default-features --features xml-external-entity-review --lib xml_external_entity_runtime_tests -- --nocapture
+      - name: Exercise XML external-entity review through the owned HTTPS profile
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-owned-https-test-profile --test xml_external_entity_owned_https_cli owned_https_profile_runs_actual_cli_and_offline_bundle_commands -- --ignored --exact --nocapture
+      - name: Exercise opt-in XML external-entity capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: xml-external-entity-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features xml-external-entity-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Exercise harmless template-evaluation review through a real owned engine
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features template-evaluation-review --test template_evaluation_cli -- --nocapture
+      - name: Exercise opt-in template-evaluation capability contract
+        env:
+          TERMIVAR_CAPABILITIES_MATRIX_CASE: template-evaluation-only
+        run: cargo test --release --locked -p termivar-cli --no-default-features --features template-evaluation-review --test capabilities_cli matrix_case_proves_release_bundle_is_composition_not_origin -- --nocapture
+      - name: Test first-use fixture and checked-in sample contracts
+        run: python -m unittest discover -s scripts/tests -p 'test_first_use*.py'
+      - name: Test release archive verification contracts
+        run: python -m unittest discover -s scripts/tests -p test_verify_release_archive.py
+      - name: Test packaged release candidate acceptance contracts
+        run: python -m unittest discover -s scripts/tests -p test_release_candidate_acceptance.py
+      - name: Accept the actual development CLI against its own loopback fixture
+        run: >-
+          python scripts/first_use.py
+          --binary ${{ runner.os == 'Windows' && 'target/debug/termivar.exe' || 'target/debug/termivar' }}
+          --output "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-source"
+          --source-ref ${{ github.event.pull_request.head.sha || github.sha }}
+          --build-features default
+          --expect-version 0.10.0-alpha.3
+      - name: Acquire the exact published Linux prerelease for separate acceptance
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          download_dir="${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-download"
+          extract_dir="${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-binary"
+          mkdir -m 700 "$download_dir"
+          release_url=https://github.com/ITherso/termivar/releases/download/v0.10.0-alpha.2
+          archive=termivar-v0.10.0-alpha.2-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/SHA256SUMS" --output "$download_dir/SHA256SUMS"
+          curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$release_url/$archive" --output "$download_dir/$archive"
+          echo "9117984e31523aa4bfc751a182423efd2af0f1581883750fe4f3f2abf11d7499  $download_dir/SHA256SUMS" | sha256sum --check --strict -
+          python scripts/verify_release_archive.py --archive "$download_dir/$archive" --checksums "$download_dir/SHA256SUMS"
+          python scripts/verify_release_archive.py --archive "$download_dir/$archive" --checksums "$download_dir/SHA256SUMS" --extract-to "$extract_dir"
+      - name: Accept the verified published Linux binary without a source substitute
+        if: runner.os == 'Linux'
+        run: >-
+          python scripts/first_use.py
+          --binary "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release-binary/termivar"
+          --output "${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release"
+          --source-ref v0.10.0-alpha.2
+          --build-features release-bundle
+          --expect-version 0.10.0-alpha.2
+      - name: Retain bounded first-use acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: first-use-${{ matrix.os }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-source/
+            ${{ runner.temp }}/termivar-first-use-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}-release/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Exercise default decision scan against loopback
+        run: cargo test --locked -p termivar-cli --test decision_scan_cli json_format_writes_parseable_json_to_stdout_and_the_runtime_notice_to_stderr
+      - name: Exercise atomic report-output path semantics
+        run: cargo test --locked -p termivar-cli --test profile_scan_cli report_output_is_complete_atomic_and_never_overwritten
+      - name: Exercise single-run report bundle CLI
+        run: cargo test --locked -p termivar-cli --test report_bundle_cli
+      - name: Exercise offline report comparison CLI
+        run: cargo test --locked -p termivar-cli --test report_compare_cli
+      - name: Exercise offline report bundle verification CLI
+        run: cargo test --locked -p termivar-cli --test report_verify_cli
+      - name: Test fixed offline comparison controls without a browser
+        run: python -m unittest discover -s scripts/tests -p test_report_compare_ui.py
+      - name: Exercise credential input handle and buffer contracts
+        run: cargo test --locked -p termivar-cli --no-default-features --features authorization-review,ssrf-oast-review --bin termivar auth_input::tests
+      - name: Exercise provider secret-file contracts
+        run: cargo test --locked -p termivar-oast --features server --bin termivar-oast-provider
+      - name: Exercise focused core and scanner contracts
+        run: |
+          cargo test --locked -p termivar-core --lib report_round_trip_and_golden_are_stable
+          cargo test --locked -p termivar-scanner --lib authority_narrows_a_broader_policy_to_one_exact_origin
+          cargo test --locked -p termivar-scanner --lib redirect_is_observed_without_following_the_location

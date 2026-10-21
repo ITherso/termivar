@@ -241,6 +241,60 @@ const PLATFORM_RUNTIME_OS_MATRIX: &str =
     "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]";
 const PLATFORM_RUNTIME_TIMEOUT: &str =
     "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}";
+const NATIVE_RUNTIME_WORKERS: &[(&str, &str)] = &[
+    ("platform-runtime-core", "Core"),
+    ("platform-runtime-reviews", "Reviews"),
+    ("platform-runtime-protocols", "Protocols"),
+];
+const NATIVE_RUNTIME_WORKER_PREFIX: &str = r#"  PLATFORM_RUNTIME_JOB:
+    name: Native Runtime PLATFORM_RUNTIME_LABEL (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+"#;
+const NATIVE_RUNTIME_AGGREGATE_JOB: &str = r#"  platform-runtime-smoke:
+    name: Runtime Smoke (${{ matrix.os }})
+    needs: [platform-runtime-core, platform-runtime-reviews, platform-runtime-protocols]
+    if: ${{ always() }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Require every native runtime partition
+        env:
+          TERMIVAR_NATIVE_RUNTIME_NEEDS: ${{ toJSON(needs) }}
+        run: python scripts/ci/native_runtime_gate.py"#;
+const NATIVE_RUNTIME_CONTRACT_TEST_STEP: &str = r#"      - name: Test native runtime orchestration contracts
+        run: python -m unittest discover -s scripts/tests -p test_native_runtime_ci.py"#;
 const REPORT_BUNDLE_SMOKE_GATE: &str = r#"      - name: Exercise single-run report bundle CLI
         run: cargo test --locked -p termivar-cli --test report_bundle_cli"#;
 const REPORT_VERIFICATION_SMOKE_GATE: &str = r#"      - name: Exercise offline report bundle verification CLI
@@ -784,6 +838,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         audit_runner.as_deref(),
     ));
     violations.extend(development_line_workflow_policy_violations(&files));
+    violations.extend(native_runtime_workflow_policy_violations(&files));
     violations.extend(first_use_workflow_policy_violations(&files));
     violations.extend(report_bundle_workflow_policy_violations(&files));
     violations.extend(report_verification_workflow_policy_violations(&files));
@@ -809,6 +864,59 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     Ok(violations)
 }
 
+fn native_runtime_worker_prefix(job_id: &str, label: &str) -> String {
+    NATIVE_RUNTIME_WORKER_PREFIX
+        .replace("PLATFORM_RUNTIME_JOB", job_id)
+        .replace("PLATFORM_RUNTIME_LABEL", label)
+}
+
+fn native_runtime_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed partitioned native runtime-smoke workflow is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    let mut violations = Vec::new();
+    for (job_id, label) in NATIVE_RUNTIME_WORKERS {
+        let jobs = named_job_blocks(&normalized, job_id);
+        let prefix = native_runtime_worker_prefix(job_id, label);
+        let contract_tests_are_required = *job_id != "platform-runtime-core"
+            || job_has_exact_step(
+                &normalized,
+                "platform-runtime-core",
+                "Test native runtime orchestration contracts",
+                NATIVE_RUNTIME_CONTRACT_TEST_STEP,
+            );
+        let valid = matches!(jobs.as_slice(), [job] if job.starts_with(&prefix)
+        && job[prefix.len()..].lines().all(|line| {
+            line.is_empty() || line.starts_with("      ")
+        })
+        && !job.lines().map(str::trim).any(|line| {
+            line.starts_with("continue-on-error:")
+                || line.split_once(':').is_some_and(|(key, _)| {
+                    matches!(key, "RUSTFLAGS" | "CARGO_ENCODED_RUSTFLAGS" | "RUST_MIN_STACK")
+                        || key.starts_with("CARGO_PROFILE_")
+                })
+        })) && contract_tests_are_required;
+        if !valid {
+            violations.push(format!(
+                "{TESTS_WORKFLOW}: native runtime partition `{job_id}` must retain exactly one unsuppressed four-platform host-native matrix, Intel-only 120-minute and otherwise 90-minute runtime budget, pinned Rust 1.88/Python 3.12 setup, exact source checkout, unmodified profile/stack environment, and the core partition's exact orchestration contract tests"
+            ));
+        }
+    }
+    // Each matrix job result covers all four hosts. The existing protected
+    // contexts intentionally depend on every partition across every host;
+    // no per-host output or skipped matrix entry can stand in for success.
+    let aggregate = named_job_blocks(&normalized, "platform-runtime-smoke");
+    if aggregate.as_slice() != [NATIVE_RUNTIME_AGGREGATE_JOB] {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: native runtime aggregate must preserve the exact Runtime Smoke status names, four native hosts and budgets, always-run condition, all three fixed partition dependencies, exact source checkout, and fail-closed native_runtime_gate.py invocation"
+        ));
+    }
+    violations
+}
+
 fn http_desynchronization_lab_workflow_policy_violations(
     files: &[(String, String)],
 ) -> Vec<String> {
@@ -820,7 +928,7 @@ fn http_desynchronization_lab_workflow_policy_violations(
     let normalized = contents.replace("\r\n", "\n");
     if job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise isolated HTTP desynchronization parser-boundary laboratory",
         HTTP_DESYNCHRONIZATION_LAB_SMOKE_GATE,
     ) {
@@ -839,7 +947,7 @@ fn report_bundle_workflow_policy_violations(files: &[(String, String)]) -> Vec<S
         )];
     };
     let normalized = contents.replace("\r\n", "\n");
-    let jobs = named_job_blocks(&normalized, "platform-runtime-smoke");
+    let jobs = named_job_blocks(&normalized, "platform-runtime-core");
     let [job] = jobs.as_slice() else {
         return vec![format!(
             "{TESTS_WORKFLOW}: expected exactly one reviewed platform runtime-smoke job"
@@ -872,7 +980,7 @@ fn report_verification_workflow_policy_violations(files: &[(String, String)]) ->
         )];
     };
     let normalized = contents.replace("\r\n", "\n");
-    let jobs = named_job_blocks(&normalized, "platform-runtime-smoke");
+    let jobs = named_job_blocks(&normalized, "platform-runtime-core");
     let [job] = jobs.as_slice() else {
         return vec![format!(
             "{TESTS_WORKFLOW}: expected exactly one reviewed platform runtime-smoke job"
@@ -906,28 +1014,34 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     };
     let normalized = contents.replace("\r\n", "\n");
     let mut violations = Vec::new();
-    let runtime_jobs = named_job_blocks(&normalized, "platform-runtime-smoke");
-    if runtime_jobs.len() != 1 || runtime_jobs[0].matches(PLATFORM_RUNTIME_OS_MATRIX).count() != 1 {
+    let runtime_jobs = NATIVE_RUNTIME_WORKERS
+        .iter()
+        .flat_map(|(job_id, _)| named_job_blocks(&normalized, job_id))
+        .collect::<Vec<_>>();
+    if runtime_jobs.len() != NATIVE_RUNTIME_WORKERS.len()
+        || runtime_jobs
+            .iter()
+            .any(|job| job.matches(PLATFORM_RUNTIME_OS_MATRIX).count() != 1)
+    {
         violations.push(format!(
             "{TESTS_WORKFLOW}: supplied-session CLI requires the exact four-platform native runtime-smoke matrix"
         ));
     }
-    if !matches!(
-        runtime_jobs.as_slice(),
-        [job]
-            if job
-                .lines()
+    if runtime_jobs.len() != NATIVE_RUNTIME_WORKERS.len()
+        || runtime_jobs.iter().any(|job| {
+            job.lines()
                 .filter(|line| *line == PLATFORM_RUNTIME_TIMEOUT)
                 .count()
-                == 1
-    ) {
+                != 1
+        })
+    {
         violations.push(format!(
             "{TESTS_WORKFLOW}: platform runtime smoke requires the exact Intel-only 120-minute and otherwise 90-minute runtime budget"
         ));
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise compiled CLI capabilities offline",
         CAPABILITIES_SMOKE_GATE,
     ) {
@@ -937,7 +1051,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise supplied-session and OAST preflight composition",
         SUPPLIED_SESSION_OAST_PREFLIGHT_SMOKE_GATE,
     ) {
@@ -947,7 +1061,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise opt-in supplied-session review CLI",
         SUPPLIED_SESSION_SMOKE_GATE,
     ) {
@@ -957,7 +1071,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise supplied-session WordPress preflight boundaries",
         SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE,
     ) {
@@ -967,7 +1081,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise opt-in resource authorization review CLI",
         AUTHORIZATION_REVIEW_SMOKE_GATE,
     ) {
@@ -977,7 +1091,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in passive secret-exposure review CLI",
         SECRET_EXPOSURE_SMOKE_GATE,
     ) {
@@ -987,7 +1101,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise value-free GraphQL privacy composition CLI",
         VALUE_FREE_GRAPHQL_SMOKE_GATE,
     ) {
@@ -997,7 +1111,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Guard the native Windows all-feature assessment stack",
         WINDOWS_ASSESSMENT_STACK_SMOKE_GATE,
     ) {
@@ -1007,7 +1121,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise opt-in passive TLS observation CLI",
         TLS_OBSERVATION_SMOKE_GATE,
     ) {
@@ -1017,7 +1131,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise active TLS negotiation through the owned HTTPS profile",
         TLS_NEGOTIATION_OWNED_HTTPS_SMOKE_GATE,
     ) {
@@ -1027,7 +1141,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise opt-in active TLS negotiation capability contract",
         TLS_NEGOTIATION_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1037,7 +1151,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in local JWT policy review CLI",
         JWT_POLICY_REVIEW_SMOKE_GATE,
     ) {
@@ -1047,7 +1161,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in JWT target-acceptance review CLI",
         JWT_TARGET_ACCEPTANCE_REVIEW_SMOKE_GATE,
     ) {
@@ -1057,7 +1171,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in control-reference mapping CLI",
         CONTROL_REFERENCE_MAPPING_SMOKE_GATE,
     ) {
@@ -1067,7 +1181,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in Cert Spotter CT provider CLI",
         RECON_CT_PROVIDER_SMOKE_GATE,
     ) {
@@ -1077,7 +1191,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in Cert Spotter CT provider capability contract",
         RECON_CT_PROVIDER_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1087,7 +1201,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in reconnaissance snapshot import CLI",
         RECON_SNAPSHOT_IMPORT_SMOKE_GATE,
     ) {
@@ -1097,7 +1211,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in reconnaissance snapshot capability contract",
         RECON_SNAPSHOT_IMPORT_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1107,7 +1221,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise bounded WebSocket review through an owned loopback fixture",
         WEBSOCKET_REVIEW_SMOKE_GATE,
     ) {
@@ -1117,7 +1231,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise opt-in WebSocket capability contract",
         WEBSOCKET_REVIEW_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1127,7 +1241,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise supplied-session WebSocket review through an owned loopback fixture",
         WEBSOCKET_SUPPLIED_SESSION_SMOKE_GATE,
     ) {
@@ -1137,7 +1251,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-reviews",
         "Exercise supplied-session WebSocket capability contract",
         WEBSOCKET_SUPPLIED_SESSION_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1147,7 +1261,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise harmless template-evaluation review through a real owned engine",
         TEMPLATE_EVALUATION_REVIEW_SMOKE_GATE,
     ) {
@@ -1157,7 +1271,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise opt-in template-evaluation capability contract",
         TEMPLATE_EVALUATION_REVIEW_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1167,7 +1281,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise opt-in XML external-entity CLI preflight contracts",
         XML_EXTERNAL_ENTITY_CLI_SMOKE_GATE,
     ) {
@@ -1177,7 +1291,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise bounded XML external-entity runtime through an owned loopback fixture",
         XML_EXTERNAL_ENTITY_RUNTIME_SMOKE_GATE,
     ) {
@@ -1187,7 +1301,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise XML external-entity review through the owned HTTPS profile",
         XML_EXTERNAL_ENTITY_OWNED_HTTPS_SMOKE_GATE,
     ) {
@@ -1197,7 +1311,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-protocols",
         "Exercise opt-in XML external-entity capability contract",
         XML_EXTERNAL_ENTITY_CAPABILITIES_SMOKE_GATE,
     ) {
@@ -1207,7 +1321,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise trusted passive TLS observation broker path",
         TRUSTED_TLS_OBSERVATION_BROKER_SMOKE_GATE,
     ) {
@@ -1217,7 +1331,7 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     }
     if !job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Reject authenticated session bodies from the anonymous secret-exposure context",
         SECRET_EXPOSURE_SESSION_BOUNDARY_SMOKE_GATE,
     ) {
@@ -1267,7 +1381,7 @@ fn progress_workflow_policy_violations(files: &[(String, String)]) -> Vec<String
     let normalized = contents.replace("\r\n", "\n");
     if job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise opt-in live progress CLI",
         PROGRESS_SMOKE_GATE,
     ) {
@@ -1288,7 +1402,7 @@ fn wordpress_review_workflow_policy_violations(files: &[(String, String)]) -> Ve
     let normalized = contents.replace("\r\n", "\n");
     if job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise opt-in WordPress review CLI",
         WORDPRESS_REVIEW_SMOKE_GATE,
     ) {
@@ -1309,7 +1423,7 @@ fn wordpress_discovery_workflow_policy_violations(files: &[(String, String)]) ->
     let normalized = contents.replace("\r\n", "\n");
     if job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Exercise opt-in WordPress discovery CLI",
         WORDPRESS_DISCOVERY_SMOKE_GATE,
     ) {
@@ -1463,7 +1577,7 @@ fn release_acceptance_test_workflow_policy_violations(files: &[(String, String)]
     let normalized = contents.replace("\r\n", "\n");
     if job_has_exact_step(
         &normalized,
-        "platform-runtime-smoke",
+        "platform-runtime-core",
         "Test packaged release candidate acceptance contracts",
         RELEASE_ACCEPTANCE_TEST,
     ) {
@@ -1501,7 +1615,7 @@ fn first_use_workflow_policy_violations(files: &[(String, String)]) -> Vec<Strin
         )];
     };
     let normalized = contents.replace("\r\n", "\n");
-    let jobs = named_job_blocks(&normalized, "platform-runtime-smoke");
+    let jobs = named_job_blocks(&normalized, "platform-runtime-core");
     let [job] = jobs.as_slice() else {
         return vec![format!(
             "{TESTS_WORKFLOW}: expected exactly one reviewed platform runtime-smoke job"
@@ -2985,36 +3099,267 @@ mod tests {
     }
 
     #[test]
-    fn platform_runtime_smoke_timeout_is_exact_and_guarded() {
+    fn repository_native_runtime_partitions_and_protected_aggregate_are_exact() {
+        let contents = include_str!("../../../.github/workflows/tests.yml");
+        for fixture in [contents.to_owned(), contents.replace('\n', "\r\n")] {
+            let violations =
+                native_runtime_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), fixture)]);
+            assert!(violations.is_empty(), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn native_runtime_partitions_reject_omission_skips_limits_and_setup_overrides() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for (job_id, _) in NATIVE_RUNTIME_WORKERS {
+            let jobs = named_job_blocks(&valid, job_id);
+            let [job] = jobs.as_slice() else {
+                panic!("expected exactly one native runtime partition `{job_id}`");
+            };
+            let mut mutations = vec![String::new(), format!("{job}\n\n{job}")];
+            for (from, to) in [
+                ("    name: Native Runtime", "    name: Unreviewed Runtime"),
+                (
+                    "    runs-on: ${{ matrix.os }}",
+                    "    runs-on: ubuntu-latest",
+                ),
+                (PLATFORM_RUNTIME_TIMEOUT, "    timeout-minutes: 180"),
+                ("      fail-fast: false", "      fail-fast: true"),
+                (
+                    PLATFORM_RUNTIME_OS_MATRIX,
+                    "        os: [ubuntu-latest, windows-latest, macos-latest]",
+                ),
+                (
+                    PLATFORM_RUNTIME_OS_MATRIX,
+                    "        os: [ubuntu-latest, windows-latest, macos-15, macos-15-intel]",
+                ),
+                ("    permissions:", "    if: false\n    permissions:"),
+                (
+                    "    permissions:",
+                    "    continue-on-error: true\n    permissions:",
+                ),
+                (
+                    "    permissions:",
+                    "    env:\n      RUSTFLAGS: --cfg hidden\n    permissions:",
+                ),
+                (
+                    "    permissions:",
+                    "    defaults:\n      run:\n        shell: ./fake-shell {0}\n    permissions:",
+                ),
+                (
+                    "          ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+                    "          ref: ${{ github.event.pull_request.base.sha || github.sha }}",
+                ),
+                (
+                    "          persist-credentials: false",
+                    "          persist-credentials: true",
+                ),
+                (
+                    "          toolchain: \"1.88.0\"",
+                    "          toolchain: stable",
+                ),
+                (
+                    "          python-version: \"3.12\"",
+                    "          python-version: \"3.13\"",
+                ),
+                (
+                    "        run: ",
+                    "        env:\n          CARGO_PROFILE_RELEASE_OPT_LEVEL: '0'\n        run: ",
+                ),
+                (
+                    "        run: ",
+                    "        env:\n          RUST_MIN_STACK: '33554432'\n        run: ",
+                ),
+                (
+                    "        run: ",
+                    "        continue-on-error: true\n        run: ",
+                ),
+            ] {
+                let mutated = job.replacen(from, to, 1);
+                assert_ne!(mutated, *job, "mutation must alter `{job_id}`: {from}");
+                mutations.push(mutated);
+            }
+            mutations.push(format!(
+                "{job}\n    env:\n      CARGO_PROFILE_DEV_OPT_LEVEL: '0'"
+            ));
+            for mutated_job in mutations {
+                let mutated = valid.replacen(job.as_str(), &mutated_job, 1);
+                let violations = native_runtime_workflow_policy_violations(&[(
+                    TESTS_WORKFLOW.to_owned(),
+                    mutated,
+                )]);
+                assert_eq!(violations.len(), 1, "{job_id}: {violations:?}");
+                assert!(violations[0].contains(*job_id), "{violations:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_runtime_orchestration_tests_cannot_be_omitted_replaced_or_suppressed() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert_eq!(valid.matches(NATIVE_RUNTIME_CONTRACT_TEST_STEP).count(), 1);
+        for replacement in [
+            String::new(),
+            NATIVE_RUNTIME_CONTRACT_TEST_STEP
+                .replace("test_native_runtime_ci.py", "test_first_use.py"),
+            format!("{NATIVE_RUNTIME_CONTRACT_TEST_STEP}\n        if: false"),
+            format!("{NATIVE_RUNTIME_CONTRACT_TEST_STEP}\n        continue-on-error: true"),
+        ] {
+            let mutated = valid.replacen(NATIVE_RUNTIME_CONTRACT_TEST_STEP, &replacement, 1);
+            assert_ne!(
+                mutated, valid,
+                "mutation must alter the orchestration test step"
+            );
+            let violations =
+                native_runtime_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutated)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("platform-runtime-core"),
+                "{violations:?}"
+            );
+            assert!(
+                violations[0].contains("orchestration contract tests"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_runtime_aggregate_rejects_omissions_renaming_skips_and_gate_bypasses() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         let jobs = named_job_blocks(&valid, "platform-runtime-smoke");
         let [job] = jobs.as_slice() else {
-            panic!("expected exactly one platform runtime-smoke job");
+            panic!("expected exactly one protected native runtime aggregate");
         };
-        assert_eq!(
-            job.lines()
-                .filter(|line| *line == PLATFORM_RUNTIME_TIMEOUT)
-                .count(),
-            1
-        );
-
-        for replacement in [
-            "    timeout-minutes: 90",
-            "    timeout-minutes: 120",
-            "    timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 90 }}",
-            "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 900 }}",
+        let mut mutations = vec![String::new(), format!("{job}\n\n{job}")];
+        for (from, to) in [
+            ("    name: Runtime Smoke", "    name: Native Runtime Aggregate"),
+            ("platform-runtime-core, ", ""),
+            ("platform-runtime-reviews, ", ""),
+            (", platform-runtime-protocols", ""),
+            ("    if: ${{ always() }}", "    if: ${{ success() }}"),
+            ("    if: ${{ always() }}", "    if: false"),
+            ("    runs-on: ${{ matrix.os }}", "    runs-on: ubuntu-latest"),
+            (PLATFORM_RUNTIME_TIMEOUT, "    timeout-minutes: 180"),
+            ("      fail-fast: false", "      fail-fast: true"),
+            (
+                PLATFORM_RUNTIME_OS_MATRIX,
+                "        os: [ubuntu-latest, windows-latest, macos-latest]",
+            ),
+            (
+                "          ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+                "          ref: ${{ github.event.pull_request.base.sha || github.sha }}",
+            ),
+            ("          python-version: \"3.12\"", "          python-version: \"3.13\""),
+            (
+                "          TERMIVAR_NATIVE_RUNTIME_NEEDS: ${{ toJSON(needs) }}",
+                "          TERMIVAR_NATIVE_RUNTIME_NEEDS: '{}'",
+            ),
+            (
+                "        run: python scripts/ci/native_runtime_gate.py",
+                "        run: echo native-runtime-success",
+            ),
+            (
+                "        run: python scripts/ci/native_runtime_gate.py",
+                "        continue-on-error: true\n        run: python scripts/ci/native_runtime_gate.py",
+            ),
         ] {
-            let mutated_job = job.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
-            assert_ne!(mutated_job, *job, "mutation must alter the job fixture");
-            let mutation = valid.replacen(job.as_str(), &mutated_job, 1);
-            assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+            let mutated = job.replacen(from, to, 1);
+            assert_ne!(mutated, *job, "mutation must alter the aggregate: {from}");
+            mutations.push(mutated);
+        }
+        for mutated_job in mutations {
+            let mutated = valid.replacen(job.as_str(), &mutated_job, 1);
             let violations =
-                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutation)]);
+                native_runtime_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutated)]);
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
-                violations[0].contains("Intel-only 120-minute"),
+                violations[0].contains("native runtime aggregate"),
                 "{violations:?}"
             );
+        }
+    }
+
+    #[test]
+    fn native_runtime_contracts_cannot_move_to_another_partition() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for (step, owner, substitute) in [
+            (
+                CAPABILITIES_SMOKE_GATE,
+                "platform-runtime-core",
+                "platform-runtime-reviews",
+            ),
+            (
+                SECRET_EXPOSURE_SMOKE_GATE,
+                "platform-runtime-reviews",
+                "platform-runtime-core",
+            ),
+            (
+                XML_EXTERNAL_ENTITY_OWNED_HTTPS_SMOKE_GATE,
+                "platform-runtime-protocols",
+                "platform-runtime-reviews",
+            ),
+        ] {
+            let owner_jobs = named_job_blocks(&valid, owner);
+            let substitute_jobs = named_job_blocks(&valid, substitute);
+            let ([owner_job], [substitute_job]) =
+                (owner_jobs.as_slice(), substitute_jobs.as_slice())
+            else {
+                panic!("expected exactly one job for each fixed native runtime partition");
+            };
+            assert_eq!(owner_job.matches(step).count(), 1);
+            let mutated = valid
+                .replacen(owner_job.as_str(), &owner_job.replacen(step, "", 1), 1)
+                .replacen(
+                    substitute_job.as_str(),
+                    &format!("{substitute_job}\n{step}"),
+                    1,
+                );
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutated)]);
+            assert_eq!(
+                violations.len(),
+                1,
+                "{owner} -> {substitute}: {violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_runtime_smoke_timeout_is_exact_and_guarded() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        for (job_id, _) in NATIVE_RUNTIME_WORKERS {
+            let jobs = named_job_blocks(&valid, job_id);
+            let [job] = jobs.as_slice() else {
+                panic!("expected exactly one native runtime partition `{job_id}`");
+            };
+            assert_eq!(
+                job.lines()
+                    .filter(|line| *line == PLATFORM_RUNTIME_TIMEOUT)
+                    .count(),
+                1
+            );
+
+            for replacement in [
+                "    timeout-minutes: 90",
+                "    timeout-minutes: 120",
+                "    timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 90 }}",
+                "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 900 }}",
+            ] {
+                let mutated_job = job.replacen(PLATFORM_RUNTIME_TIMEOUT, replacement, 1);
+                assert_ne!(mutated_job, *job, "mutation must alter the job fixture");
+                let mutation = valid.replacen(job.as_str(), &mutated_job, 1);
+                assert_ne!(mutation, valid, "mutation must alter the workflow fixture");
+                let violations = capabilities_workflow_policy_violations(&[(
+                    TESTS_WORKFLOW.to_owned(),
+                    mutation,
+                )]);
+                assert_eq!(violations.len(), 1, "{job_id}: {violations:?}");
+                assert!(
+                    violations[0].contains("Intel-only 120-minute"),
+                    "{job_id}: {violations:?}"
+                );
+            }
         }
     }
 
