@@ -11,11 +11,13 @@ use std::{
     env, fs, io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
+    pin::Pin,
     process::{Output, Stdio},
     sync::{
         atomic::{AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -1250,6 +1252,67 @@ where
     Ok(bytes)
 }
 
+#[derive(Clone, Copy)]
+enum ParserExecutionPhase {
+    InputWrite,
+    InputFlush,
+    InputClose,
+    AwaitingChildAndOutputs,
+}
+
+#[derive(Clone, Copy)]
+enum ParserChildState {
+    Running,
+    Exited,
+    Unavailable,
+}
+
+fn note_parser_timeout_to(
+    phase: ParserExecutionPhase,
+    child: ParserChildState,
+    error: io::Error,
+    output: &mut impl std::io::Write,
+) -> io::Error {
+    let phase = match phase {
+        ParserExecutionPhase::InputWrite => "input_write",
+        ParserExecutionPhase::InputFlush => "input_flush",
+        ParserExecutionPhase::InputClose => "input_close",
+        ParserExecutionPhase::AwaitingChildAndOutputs => "awaiting_child_and_outputs",
+    };
+    let child = match child {
+        ParserChildState::Running => "running",
+        ParserChildState::Exited => "exited",
+        ParserChildState::Unavailable => "unavailable",
+    };
+    // Fixed phase/state facts distinguish the watchdog from propagated I/O
+    // errors without reflecting the command, input, output, or error text.
+    let _ = output.write_fmt(format_args!(
+        "owned_https_parser_timeout phase={phase} child={child}\n"
+    ));
+    error
+}
+
+async fn write_parser_input<W>(
+    mut input: W,
+    body: &[u8],
+    phase: &mut ParserExecutionPhase,
+) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    *phase = ParserExecutionPhase::InputWrite;
+    input.write_all(body).await?;
+    // On Windows ChildStdin, shutdown is not a completion/error barrier for
+    // an enqueued blocking write. Await flush before releasing the EOF handle.
+    *phase = ParserExecutionPhase::InputFlush;
+    input.flush().await?;
+    *phase = ParserExecutionPhase::InputClose;
+    input.shutdown().await?;
+    drop(input);
+    *phase = ParserExecutionPhase::AwaitingChildAndOutputs;
+    Ok(())
+}
+
 async fn run_expat_with_interpreter(
     interpreter: &Path,
     body: &[u8],
@@ -1278,7 +1341,7 @@ async fn run_expat_with_interpreter(
         child.env_remove(key);
     }
     let mut child = child.spawn()?;
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "parser stdin"))?;
@@ -1291,13 +1354,9 @@ async fn run_expat_with_interpreter(
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "parser stderr"))?;
 
+    let mut phase = ParserExecutionPhase::InputWrite;
     let execution = async {
-        stdin.write_all(body).await?;
-        stdin.shutdown().await?;
-        // Tokio's process ChildStdin shutdown flushes but does not close the
-        // Unix pipe. Drop the handle explicitly so the bounded Expat helper's
-        // read-to-EOF input contract can complete on every native platform.
-        drop(stdin);
+        write_parser_input(stdin, body, &mut phase).await?;
         let (status, stdout, stderr) = tokio::try_join!(
             child.wait(),
             read_bounded_pipe(stdout, MAX_PARSER_OUTPUT_BYTES),
@@ -1308,9 +1367,20 @@ async fn run_expat_with_interpreter(
     let (status, stdout, stderr) = match timeout(PARSER_TIMEOUT, execution).await {
         Ok(result) => result?,
         Err(_) => {
+            let child_state = match child.try_wait() {
+                Ok(Some(_)) => ParserChildState::Exited,
+                Ok(None) => ParserChildState::Running,
+                Err(_) => ParserChildState::Unavailable,
+            };
+            let error = note_parser_timeout_to(
+                phase,
+                child_state,
+                io::Error::new(io::ErrorKind::TimedOut, "parser timeout"),
+                &mut std::io::stderr(),
+            );
             let _ = child.kill().await;
             let _ = child.wait().await;
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "parser timeout"));
+            return Err(error);
         },
     };
     if !status.success() || !stderr.is_empty() {
@@ -1709,6 +1779,173 @@ async fn verify_and_self_compare(scan: &CompletedScan, label: &str) {
         bundle_bytes(&scan.report_dir, &scan.private_sentinels),
         before_offline
     );
+}
+
+#[derive(Default)]
+struct BufferedParserInputState {
+    buffered: Vec<u8>,
+    flushed: Vec<u8>,
+    events: Vec<&'static str>,
+}
+
+// An independent AsyncWrite contract probe, not a model of Tokio's detached
+// blocking tasks. Drop records ownership release without discarding any bytes.
+struct BufferedParserInput {
+    state: Arc<Mutex<BufferedParserInputState>>,
+    flush_pending: bool,
+    fail_flush: bool,
+}
+
+impl AsyncWrite for BufferedParserInput {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let mut state = self.state.lock().unwrap();
+        state.events.push("write");
+        state.buffered.extend_from_slice(bytes);
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let mut state = this.state.lock().unwrap();
+        if this.flush_pending {
+            this.flush_pending = false;
+            state.events.push("flush_pending");
+            context.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        if this.fail_flush {
+            state.events.push("flush_error");
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "PRIVATE_PARSER_FLUSH_ERROR_SENTINEL",
+            )));
+        }
+        let buffered = std::mem::take(&mut state.buffered);
+        state.flushed.extend_from_slice(&buffered);
+        state.events.push("flush_complete");
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.state.lock().unwrap().events.push("shutdown");
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for BufferedParserInput {
+    fn drop(&mut self) {
+        self.state.lock().unwrap().events.push("drop");
+    }
+}
+
+#[tokio::test]
+async fn parser_input_awaits_flush_completion_before_close() {
+    let state = Arc::new(Mutex::new(BufferedParserInputState::default()));
+    let input = BufferedParserInput {
+        state: state.clone(),
+        flush_pending: true,
+        fail_flush: false,
+    };
+    let mut phase = ParserExecutionPhase::InputWrite;
+    write_parser_input(input, b"<fixed/>", &mut phase)
+        .await
+        .unwrap();
+    let state = state.lock().unwrap();
+    assert_eq!(state.flushed, b"<fixed/>");
+    assert!(state.buffered.is_empty());
+    assert_eq!(
+        state.events,
+        [
+            "write",
+            "flush_pending",
+            "flush_complete",
+            "shutdown",
+            "drop"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn parser_input_propagates_flush_error_without_claiming_close() {
+    let state = Arc::new(Mutex::new(BufferedParserInputState::default()));
+    let input = BufferedParserInput {
+        state: state.clone(),
+        flush_pending: true,
+        fail_flush: true,
+    };
+    let mut phase = ParserExecutionPhase::InputWrite;
+    let result = write_parser_input(input, b"<fixed/>", &mut phase).await;
+    assert!(matches!(
+        result,
+        Err(ref error)
+            if error.kind() == io::ErrorKind::BrokenPipe
+                && error.to_string() == "PRIVATE_PARSER_FLUSH_ERROR_SENTINEL"
+    ));
+    let state = state.lock().unwrap();
+    assert!(state.flushed.is_empty());
+    assert_eq!(state.buffered, b"<fixed/>");
+    assert_eq!(
+        state.events,
+        ["write", "flush_pending", "flush_error", "drop"]
+    );
+}
+
+#[test]
+fn parser_timeout_diagnostic_is_closed_and_preserves_original_error() {
+    for (phase, expected_phase) in [
+        (ParserExecutionPhase::InputWrite, "input_write"),
+        (ParserExecutionPhase::InputFlush, "input_flush"),
+        (ParserExecutionPhase::InputClose, "input_close"),
+        (
+            ParserExecutionPhase::AwaitingChildAndOutputs,
+            "awaiting_child_and_outputs",
+        ),
+    ] {
+        for (child, expected_child) in [
+            (ParserChildState::Running, "running"),
+            (ParserChildState::Exited, "exited"),
+            (ParserChildState::Unavailable, "unavailable"),
+        ] {
+            let error = io::Error::new(io::ErrorKind::TimedOut, "PRIVATE_PARSER_ERROR_SENTINEL");
+            let mut output = Vec::new();
+            let original = note_parser_timeout_to(phase, child, error, &mut output);
+            assert_eq!(
+                output,
+                format!(
+                    "owned_https_parser_timeout phase={expected_phase} child={expected_child}\n"
+                )
+                .as_bytes()
+            );
+            assert!(output.len() <= 128);
+            assert!(!output
+                .windows(b"PRIVATE".len())
+                .any(|part| part == b"PRIVATE"));
+            assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(original.to_string(), "PRIVATE_PARSER_ERROR_SENTINEL");
+        }
+    }
+    struct FailedDiagnostic;
+    impl std::io::Write for FailedDiagnostic {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let original = note_parser_timeout_to(
+        ParserExecutionPhase::InputFlush,
+        ParserChildState::Running,
+        io::Error::new(io::ErrorKind::TimedOut, "PRIVATE_PARSER_ERROR_SENTINEL"),
+        &mut FailedDiagnostic,
+    );
+    assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(original.to_string(), "PRIVATE_PARSER_ERROR_SENTINEL");
 }
 
 #[test]
