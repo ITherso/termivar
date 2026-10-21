@@ -2672,8 +2672,6 @@ impl WebAssessmentRuntimeBuilder {
         let conflict = false;
         #[cfg(all(feature = "openapi-review", feature = "ssrf-oast-review"))]
         let conflict = conflict || (self.openapi_review && self.ssrf_oast_review.is_some());
-        #[cfg(feature = "authorization-review")]
-        let conflict = conflict || self.resource_authorization_review.is_some();
         #[cfg(feature = "wordpress-review")]
         let conflict = conflict || self.wordpress_discovery;
         self.secret_exposure_review && conflict
@@ -3170,9 +3168,18 @@ impl WebAssessmentRuntimeBuilder {
             })
             .transpose()?;
         #[cfg(feature = "authorization-review")]
-        let resource_authorization_review = self
-            .resource_authorization_review
-            .map(|(policy, principals)| ResourceAuthorizationReviewConfig::new(policy, principals));
+        let resource_authorization_review =
+            self.resource_authorization_review
+                .map(|(policy, principals)| {
+                    let config = ResourceAuthorizationReviewConfig::new(policy, principals);
+                    #[cfg(feature = "secret-exposure-review")]
+                    let config = if self.secret_exposure_review {
+                        config.with_value_free_response_privacy()
+                    } else {
+                        config
+                    };
+                    config
+                });
         let native_review = if self.low_risk_differential_review {
             let seeds = NativeWebReviewSeeds::from_authorized_origin(&root.url)?;
             let redirect_query_parameter =
@@ -4213,6 +4220,10 @@ impl WebAssessmentRuntime {
                 let mut authorization_hard_stop = false;
                 #[cfg(feature = "authorization-review")]
                 if let Some(binding) = resource_authorization_binding {
+                    #[cfg(feature = "secret-exposure-review")]
+                    let expected_value_free = self.secret_exposure_collector.is_some();
+                    #[cfg(not(feature = "secret-exposure-review"))]
+                    let expected_value_free = false;
                     let forced_outcome = if self.authority.cancellation().is_cancelled() {
                         Some(AuthorizationReviewOutcome::Cancelled)
                     } else if standard.limit_exceeded().is_some() {
@@ -4223,7 +4234,8 @@ impl WebAssessmentRuntime {
                     let forced_runtime_limit = standard.limit_exceeded().cloned();
                     match binding.finalize(
                         self.authority.knowledge(),
-                        standard.transport(),
+                        &standard,
+                        expected_value_free,
                         forced_outcome,
                         forced_runtime_limit,
                     ) {

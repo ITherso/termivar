@@ -295,8 +295,17 @@ EXPECTED_SECRET_EXPOSURE_LIMITATION = (
     "selected_operation_identity field is omitted, and the REST informational item uses "
     "the coarse assessment-subject identity, not cross-run resource equality. REST retains "
     "its own authorized two-request/one-active allowance and exact committed opaque lineage; "
-    "this composition adds no REST request or budget. V1 fails closed when resource "
-    "authorization or WordPress discovery is selected, and when OpenAPI and SSRF-OAST are "
+    "this composition adds no REST request or budget. When combined with explicit resource "
+    "authorization review, its four principal-isolated JSON GET legs are not detector inputs. "
+    "Full value-sensitive Status, Fields and Resources comparison remains private. Selected "
+    "general leg evidence omits response SHA-256 and body-derived receipt SHA-256, retaining "
+    "exact committed role/transport lineage. The existing authorization audit keeps its "
+    "counts, classified booleans and operator-derived policy identity; item identity remains "
+    "policy/resource-derived, not cross-run body equality. The canonical assessment privacy "
+    "selection is rechecked against the private binding at finalization. Authorization "
+    "retains its own four-request/one-active allowance under the same parent; this "
+    "composition adds no request or budget. V1 fails closed when WordPress discovery is "
+    "selected, and when OpenAPI and SSRF-OAST are "
     "both selected. Compiled availability alone selects neither review. Those response paths "
     "do not share its value-free body-digest boundary. Credential validity, ownership, source authenticity, "
     "provider acceptance, exploit execution, and impact "
@@ -4124,7 +4133,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              "classification uses an uncommitted whole-body hash"),
             ("GraphQL retains its own authorized request allowance; this privacy boundary adds no request",
              "GraphQL receives a fresh request allowance"),
-            ("V1 fails closed when resource authorization or WordPress discovery is selected",
+            ("V1 fails closed when WordPress discovery is selected",
              "All response-producing reviews are supported"),
             ("Authenticated supplied-session response bodies are not selected",
              "Authenticated supplied-session response bodies are selected"),
@@ -4202,8 +4211,8 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              "REST retains its existing allowance but trusts uncommitted response assertions"),
             ("this composition adds no REST request or budget",
              "this composition retries REST requests with a new budget"),
-            ("V1 fails closed when resource authorization or WordPress discovery is selected",
-             "V1 automatically selects resource authorization and WordPress discovery"),
+            ("V1 fails closed when WordPress discovery is selected",
+             "V1 automatically selects WordPress discovery"),
         )
         for reviewed, unsupported in mutations:
             with self.subTest(boundary=reviewed):
@@ -4214,6 +4223,73 @@ class CapabilityInventoryContractTests(unittest.TestCase):
                 surface["limitation"] = EXPECTED_SECRET_EXPOSURE_LIMITATION.replace(
                     reviewed, unsupported, 1)
                 self.assert_rejected(document, "limitation")
+
+    def test_secret_exposure_authorization_composition_preserves_each_reviewed_boundary(self):
+        # Independently specified current text, not captured native output.
+        # Validate the complete unchanged curated inventory, including this
+        # uncompiled optional surface; exact equality also prevents 4 -> 40.
+        self.validate(capabilities())
+        mutations = (
+            ("When combined with explicit resource authorization review",
+             "Resource authorization starts automatically"),
+            ("four principal-isolated JSON GET legs are not detector inputs",
+             "all credentialed JSON GET responses are anonymous detector inputs"),
+            ("Full value-sensitive Status, Fields and Resources comparison remains private",
+             "Equal field counts alone establish resource equivalence"),
+            ("Selected general leg evidence omits response SHA-256 and body-derived receipt SHA-256",
+             "Selected general leg evidence retains response SHA-256 and body-derived receipt SHA-256"),
+            ("exact committed role/transport lineage",
+             "uncommitted staged role assertions"),
+            ("existing authorization audit keeps its counts, classified booleans and operator-derived policy identity",
+             "existing authorization audit keeps credential-derived identity and raw body values"),
+            ("item identity remains policy/resource-derived, not cross-run body equality",
+             "item identity establishes cross-run body equality"),
+            ("canonical assessment privacy selection is rechecked against the private binding at finalization",
+             "private binding alone selects privacy without root validation"),
+            ("Authorization retains its own four-request/one-active allowance under the same parent",
+             "Authorization retains its own forty-request/one-active allowance under the same parent"),
+            ("this composition adds no request or budget",
+             "this composition retries with a new request budget"),
+            ("V1 fails closed when WordPress discovery is selected",
+             "V1 accepts every WordPress discovery response path"),
+            ("Authenticated supplied-session response bodies are not selected",
+             "Authenticated supplied-session response bodies are selected"),
+        )
+        for reviewed, unsupported in mutations:
+            with self.subTest(boundary=reviewed):
+                self.assertEqual(EXPECTED_SECRET_EXPOSURE_LIMITATION.count(reviewed), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.secret-exposure-review")
+                surface["limitation"] = EXPECTED_SECRET_EXPOSURE_LIMITATION.replace(
+                    reviewed, unsupported, 1)
+                self.assert_rejected(document, "limitation")
+
+    def test_openapi_guide_keeps_current_composition_and_remaining_refusals(self):
+        reviewed = (
+            "Explicit REST and resource-authorization reviews can compose with selected S04 "
+            "through their own value-free committed-evidence contracts; their separately "
+            "planned responses are not passive detector inputs. WordPress discovery still "
+            "conflicts with secret-exposure review. Selecting both OpenAPI and SSRF-OAST also conflicts;"
+        )
+        stale = "Selected REST, resource authorization or WordPress discovery still conflict with secret-exposure review."
+
+        def check_document(text):
+            normalized = " ".join(text.split())
+            self.assertIn(reviewed, normalized)
+            self.assertNotIn(stale, normalized)
+
+        text = (REPOSITORY / "docs/internals/openapi-surface-review.md").read_text(encoding="utf-8")
+        check_document(text)
+        for changed in (
+            text.replace("Explicit REST and resource-authorization reviews can compose with selected S04", stale),
+            text.replace("WordPress discovery still", "WordPress discovery no longer"),
+            text.replace("not passive detector inputs", "passive detector inputs"),
+        ):
+            with self.subTest(mutation=changed):
+                self.assertNotEqual(changed, text)
+                with self.assertRaises(AssertionError):
+                    check_document(changed)
 
     def test_pinned_tls_negotiation_surface_matches_the_named_producer_literals(self):
         source = (REPOSITORY / "crates/termivar-cli/src/capabilities.rs").read_text(

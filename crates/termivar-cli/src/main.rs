@@ -1618,10 +1618,6 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         {
             selected |= openapi_review && ssrf_oast_review;
         }
-        #[cfg(feature = "authorization-review")]
-        {
-            selected |= authorization_review_policy.is_some();
-        }
         #[cfg(feature = "wordpress-review")]
         {
             selected |= wordpress_discovery;

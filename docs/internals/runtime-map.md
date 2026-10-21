@@ -708,7 +708,7 @@ created. See [REST read-only review](rest-readonly-review.md).
 
 The non-default `secret-exposure-review` scanner/CLI feature requires explicit
 `--secret-exposure-review --profile web-review`. V1 rejects combinations with
-resource authorization or WordPress discovery, and the selected
+WordPress discovery and the selected
 OpenAPI-plus-SSRF-OAST combination, before target or output work because those
 separate response paths do not yet share its value-free body-digest boundary.
 One shared observer stages
@@ -734,6 +734,16 @@ planned GETs are not detector inputs; exact committed lineage and the existing
 two-request/one-active allowance remain mandatory. The composition adds no
 REST request or budget, and unchanged coarse items do not prove resource
 equality across runs.
+Explicit resource authorization composition preserves all four principal-isolated
+JSON GET legs and private full `Status`/`Fields`/`Resources` comparison. Selected
+general leg evidence omits response SHA-256 and body-derived receipt SHA-256;
+exact committed role/transport lineage, parent writes and stored facts must
+reconcile before projection. Finalization rechecks canonical assessment privacy
+selection against the private binding. Its existing public authorization audit
+retains counts, classified booleans and operator-policy identity; unchanged
+policy/resource-derived items do not prove cross-run body equality. The four
+credentialed legs are not anonymous detector inputs and retain the same parent
+four-request/one-active allowance with no S04-owned request or budget.
 Admission fails closed for redirects,
 explicit request headers, credentials, content coding, inconsistent lengths,
 unsupported media types, invalid UTF-8, truncation, failure, or configured

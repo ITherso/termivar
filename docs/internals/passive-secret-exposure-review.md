@@ -54,8 +54,8 @@ The first slice deliberately does not inspect supplied-session response bodies.
 Selecting `supplied-session-review` does not transfer its credentials or
 authenticated body authority to this observer.
 
-V1 fails closed when the same invocation selects resource authorization or
-WordPress discovery, or selects both OpenAPI and SSRF-OAST. Those separate
+V1 fails closed when the same invocation selects WordPress discovery, or
+selects both OpenAPI and SSRF-OAST. Those separate
 response-producing paths do not yet implement this feature's complete value-free
 body-digest boundary. This is a preflight refusal before target traffic or output
 reservation, not an assertion that those reviews found or leaked a secret.
@@ -204,6 +204,63 @@ preflight/terminal/incomplete refusals. The owned fixture is stopped before
 actual bundle Verify, self-Compare and controlled byte/catalogue/option
 comparisons. Offline checks must add no requests and preserve bundle bytes.
 These are synthetic HTTP tests, not real-CMS or live-service acceptance.
+
+## Explicit resource authorization composition
+
+A binary compiled with `authorization-review` and `secret-exposure-review`
+may select the existing options. This owned-fixture operator example is not an
+execution record; substitute an already running fixture's actual port and
+explicitly prepared synthetic policy/credential files:
+
+```console
+termivar scan http://127.0.0.1:<fixture-port>/ \
+  --profile web-review --secret-exposure-review \
+  --authorization-review-policy authorization-policy.toml \
+  --authz-primary-file primary-authorization.txt \
+  --authz-peer-file peer-authorization.txt \
+  --report-dir assessment-authorization-value-free
+```
+
+The existing four bodyless JSON GET legs retain their exact
+primary-candidate, peer-candidate, primary-replay, peer-replay order and
+principal-isolated, ambient-proxy-free pools. They are credentialed comparison
+responses, not anonymous detector inputs. They add no detector response,
+interpreted-byte, match or exposure-observation count. The child keeps its
+existing four-request/one-active allowance under the same parent scope,
+accounting, deadline and cancellation; S04 adds no request or budget.
+
+Full value-sensitive `Status`, `Fields` and `Resources` comparison stays
+private. Matching field shapes or counts alone cannot establish equivalence.
+With privacy selected, general leg evidence omits the response SHA-256 and
+body-derived receipt SHA-256. Bounded typed role/transport facts and their
+derived classification must reconcile with exact parent-runner receipts,
+committed writes and stored rows before projection. Staged views alone are
+not authority, and finalization independently checks the canonical assessment
+privacy selection against its private binding.
+
+The existing `security.authorization-review-audit/v1` retains counts,
+classified stability/equivalence booleans and operator-derived policy identity.
+The review item's identity remains bound to the declared policy/resource, not
+response contents. Identical public items across two runs therefore do not
+prove cross-run body equality. Stable equivalence remains only `NeedsReview` /
+`KnowledgeOnly`, never a confirmed authorization defect or business impact.
+No public schema or installed-version authority changes.
+
+The comparator's bounded private view/receipt correlation remains separate
+from general evidence publication. The exact resource remains private broker
+and provenance data; this boundary does not promise that all internal transport,
+KnowledgeBase or HTTP-library buffers are URL-free. Without S04, historical
+leg evidence and comparison behavior stay unchanged. Supplied-session bodies
+remain excluded, and this composition does not admit WordPress discovery or
+the selected OpenAPI-plus-SSRF-OAST response path.
+
+Original synthetic process fixtures distinguish stable all-role equality,
+same-shape cross-principal scalar differences and unstable primary replay.
+They also cover all central formats, typed terminal refusals, input-byte
+preservation and request isolation. Fixtures must stop before Verify,
+self-Compare and controlled Compare; offline commands must preserve bundle
+bytes and issue no requests. These fixtures are not real-service acceptance
+or evidence that a supplied principal is authentic.
 
 ## Fixed V1 detector catalogue
 

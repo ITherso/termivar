@@ -313,23 +313,10 @@ fn actual_cli_reuses_ordinary_responses_and_keeps_secret_value_out_of_reports() 
 #[test]
 fn actual_cli_rejects_each_unprotected_response_pipeline_before_target_or_output_work() {
     let parent = tempfile::tempdir().expect("create private report parent");
-    let cases: &[(&str, &[&str])] = &[
-        (
-            "resource-authorization",
-            &[
-                "--authorization-review-policy",
-                "must-not-be-read.json",
-                "--authz-primary-env",
-                "S04_PRIMARY_MUST_NOT_BE_READ",
-                "--authz-peer-env",
-                "S04_PEER_MUST_NOT_BE_READ",
-            ],
-        ),
-        (
-            "wordpress-discovery",
-            &["--wordpress-review", "--wordpress-discovery"],
-        ),
-    ];
+    let cases: &[(&str, &[&str])] = &[(
+        "wordpress-discovery",
+        &["--wordpress-review", "--wordpress-discovery"],
+    )];
 
     for (label, additional) in cases {
         let report_directory = parent.path().join(format!("must-not-exist-{label}"));

@@ -5542,6 +5542,136 @@ fn json_has_all_interpretation_limits_and_markdown_shares_unchanged_projection()
     assert!(markdown.contains("- Changed fields: `title`"));
 }
 
+fn authorization_saved_privacy_document(positive: bool, selected: bool) -> Value {
+    // Independently written synthetic wire contract, not captured CLI output.
+    let items = if positive {
+        let mut row = item(191);
+        row["capability_id"] = json!("authorization.resource-cross-principal-equivalence@1");
+        row["claim_basis"] = json!("differential");
+        row["disposition"] = json!("needs_review");
+        vec![row]
+    } else {
+        Vec::new()
+    };
+    let mut document = report(items);
+    document["authorization_review"] = json!({
+        "schema":"security.authorization-review-audit/v1",
+        "capability_id":"authorization.resource-cross-principal-equivalence@1",
+        "policy_id":format!("authorization-policy-sha256:{}", "c".repeat(64)),
+        "selected_path_count":1, "ignored_path_count":0,
+        "request_count":if positive {4} else {1},
+        "outcome":if positive {"stable_cross_principal_equivalence"} else {"cancelled"},
+        "primary_stable":if positive {Some(true)} else {None},
+        "peer_stable":if positive {Some(true)} else {None},
+        "cross_resources_equivalent":if positive {Some(true)} else {None},
+        "item_projected":positive
+    });
+    if selected {
+        document["secret_exposure_review"] = secret_exposure_audit(1, 1, 12, Vec::new(), 0);
+    }
+    document
+}
+
+#[test]
+fn authorization_saved_reader_accepts_positive_empty_and_option_off_current_contracts() {
+    for positive in [false, true] {
+        for selected in [false, true] {
+            let document = authorization_saved_privacy_document(positive, selected);
+            assert!(import_assessment_summary(&bytes(&document)).is_ok());
+            let compared = compare(&document, &document);
+            assert_eq!(
+                compared["unchanged"].as_array().map(Vec::len),
+                Some(usize::from(positive))
+            );
+            for group in ["only_in_after", "only_in_before", "changed"] {
+                assert_eq!(compared[group].as_array().map(Vec::len), Some(0));
+            }
+            assert_eq!(
+                compared["before"]["optional_audits"]["authorization_review"],
+                document["authorization_review"]
+            );
+        }
+    }
+}
+
+#[test]
+fn authorization_saved_reader_rejects_missing_types_duplicates_and_raw_identity_extensions() {
+    let valid = authorization_saved_privacy_document(true, true);
+    for field in [
+        "schema",
+        "capability_id",
+        "policy_id",
+        "selected_path_count",
+        "ignored_path_count",
+        "request_count",
+        "outcome",
+        "primary_stable",
+        "peer_stable",
+        "cross_resources_equivalent",
+        "item_projected",
+    ] {
+        let mut missing = valid.clone();
+        missing["authorization_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject(&missing);
+    }
+    for (field, value) in [
+        ("request_count", json!(true)),
+        ("request_count", json!(5)),
+        ("selected_path_count", json!(false)),
+        ("primary_stable", json!(1)),
+        ("peer_stable", Value::Null),
+        ("cross_resources_equivalent", json!(false)),
+        ("policy_id", json!("authorization-policy-sha256:short")),
+        ("outcome", json!("confirmed_authorization_bypass")),
+        ("response_sha256", json!("private-body-digest")),
+        ("receipt_sha256", json!("private-receipt-digest")),
+        ("response_body", json!("synthetic-secret")),
+    ] {
+        let mut mutated = valid.clone();
+        mutated["authorization_review"][field] = value;
+        reject(&mutated);
+    }
+    let original = String::from_utf8(bytes(&valid)).unwrap();
+    let duplicate = original.replacen(
+        "\"request_count\":4",
+        "\"request_count\":4,\"request_count\":4",
+        1,
+    );
+    assert_ne!(duplicate, original);
+    assert!(import_assessment_summary(duplicate.as_bytes()).is_err());
+}
+
+#[test]
+fn authorization_saved_reader_never_promotes_zero_work_or_invalid_privacy_to_positive() {
+    let valid = authorization_saved_privacy_document(true, true);
+    for requests in [0, 1, 2, 3] {
+        let mut missing_leg = valid.clone();
+        missing_leg["authorization_review"]["request_count"] = json!(requests);
+        reject(&missing_leg);
+    }
+    let mut no_item = valid.clone();
+    no_item["items"] = json!([]);
+    no_item["item_count"] = json!(0);
+    reject(&no_item);
+    let mut invented_item = authorization_saved_privacy_document(false, true);
+    invented_item["items"] = valid["items"].clone();
+    invented_item["item_count"] = json!(1);
+    reject(&invented_item);
+    for (field, value) in [
+        ("raw_values_retained", json!(true)),
+        ("public_secret_hashes_retained", json!(true)),
+        ("context", json!("credentialed-get")),
+        ("selected", json!(false)),
+    ] {
+        let mut invalid_privacy = valid.clone();
+        invalid_privacy["secret_exposure_review"][field] = value;
+        reject(&invalid_privacy);
+    }
+}
+
 fn audit_fixtures() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (
