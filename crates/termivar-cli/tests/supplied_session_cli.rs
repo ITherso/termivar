@@ -556,6 +556,29 @@ same_site = "lax"
 
 #[test]
 fn supplied_cookie_renewal_real_cli_rotates_once_and_qualifies_new_epoch_offline() {
+    let help = termivar()
+        .args(["scan", "--help"])
+        .output()
+        .expect("read actual supplied-session CLI help");
+    assert!(help.status.success());
+    assert!(help.stderr.is_empty());
+    let help = String::from_utf8(help.stdout)
+        .expect("UTF-8 scan help")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for clause in [
+        "Authorization V1",
+        "supplied-cookie V2",
+        "bounded form-login V3",
+        "bounded supplied-cookie renewal V4",
+        "V2/V4 supplied session's bounded cookie-id/value rows",
+    ] {
+        assert!(
+            help.contains(clause),
+            "missing reviewed session help clause"
+        );
+    }
     let renewed = Arc::new(AtomicBool::new(false));
     let fixture_state = Arc::clone(&renewed);
     let mut server = serve_form_login(move |_, record| {

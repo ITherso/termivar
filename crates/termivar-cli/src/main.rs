@@ -1061,7 +1061,8 @@ struct ScanArgs {
     )]
     oast_admin_token_stdin: bool,
     /// Read one strict bounded supplied-session policy (Authorization V1,
-    /// supplied-cookie V2, or one bounded form-login V3).
+    /// supplied-cookie V2, one bounded form-login V3, or bounded supplied-cookie
+    /// renewal V4).
     /// The policy selects one bounded credential acquisition, a small exact set
     /// of operator-authorized resources for bodyless GETs, and a structured
     /// session-health oracle. It is inert without exactly one matching
@@ -1134,7 +1135,7 @@ struct ScanArgs {
         arg(conflicts_with = "oast_admin_token_stdin")
     )]
     session_auth_stdin: bool,
-    /// Read the V2 supplied session's bounded cookie-id/value rows from a
+    /// Read the V2/V4 supplied session's bounded cookie-id/value rows from a
     /// regular file. The path and values are redacted; browser profiles are
     /// never searched or imported.
     #[cfg(feature = "supplied-session-review")]

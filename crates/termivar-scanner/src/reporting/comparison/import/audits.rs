@@ -6440,15 +6440,18 @@ pub(super) fn validate_supplied_session_renewal(
                 && dispatched == boundary
                 && checkpoints.len() as u64 == boundary + 1,
         )?;
-        check(matches!(
-            outcome,
-            "session_lost"
-                | "resource_unavailable"
-                | "runtime_limit"
-                | "cancelled"
-                | "credential_update_required"
-                | "credential_update_unusable"
-        ))?;
+        check(match outcome {
+            "session_lost" => renewal_health == Some("unhealthy"),
+            "resource_unavailable" => matches!(renewal_health, None | Some("indeterminate")),
+            "runtime_limit" | "cancelled" => {
+                matches!(renewal_health, None | Some("indeterminate"))
+                    && renewal
+                        .get("health")
+                        .is_none_or(|health| health.get("status").is_some_and(Value::is_null))
+            },
+            "credential_update_required" | "credential_update_unusable" => true,
+            _ => false,
+        })?;
     } else {
         validate_supplied_session_outcome(outcome, &checkpoints, &resources)?;
     }
@@ -15044,6 +15047,79 @@ mod tests {
             }] = Value::from(if unusable { 0 } else { 1 });
             assert!(validate_supplied_session(&invalid, &BTreeMap::new()).is_err());
         }
+    }
+
+    #[test]
+    fn renewal_reader_requires_observed_health_to_support_the_stop_reason() {
+        let mut unhealthy = renewal_cookie_stop_audit(true, false);
+        unhealthy["outcome"] = Value::from("session_lost");
+        unhealthy["cookie_lifecycle"]["selected_update_response_count"] = Value::from(1);
+        unhealthy["renewal"]["health"]["outcome"] = Value::from("unhealthy");
+        unhealthy["renewal"]["health"]["predicate"] = Value::from("not_matched");
+        assert!(validate_supplied_session(&unhealthy, &BTreeMap::new()).is_ok());
+
+        let mut indeterminate = unhealthy.clone();
+        indeterminate["renewal"]["health"]["outcome"] = Value::from("indeterminate");
+        indeterminate["renewal"]["health"]["predicate"] = Value::from("not_evaluated");
+        indeterminate["renewal"]["health"]["body_state"] = Value::from("unavailable");
+        indeterminate["renewal"]["health"]["status"] = Value::Null;
+        let mut undispatched = indeterminate.clone();
+        undispatched["renewal"]
+            .as_object_mut()
+            .unwrap()
+            .remove("health");
+        undispatched["dispatched_request_count"] = Value::from(4);
+        undispatched["response_bytes"] = Value::from(41);
+        let mut invalid = Vec::new();
+        for outcome in ["resource_unavailable", "runtime_limit", "cancelled"] {
+            let mut relabeled = unhealthy.clone();
+            relabeled["outcome"] = Value::from(outcome);
+            invalid.push((format!("unhealthy_as_{outcome}"), relabeled));
+            for interrupted in [&indeterminate, &undispatched] {
+                let mut valid = interrupted.clone();
+                valid["outcome"] = Value::from(outcome);
+                assert!(validate_supplied_session(&valid, &BTreeMap::new()).is_ok());
+            }
+        }
+        invalid.push(("indeterminate_as_session_lost".to_owned(), indeterminate));
+        invalid.push(("undispatched_as_session_lost".to_owned(), undispatched));
+        let accepted: Vec<_> = invalid
+            .iter()
+            .filter(|(_, audit)| validate_supplied_session(audit, &BTreeMap::new()).is_ok())
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "accepted inconsistent stops: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn renewal_reader_does_not_relabel_an_observed_response_as_interruption() {
+        let mut accepted = Vec::new();
+        for body_state in ["complete", "incomplete"] {
+            let mut response = renewal_cookie_stop_audit(true, false);
+            response["outcome"] = Value::from("resource_unavailable");
+            response["cookie_lifecycle"]["selected_update_response_count"] = Value::from(1);
+            response["renewal"]["health"]["outcome"] = Value::from("indeterminate");
+            response["renewal"]["health"]["predicate"] = Value::from("not_evaluated");
+            response["renewal"]["health"]["body_state"] = Value::from(body_state);
+            if body_state == "complete" {
+                response["renewal"]["health"]["evidence_reference"] = Value::Null;
+            }
+            assert!(validate_supplied_session(&response, &BTreeMap::new()).is_ok());
+            for outcome in ["runtime_limit", "cancelled"] {
+                let mut invalid = response.clone();
+                invalid["outcome"] = Value::from(outcome);
+                if validate_supplied_session(&invalid, &BTreeMap::new()).is_ok() {
+                    accepted.push(format!("{body_state}_response_as_{outcome}"));
+                }
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "accepted inconsistent responses: {accepted:?}"
+        );
     }
 
     fn positive_authorization_audit() -> Value {

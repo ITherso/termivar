@@ -6,6 +6,14 @@ All notable changes to Termivar are recorded here. Releases use the categories f
 
 ### Added
 
+- Added opt-in supplied-cookie renewal through the existing session inputs and
+  strict V4 policy. One explicitly scheduled, same-application bodyless `POST`
+  may replace the declared cookie set, advance the session epoch, and require an
+  immediate health checkpoint before later resources. It retains the shared
+  request/time/byte limits, stops without retry or old-cookie fallback, and has
+  value-free audit support in feature-independent offline readers. This does
+  not add OAuth, continuous-authentication proof, WordPress/WebSocket V4
+  composition, or curated-bundle promotion.
 - Added explicit `--wordpress-page-scope observed` reuse for eligible anonymous,
   committed HTML `GET` responses that the same assessment already obtained.
   The mode retrieves no pages, can nominate bounded metadata work within the
