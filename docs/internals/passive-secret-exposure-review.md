@@ -54,8 +54,8 @@ The first slice deliberately does not inspect supplied-session response bodies.
 Selecting `supplied-session-review` does not transfer its credentials or
 authenticated body authority to this observer.
 
-V1 fails closed when the same invocation selects REST, resource authorization,
-or WordPress discovery, or selects both OpenAPI and SSRF-OAST. Those separate
+V1 fails closed when the same invocation selects resource authorization or
+WordPress discovery, or selects both OpenAPI and SSRF-OAST. Those separate
 response-producing paths do not yet implement this feature's complete value-free
 body-digest boundary. This is a preflight refusal before target traffic or output
 reservation, not an assertion that those reviews found or leaked a secret.
@@ -153,6 +153,57 @@ mismatch, terminal/incomplete responses and all central formats with original
 synthetic canaries. The fixture shuts down before actual Verify, self-Compare
 and controlled Compare; these offline operations must preserve the saved bytes.
 No credentials, vendor feed or live service is required.
+
+## Explicit REST composition
+
+A binary compiled with `rest-review` (which includes `openapi-review`) and
+`secret-exposure-review` may select the existing options. For an already
+running owned loopback fixture, substitute its actual port:
+
+```console
+termivar scan http://127.0.0.1:<fixture-port>/ \
+  --profile web-review --openapi-review --rest-review --secret-exposure-review \
+  --report-dir assessment-rest-value-free
+```
+
+The same-run OpenAPI catalogue must still pass its complete private semantic
+replay before the existing selector can nominate one anonymous, bodyless,
+exact-origin GET with no required inputs. REST's separately planned candidate
+and replay are not passive detector inputs and add no detector response,
+interpreted-byte, match or exposure-observation count. REST retains its own
+existing two-request/one-active allowance inside the same parent budget; this
+composition adds no REST request, retry, client or budget.
+
+The existing value-sensitive `Status`, `Fields` and `Resources` comparison stays
+private. Equal status and field counts with different scalar values must not
+qualify as stable replay. Exact committed response receipts, writes, lineage
+and classifications must reconcile before a positive item can be composed;
+staged views alone are not report authority. Terminal, truncated, cancelled,
+budget-limited or mismatched responses do not become positive items.
+
+With this option selected, REST omits its public whole-body/view response
+digests and the catalogue-derived operation/target identities. The existing
+`security.rest-readonly-review-audit/v1` omits `selected_operation_identity`, while a
+qualifying `api.rest-readonly-surface-observed@1` item uses the existing coarse
+`assessment_subject` target. OpenAPI's audit continues to carry an explicitly
+present/null `semantic_digest`. No new audit schema or feature is introduced.
+Feature-independent readers require a valid selected privacy audit before
+accepting the withheld REST identity; historical positive REST audits without
+that selection still require their operation identity.
+
+The coarse item does not establish cross-run resource or byte equality:
+different private resources can yield the same coarse informational item.
+The exact execution URL remains private request/provenance data; this public
+report boundary does not promise that all internal transport or knowledge
+buffers are URL-free. Without secret-exposure review, historical REST digest,
+operation identity, target and request behavior remain unchanged.
+
+Original synthetic process fixtures cover reordered JSON, same-shape scalar
+mismatch, a schema-derived path canary, all central report formats and
+preflight/terminal/incomplete refusals. The owned fixture is stopped before
+actual bundle Verify, self-Compare and controlled byte/catalogue/option
+comparisons. Offline checks must add no requests and preserve bundle bytes.
+These are synthetic HTTP tests, not real-CMS or live-service acceptance.
 
 ## Fixed V1 detector catalogue
 

@@ -1157,8 +1157,8 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
     }
 }
 
-const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 55_693;
-const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xc38e_14ee_a1ee_c25d_b899_8931_45a3_9aed;
+const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 55_839;
+const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0x9df4_8041_6210_7e3b_c571_3619_b482_bf01;
 
 fn openapi_runtime_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     if !matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -18183,8 +18183,8 @@ mod tests {
         );
 
         let unvalidated_rest_audit = report_source.replacen(
-            "        #[cfg(feature = \"rest-review\")]\n        validate_rest_audit(rest_review.as_ref(), &items)?;",
-            "        #[cfg(feature = \"rest-review\")]\n        let _ = rest_review.as_ref();",
+            "            validate_rest_audit(rest_review.as_ref(), &items, response_privacy)?;",
+            "            let _ = rest_review.as_ref();",
             1,
         );
         assert_ne!(unvalidated_rest_audit, report_source);

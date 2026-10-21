@@ -542,7 +542,13 @@ impl AssessmentRunReport {
         #[cfg(feature = "openapi-review")]
         validate_openapi_audit(openapi_review.as_ref(), &items)?;
         #[cfg(feature = "rest-review")]
-        validate_rest_audit(rest_review.as_ref(), &items)?;
+        {
+            #[cfg(feature = "secret-exposure-review")]
+            let response_privacy = secret_exposure_review.is_some();
+            #[cfg(not(feature = "secret-exposure-review"))]
+            let response_privacy = false;
+            validate_rest_audit(rest_review.as_ref(), &items, response_privacy)?;
+        }
         #[cfg(feature = "ssrf-oast-review")]
         validate_ssrf_oast_audit(ssrf_oast_review.as_ref(), &items)?;
         #[cfg(feature = "xml-external-entity-review")]
@@ -1610,6 +1616,7 @@ fn validate_openapi_audit(
 fn validate_rest_audit(
     audit: Option<&WebAssessmentRestAudit>,
     items: &[AssessmentItem],
+    response_privacy: bool,
 ) -> Result<(), AssessmentRunReportError> {
     let projected = items
         .iter()
@@ -1625,7 +1632,7 @@ fn validate_rest_audit(
             Err(AssessmentRunReportError::RestAuditMismatch)
         };
     };
-    if !RestAuditFacts::from_audit(audit).is_valid(projected) {
+    if !RestAuditFacts::from_audit(audit).is_valid_for_privacy(projected, response_privacy) {
         return Err(AssessmentRunReportError::RestAuditMismatch);
     }
     Ok(())
@@ -1657,7 +1664,12 @@ impl RestAuditFacts {
         }
     }
 
+    #[cfg(test)]
     fn is_valid(self, projected: usize) -> bool {
+        self.is_valid_for_privacy(projected, false)
+    }
+
+    fn is_valid_for_privacy(self, projected: usize, response_privacy: bool) -> bool {
         let positive = self.outcome == RestRuntimeOutcome::SurfaceObserved;
         self.request_count <= MAX_REST_REVIEW_REQUESTS
             && self.active_verification_count <= MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
@@ -1666,11 +1678,12 @@ impl RestAuditFacts {
             && self.item_projected == (projected == 1)
             && positive == self.item_projected
             && self.replay_stable == positive
+            && (!response_privacy || !self.selected_operation_present)
             && (!positive
                 || (self.request_count == MAX_REST_REVIEW_REQUESTS
                     && self.active_verification_count == MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
                     && self.eligible_operation_count > 0
-                    && self.selected_operation_present))
+                    && self.selected_operation_present != response_privacy))
     }
 }
 

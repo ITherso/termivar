@@ -3529,6 +3529,12 @@ fn rest_review_source_contract_violations(
     report: &str,
 ) -> Vec<String> {
     let mut violations = Vec::new();
+    // Test-owned committed-receipt fixtures cannot satisfy production markers
+    // or be mistaken for a second runtime/transport owner.
+    let runtime = match exact_inline_tests_production("REST review", runtime) {
+        Ok(production) => production,
+        Err(errors) => return errors,
+    };
     let compact_runtime = squash_ascii_whitespace(runtime);
     let compact_actions = squash_ascii_whitespace(actions);
     let compact_web_runtime = squash_ascii_whitespace(web_runtime);
@@ -3573,6 +3579,12 @@ fn rest_review_source_contract_violations(
             ".compare_exact_replay(&candidate.view,&replay.view)",
             "letprojected=comparison.all_equivalent();",
             "AssessmentItemTarget::rest_operation(",
+            "letcommitted=ifself.executor.privacy.is_value_free(){validate_value_free_rest_commits(standard,knowledge,&self.subject,selection.as_ref(),&state,)?",
+            "super::secret_exposure::rest_response_privacy_parent_ids(",
+            "super::secret_exposure::is_active_review_body_privacy_lineage(",
+            "receipt.evidence().len()!=receipt.writes().len()",
+            "knowledge.evidence(item.id()).as_ref()!=Some(item)",
+            "if!item.origin().is_direct(){returnErr(RestRuntimeInvariantError::Catalog);}",
         ],
         "REST read-only review lost its one-operation, two-GET, parent-native informational contract",
     );
@@ -3608,6 +3620,7 @@ fn rest_review_source_contract_violations(
         &[
             "pub(incrate::web_runtime)fnwith_rest_review(",
             "rest_runtime::RestReviewBinding::new(",
+            "openapi.response_privacy_is_value_free()",
             "NativeWebReviewActionKind::RestReadOnlyReplay",
             "binding.install_into_parent_registry(&mutexecutors)",
             "letmutexecutors=DecisionExecutorRegistry::new();",
@@ -3648,7 +3661,7 @@ fn rest_review_source_contract_violations(
         &mut violations,
         &compact_report,
         &[
-            "validate_rest_audit(rest_review.as_ref(),&items)?;",
+            "validate_rest_audit(rest_review.as_ref(),&items,response_privacy)?;",
             "pubconstfnrest_review_audit(&self)->Option<&WebAssessmentRestAudit>",
         ],
         "REST audit must remain in the one composed assessment report",
@@ -10946,8 +10959,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 659_710;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5cfd_7994_0d00_2afe_fded_298f_56b0_46fa;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 660_089;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x8c12_4fb6_f9c9_827b_654c_ff55_e462_518c;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -12932,6 +12945,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "eligible_operation_count",
     "rest_review_audit",
     "validate",
+    "validate_for_response_privacy",
     "version",
     "build_variant",
     "version_evidence_resolution",
@@ -13654,6 +13668,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"secret-exposure-review\"")
+                    | Some("not(feature=\"secret-exposure-review\")")
                     | Some("feature=\"tls-negotiation-review\"")
                     | Some("feature=\"tls-observation\"")
                     | Some("feature=\"jwt-policy-review\"")
@@ -16428,7 +16443,9 @@ mod tests {
             "const FORMER_BRAND: &str = \"Venom\";",
             "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
         ] {
-            let mutation = format!("{runtime}\n{forbidden}");
+            let mutation =
+                runtime.replacen("#[cfg(test)]", &format!("{forbidden}\n#[cfg(test)]"), 1);
+            assert_ne!(mutation, runtime);
             assert!(
                 !rest_review_source_contract_violations(
                     &mutation,
@@ -16455,8 +16472,10 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("two-GET")));
 
-        let second_dispatch = format!(
-            "{runtime}\nfn duplicate_dispatch(binding: &RestDecisionExecutor) {{ let _ = binding.requests.collect_for_runtime(); }}"
+        let second_dispatch = runtime.replacen(
+            "#[cfg(test)]",
+            "fn duplicate_dispatch(binding: &RestDecisionExecutor) { let _ = binding.requests.collect_for_runtime(); }\n#[cfg(test)]",
+            1,
         );
         assert!(rest_review_source_contract_violations(
             &second_dispatch,
@@ -16468,6 +16487,76 @@ mod tests {
         )
         .iter()
         .any(|violation| violation.contains("exactly one shared-broker dispatch")));
+
+        for (from, to) in [
+            (
+                "validate_value_free_rest_commits(",
+                "unchecked_value_free_rest_commits(",
+            ),
+            (
+                "receipt.evidence().len() != receipt.writes().len()",
+                "false",
+            ),
+            (
+                "knowledge.evidence(item.id()).as_ref() != Some(item)",
+                "false",
+            ),
+            ("if !item.origin().is_direct()", "if false"),
+            (
+                "super::secret_exposure::rest_response_privacy_parent_ids(",
+                "unchecked_parents(",
+            ),
+            (
+                "super::secret_exposure::is_active_review_body_privacy_lineage(",
+                "unchecked_lineage(",
+            ),
+        ] {
+            let mutation = runtime.replacen(from, to, 1);
+            assert_ne!(mutation, runtime, "{from}");
+            assert!(rest_review_source_contract_violations(
+                &mutation,
+                actions,
+                broker,
+                web_runtime,
+                assessment,
+                report,
+            )
+            .iter()
+            .any(|violation| violation.contains("parent-native informational contract")));
+        }
+        let lost_privacy_binding =
+            web_runtime.replacen("openapi.response_privacy_is_value_free()", "false", 1);
+        assert_ne!(lost_privacy_binding, web_runtime);
+        assert!(rest_review_source_contract_violations(
+            runtime,
+            actions,
+            broker,
+            &lost_privacy_binding,
+            assessment,
+            report,
+        )
+        .iter()
+        .any(|violation| violation.contains("parent StandardWebDecisionRuntime")));
+
+        for escaped in [
+            format!("{runtime}\nfn escaped_production() {{}}"),
+            runtime.replacen(
+                "#[cfg(test)]",
+                "#[cfg(any(test, feature = \"scanning\"))]",
+                1,
+            ),
+        ] {
+            assert!(rest_review_source_contract_violations(
+                &escaped,
+                actions,
+                broker,
+                web_runtime,
+                assessment,
+                report,
+            )
+            .iter()
+            .any(|violation| violation.contains("cfg(test)")));
+        }
 
         let detached = format!("{assessment}\nfn bad() {{ execute_rest_review_detached(); }}");
         assert!(rest_review_source_contract_violations(
@@ -21628,6 +21717,47 @@ mod tests {
             assert!(reporting_production_body_inventory_violations(&mutation)
                 .iter()
                 .any(|violation| violation.contains("production AST/body inventory changed")));
+        }
+    }
+
+    #[test]
+    fn reporting_rest_privacy_contract_does_not_admit_unknown_methods_or_unguarded_identity() {
+        let source = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        let reviewed_call = "audit.validate_for_response_privacy(&self.items, response_privacy)?;";
+        assert_eq!(source.matches(reviewed_call).count(), 1);
+        let unknown_method = source.replacen(
+            reviewed_call,
+            "audit.accept_unchecked_response_privacy(&self.items)?;",
+            1,
+        );
+        assert!(reporting_source_violations(&unknown_method)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("accept_unchecked_response_privacy")
+                    && violation.contains("outside the exact allowlist")
+            ));
+        for (from, to) in [
+            (
+                "let response_privacy = self.secret_exposure_review.is_some();",
+                "let response_privacy = true;",
+            ),
+            (
+                "let response_privacy = false;",
+                "let response_privacy = true;",
+            ),
+            (
+                "|| (response_privacy && self.selected_operation_identity.is_some())",
+                "|| false",
+            ),
+            (
+                "|| (self.selected_operation_identity.is_some() == response_privacy)",
+                "|| false",
+            ),
+        ] {
+            let mutation = source.replacen(from, to, 1);
+            assert_ne!(mutation, source, "{from}");
+            assert!(!reporting_production_body_inventory_violations(&mutation).is_empty());
         }
     }
 

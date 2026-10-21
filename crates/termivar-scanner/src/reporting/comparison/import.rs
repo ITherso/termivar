@@ -116,7 +116,12 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
     }
     let mut optional_audits = BTreeMap::new();
     let mut supplied_session = None;
-    let mut secret_exposure = None;
+    // Validate selected privacy before it qualifies the deliberately reduced
+    // REST audit. Raw presence of an arbitrary object cannot relax a reader.
+    let secret_exposure = root
+        .get("secret_exposure_review")
+        .map(|value| audits::validate_secret_exposure(value, &items))
+        .transpose()?;
     let mut tls_observation = None;
     let mut tls_negotiation_review = None;
     let mut websocket_review = None;
@@ -152,7 +157,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             if name == "supplied_session" {
                 supplied_session = Some(audits::validate_supplied_session(value, &items)?);
             } else if name == "secret_exposure_review" {
-                secret_exposure = Some(audits::validate_secret_exposure(value, &items)?);
+                // Already validated exactly once before the optional-audit loop.
             } else if name == "tls_observation" {
                 tls_observation = Some(audits::validate_tls_observation(value)?);
             } else if name == "tls_negotiation_review" {
@@ -180,7 +185,7 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
                 wordpress_asset_fingerprints =
                     Some(audits::validate_wordpress_asset_fingerprints(value)?);
             } else {
-                let imported = audits::validate(name, value, &items)?;
+                let imported = audits::validate(name, value, &items, secret_exposure.is_some())?;
                 if name == "wordpress_review" {
                     wordpress_review = imported;
                 }

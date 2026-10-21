@@ -1111,15 +1111,19 @@ lifetime_ms = 5000
 
 #[cfg(all(feature = "secret-exposure-review", feature = "rest-review"))]
 #[test]
-fn secret_exposure_rejects_rest_at_builder_preflight() {
+fn secret_exposure_accepts_rest_with_same_run_private_openapi_selection() {
     let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
         .enable_secret_exposure_review()
+        .enable_openapi_review()
         .enable_rest_review()
         .build();
-
+    assert!(result.is_ok());
     assert!(matches!(
-        result,
-        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
+        WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+            .enable_secret_exposure_review()
+            .enable_rest_review()
+            .build(),
+        Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview)
     ));
 }
 
@@ -4908,6 +4912,7 @@ const REST_REVIEW_SCALAR_SECRET: &str = "REST-SCALAR-MUST-NOT-LEAK-44B8F1";
 #[derive(Clone, Copy)]
 enum RestFixtureMode {
     Stable,
+    SchemaPathCanary,
     ReplayMismatch,
     OpenApiReplayMismatch,
     NoEligibleOperation,
@@ -4934,6 +4939,15 @@ async fn run_rest_fixture_with_limits(
     mode: RestFixtureMode,
     limits: WebAssessmentLimits,
 ) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_rest_fixture_with_privacy(mode, limits, false).await
+}
+
+#[cfg(feature = "rest-review")]
+async fn run_rest_fixture_with_privacy(
+    mode: RestFixtureMode,
+    limits: WebAssessmentLimits,
+    value_free: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
     let rest_hits = Arc::new(AtomicUsize::new(0));
     let hits = Arc::clone(&rest_hits);
     let openapi_hits = Arc::new(AtomicUsize::new(0));
@@ -4944,6 +4958,7 @@ async fn run_rest_fixture_with_limits(
             "/openapi.json" => {
                 let openapi_hit = openapi.fetch_add(1, Ordering::SeqCst);
                 let document = match mode {
+                    RestFixtureMode::SchemaPathCanary => r#"{"openapi":"3.1.0","paths":{"/schema-path-canary-52af":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
                     RestFixtureMode::NoEligibleOperation => {
                         r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"parameters":[{"name":"required","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#
                     },
@@ -4956,10 +4971,10 @@ async fn run_rest_fixture_with_limits(
                 };
                 FixtureResponse::new("200 OK", Some("application/json"), document)
             },
-            "/status" => {
+            "/status" | "/schema-path-canary-52af" => {
                 let hit = hits.fetch_add(1, Ordering::SeqCst);
                 match mode {
-                    RestFixtureMode::Stable | RestFixtureMode::NoEligibleOperation => {
+                    RestFixtureMode::Stable | RestFixtureMode::SchemaPathCanary | RestFixtureMode::NoEligibleOperation => {
                         FixtureResponse::new(
                             "200 OK",
                             Some("application/json"),
@@ -5038,14 +5053,266 @@ async fn run_rest_fixture_with_limits(
         FixtureReply::Response(response)
     })
     .await;
-    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+    let builder = WebAssessmentRuntime::builder(server.url("/"))
         .limits(limits)
         .enable_openapi_review()
-        .enable_rest_review()
-        .build()
-        .unwrap();
+        .enable_rest_review();
+    #[cfg(feature = "secret-exposure-review")]
+    let builder = if value_free {
+        builder.enable_secret_exposure_review()
+    } else {
+        builder
+    };
+    #[cfg(not(feature = "secret-exposure-review"))]
+    assert!(!value_free);
+    let mut runtime = builder.build().unwrap();
     let report = runtime.analyze().await.unwrap();
     (report, server.requests().await)
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_normal_runtime_keeps_private_replay_without_public_content_identity() {
+    for (mode, resource) in [
+        (RestFixtureMode::Stable, "/status"),
+        (
+            RestFixtureMode::SchemaPathCanary,
+            "/schema-path-canary-52af",
+        ),
+    ] {
+        let (report, requests) =
+            run_rest_fixture_with_privacy(mode, WebAssessmentLimits::default(), true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(report.usage().total_requests(), 5);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == resource)
+                .count(),
+            2
+        );
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), RestRuntimeOutcome::SurfaceObserved);
+        assert_eq!(audit.request_count(), 2);
+        assert_eq!(audit.active_verification_count(), 1);
+        assert!(audit.selected_operation_identity().is_none());
+        assert!(audit.replay_stable());
+        let item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == "api.rest-readonly-surface-observed@1")
+            .unwrap();
+        assert_eq!(item.presentation_target_kind(), "assessment_subject");
+        assert!(report
+            .openapi_review_audit()
+            .unwrap()
+            .semantic_digest()
+            .is_none());
+        #[cfg(feature = "reporting")]
+        {
+            let product =
+                ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                    .unwrap();
+            for format in [
+                ReportFormat::Json,
+                ReportFormat::Html,
+                ReportFormat::Markdown,
+                ReportFormat::Csv,
+            ] {
+                let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+                for forbidden in [
+                    REST_REVIEW_SCALAR_SECRET,
+                    "/schema-path-canary-52af",
+                    "openapi-operation-sha256:",
+                    "rest-operation-sha256:",
+                    "openapi-catalog-sha256:",
+                ] {
+                    assert!(!rendered.contains(forbidden));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_preserves_literal_terminal_and_ineligible_outcomes() {
+    for (mode, expected, rest_requests) in [
+        (
+            RestFixtureMode::ReplayMismatch,
+            RestRuntimeOutcome::ReplayMismatch,
+            2,
+        ),
+        (
+            RestFixtureMode::NoEligibleOperation,
+            RestRuntimeOutcome::NotEligible,
+            0,
+        ),
+        (
+            RestFixtureMode::OpenApiReplayMismatch,
+            RestRuntimeOutcome::NotEligible,
+            0,
+        ),
+        (RestFixtureMode::Redirect, RestRuntimeOutcome::Redirect, 1),
+        (
+            RestFixtureMode::AuthenticationRequired,
+            RestRuntimeOutcome::AuthenticationRequired,
+            1,
+        ),
+        (RestFixtureMode::Forbidden, RestRuntimeOutcome::Forbidden, 1),
+        (RestFixtureMode::NotFound, RestRuntimeOutcome::NotFound, 1),
+        (
+            RestFixtureMode::RateLimited,
+            RestRuntimeOutcome::RateLimited,
+            1,
+        ),
+        (
+            RestFixtureMode::DefenseChallenge,
+            RestRuntimeOutcome::DefensiveInterference,
+            1,
+        ),
+        (
+            RestFixtureMode::ServerError,
+            RestRuntimeOutcome::ServerError,
+            1,
+        ),
+        (
+            RestFixtureMode::Html,
+            RestRuntimeOutcome::CompleteNonJson,
+            1,
+        ),
+        (
+            RestFixtureMode::MalformedJson,
+            RestRuntimeOutcome::Incomplete,
+            1,
+        ),
+        (
+            RestFixtureMode::StructuralLimit,
+            RestRuntimeOutcome::Incomplete,
+            1,
+        ),
+    ] {
+        let (report, requests) =
+            run_rest_fixture_with_privacy(mode, WebAssessmentLimits::default(), true).await;
+        assert_report_reconciles(&report);
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(usize::from(audit.request_count()), rest_requests);
+        assert_eq!(
+            usize::from(audit.active_verification_count()),
+            usize::from(rest_requests == 2)
+        );
+        assert!(audit.selected_operation_identity().is_none());
+        assert!(!audit.item_projected());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/status")
+                .count(),
+            rest_requests
+        );
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| item.capability_id() == "api.rest-readonly-surface-observed@1"));
+    }
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_uses_the_same_request_and_byte_allowance() {
+    for request_limit in [3, 4] {
+        let limits = WebAssessmentLimits::default()
+            .with_max_total_requests(request_limit)
+            .unwrap();
+        let (report, requests) =
+            run_rest_fixture_with_privacy(RestFixtureMode::Stable, limits, true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(report.usage().total_requests(), request_limit);
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), RestRuntimeOutcome::BudgetExhausted);
+        assert_eq!(u32::from(audit.request_count()), request_limit - 3);
+        assert!(!audit.item_projected());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/status")
+                .count() as u64,
+            u64::from(request_limit - 3)
+        );
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    }
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(512)
+        .unwrap();
+    let (report, requests) =
+        run_rest_fixture_with_privacy(RestFixtureMode::Truncated, limits, true).await;
+    assert_report_reconciles(&report);
+    assert_eq!(
+        report.rest_review_audit().unwrap().outcome(),
+        RestRuntimeOutcome::Truncated
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/status")
+            .count(),
+        1
+    );
+    assert!(!report.rest_review_audit().unwrap().item_projected());
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::RestReviewIncomplete));
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_cancellation_keeps_candidate_and_replay_separate() {
+    for stall_at in [0, 1] {
+        let started = Arc::new(Notify::new());
+        let observed = Arc::clone(&started);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let server = serve(move |request| match request.path() {
+            "/openapi.json" => FixtureReply::Response(FixtureResponse::new("200 OK", Some("application/json"), r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#)),
+            "/status" if counter.fetch_add(1, Ordering::SeqCst) == stall_at => {
+                observed.notify_one();
+                FixtureReply::Stall
+            },
+            "/status" => FixtureReply::Response(FixtureResponse::new("200 OK", Some("application/json"), r#"{"ok":true}"#)),
+            _ => FixtureReply::Response(FixtureResponse::html("fixture root")),
+        }).await;
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let canceller = tokio::spawn(async move {
+            started.notified().await;
+            cancel.cancel();
+        });
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .cancellation_token(cancellation)
+            .enable_openapi_review()
+            .enable_rest_review()
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        canceller.await.unwrap();
+        assert_report_reconciles(&report);
+        assert_eq!(
+            report.rest_review_audit().unwrap().outcome(),
+            RestRuntimeOutcome::Cancelled
+        );
+        assert_eq!(server.hit_count("/status").await, stall_at + 1);
+        assert!(!report.rest_review_audit().unwrap().item_projected());
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::HostCancellation));
+    }
 }
 
 #[cfg(feature = "rest-review")]

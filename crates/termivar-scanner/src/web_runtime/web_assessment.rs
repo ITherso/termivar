@@ -2672,8 +2672,6 @@ impl WebAssessmentRuntimeBuilder {
         let conflict = false;
         #[cfg(all(feature = "openapi-review", feature = "ssrf-oast-review"))]
         let conflict = conflict || (self.openapi_review && self.ssrf_oast_review.is_some());
-        #[cfg(feature = "rest-review")]
-        let conflict = conflict || self.rest_review;
         #[cfg(feature = "authorization-review")]
         let conflict = conflict || self.resource_authorization_review.is_some();
         #[cfg(feature = "wordpress-review")]
@@ -4327,7 +4325,7 @@ impl WebAssessmentRuntime {
                     let forced_runtime_limit = standard.limit_exceeded().cloned();
                     match binding.finalize(
                         self.authority.knowledge(),
-                        standard.transport(),
+                        &standard,
                         forced_outcome,
                         forced_runtime_limit,
                     ) {

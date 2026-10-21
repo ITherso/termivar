@@ -32,7 +32,7 @@ use crate::{
     ApiVisibilityComparator, ApiVisibilityView, DecisionActionExecutor, DecisionActionOrigin,
     DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError,
     DecisionExecutorRegistry, HttpProbe, HttpProbeMethod, KnowledgeBase, RuntimeLimitExceeded,
-    TransportDispatchAudit, TransportDispatchOutcome,
+    TransportDispatchOutcome,
 };
 
 pub const REST_REVIEW_ACTION_ID: &str = "web.review.rest.readonly-replay@1";
@@ -46,6 +46,40 @@ const REST_REVIEW_EXECUTOR_ID: &str = "http.rest-review";
 const REST_REVIEW_EVIDENCE_NAMESPACE: &str = "web.rest-review.transport";
 const REST_REVIEW_ACCEPT: &str = "application/json";
 const REST_REVIEW_BODY_DIGEST_DOMAIN: &[u8] = b"security.rest-review.body-receipt.v1\0";
+const REST_CLASSIFICATION_ALGORITHM: &str = "web.rest-review.value-free-classification";
+
+#[derive(Clone, Copy)]
+enum RestResponsePrivacy {
+    HistoricalDigests,
+    #[cfg(feature = "secret-exposure-review")]
+    ValueFree,
+}
+
+impl RestResponsePrivacy {
+    fn is_value_free(self) -> bool {
+        match self {
+            Self::HistoricalDigests => false,
+            #[cfg(feature = "secret-exposure-review")]
+            Self::ValueFree => true,
+        }
+    }
+}
+
+#[cfg(feature = "secret-exposure-review")]
+pub(super) fn rest_privacy_route_is_valid(
+    case: &crate::VerificationCase,
+    stage: DecisionExecutionStage,
+    executor: &str,
+) -> bool {
+    executor == REST_REVIEW_EXECUTOR_ID
+        && case.action_id() == REST_REVIEW_ACTION_ID
+        && !case.applies_hypothesis_transition()
+        && case.payload_strategy().is_none()
+        && matches!(
+            stage,
+            DecisionExecutionStage::Passive | DecisionExecutionStage::Active
+        )
+}
 
 const REST_REVIEW_CAPABILITY: AssessmentCapabilityDescriptor =
     AssessmentCapabilityDescriptor::informational(
@@ -225,11 +259,22 @@ impl RestReviewBinding {
         selection: StableRestSelectionSlot,
         requests: HttpRequestBroker,
         subject: EntityId,
+        value_free: bool,
     ) -> Self {
+        let privacy = RestResponsePrivacy::HistoricalDigests;
+        #[cfg(feature = "secret-exposure-review")]
+        let privacy = if value_free {
+            RestResponsePrivacy::ValueFree
+        } else {
+            privacy
+        };
+        #[cfg(not(feature = "secret-exposure-review"))]
+        debug_assert!(!value_free);
         let executor = Arc::new(RestDecisionExecutor {
             requests,
             selection,
             subject: subject.clone(),
+            privacy,
             state: Mutex::new(RestExecutionState::default()),
         });
         Self { executor, subject }
@@ -261,10 +306,11 @@ impl RestReviewBinding {
     pub(super) fn finalize(
         self,
         knowledge: &KnowledgeBase,
-        transport: &TransportDispatchAudit,
+        standard: &super::StandardWebDecisionRunReport,
         forced_outcome: Option<RestRuntimeOutcome>,
         forced_runtime_limit: Option<RuntimeLimitExceeded>,
     ) -> Result<RestRuntimeResult, RestRuntimeInvariantError> {
+        let transport = standard.transport();
         if transport.omitted_receipt_count() != 0 {
             return Err(RestRuntimeInvariantError::Catalog);
         }
@@ -278,11 +324,29 @@ impl RestReviewBinding {
             return Err(RestRuntimeInvariantError::Catalog);
         }
         let state = self.executor.take_state()?;
+        #[cfg(feature = "secret-exposure-review")]
+        let committed = if self.executor.privacy.is_value_free() {
+            validate_value_free_rest_commits(
+                standard,
+                knowledge,
+                &self.subject,
+                selection.as_ref(),
+                &state,
+            )?
+        } else {
+            true
+        };
+        #[cfg(not(feature = "secret-exposure-review"))]
+        let committed = true;
         if !captured_rest_prefix_reconciles(&state, &receipts) {
             return Err(RestRuntimeInvariantError::Catalog);
         }
         let request_count = u8::try_from(receipts.len()).unwrap_or(u8::MAX);
-        let terminal = forced_outcome.or(state.terminal);
+        let terminal = forced_outcome.or(if committed {
+            state.terminal
+        } else {
+            Some(RestRuntimeOutcome::Incomplete)
+        });
         let runtime_limit = if forced_outcome.is_some() {
             forced_runtime_limit
         } else {
@@ -290,12 +354,13 @@ impl RestReviewBinding {
         };
 
         if let Some(outcome) = terminal {
-            let audit = audit(
+            let audit = audit_for_privacy(
                 selection.as_ref(),
                 outcome,
                 request_count,
                 state.terminal_observation,
                 false,
+                self.executor.privacy,
             );
             if matches!(
                 outcome,
@@ -311,6 +376,7 @@ impl RestReviewBinding {
             }
             return Ok(RestRuntimeResult::Complete(CommittedRestReview {
                 subject: self.subject,
+                privacy: self.executor.privacy,
                 target_identity: selection
                     .as_ref()
                     .map(|selected| selected.target_identity().to_owned()),
@@ -327,15 +393,17 @@ impl RestReviewBinding {
         let Some(selection) = selection else {
             return Ok(RestRuntimeResult::Complete(CommittedRestReview {
                 subject: self.subject,
+                privacy: self.executor.privacy,
                 target_identity: None,
                 outcome: RestRuntimeOutcome::NotEligible,
                 evidence_ids: Vec::new(),
-                audit: audit(
+                audit: audit_for_privacy(
                     None,
                     RestRuntimeOutcome::NotEligible,
                     request_count,
                     None,
                     false,
+                    self.executor.privacy,
                 ),
             }));
         };
@@ -344,12 +412,13 @@ impl RestReviewBinding {
             state.legs.get(&DecisionExecutionStage::Active),
         ) else {
             return Ok(RestRuntimeResult::Stopped {
-                audit: audit(
+                audit: audit_for_privacy(
                     Some(&selection),
                     RestRuntimeOutcome::Incomplete,
                     request_count,
                     None,
                     false,
+                    self.executor.privacy,
                 ),
                 runtime_limit: None,
             });
@@ -364,12 +433,13 @@ impl RestReviewBinding {
                 })
         {
             return Ok(RestRuntimeResult::Stopped {
-                audit: audit(
+                audit: audit_for_privacy(
                     Some(&selection),
                     RestRuntimeOutcome::Incomplete,
                     request_count,
                     None,
                     false,
+                    self.executor.privacy,
                 ),
                 runtime_limit: None,
             });
@@ -396,21 +466,414 @@ impl RestReviewBinding {
         {
             return Err(RestRuntimeInvariantError::Catalog);
         }
-        let audit = audit(
+        let audit = audit_for_privacy(
             Some(&selection),
             outcome,
             request_count,
             Some(replay.audit_observation()),
             projected,
+            self.executor.privacy,
         );
         Ok(RestRuntimeResult::Complete(CommittedRestReview {
             subject: self.subject,
+            privacy: self.executor.privacy,
             target_identity: Some(selection.target_identity().to_owned()),
             outcome,
             evidence_ids,
             audit,
         }))
     }
+}
+
+/// Staged views are not projection authority until the normal runner's exact
+/// write-set and closed response lineage have committed to this assessment.
+#[cfg(feature = "secret-exposure-review")]
+fn validate_value_free_rest_commits(
+    standard: &super::StandardWebDecisionRunReport,
+    knowledge: &KnowledgeBase,
+    subject: &EntityId,
+    selection: Option<&RestOperationSelection>,
+    state: &RestExecutionState,
+) -> Result<bool, RestRuntimeInvariantError> {
+    use crate::{KnowledgeWrite, StandardWebDecisionRuntimeTurn};
+    use std::collections::BTreeSet;
+    let receipts = standard
+        .turns()
+        .iter()
+        .filter_map(|turn| match turn {
+            StandardWebDecisionRuntimeTurn::Outcome { evidence, .. } => Some(evidence.as_ref()),
+            StandardWebDecisionRuntimeTurn::Planning(_) => None,
+        })
+        .chain(standard.unverified_evidence())
+        .filter(|receipt| {
+            receipt.case().action_id() == REST_REVIEW_ACTION_ID
+                || receipt.executor_id() == REST_REVIEW_EXECUTOR_ID
+        })
+        .collect::<Vec<_>>();
+    if receipts.len() > MAX_REST_REVIEW_REQUESTS {
+        return Err(RestRuntimeInvariantError::Catalog);
+    }
+    let mut committed = BTreeSet::new();
+    let mut terminal_committed = false;
+    for (index, receipt) in receipts.into_iter().enumerate() {
+        let expected_stage = if index == 0 {
+            DecisionExecutionStage::Passive
+        } else {
+            DecisionExecutionStage::Active
+        };
+        if !rest_privacy_route_is_valid(receipt.case(), receipt.stage(), receipt.executor_id())
+            || receipt.case().subject() != subject
+            || receipt.stage() != expected_stage
+            || receipt.evidence().len() != receipt.writes().len()
+        {
+            return Err(RestRuntimeInvariantError::Catalog);
+        }
+        let mut ids = BTreeSet::new();
+        for (item, write) in receipt.write_set() {
+            if !matches!(write, KnowledgeWrite::Inserted | KnowledgeWrite::Unchanged)
+                || item.subject() != subject
+                || item.source().component() != REST_REVIEW_EXECUTOR_ID
+                || item.source().correlation_id() != Some(receipt.case().id())
+                || item.reliability() != ConfidenceScore::MAX
+                || !ids.insert(item.id())
+                || knowledge.evidence(item.id()).as_ref() != Some(item)
+                || item.predicate() == &HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge()
+            {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+        }
+        let phase = rest_receipt_fact(
+            receipt,
+            &crate::web_actions::rest_review_phase_terminal_predicate(),
+        )?;
+        if phase.kind() != &EvidenceKind::Custom("rest-review".to_owned())
+            || !phase.origin().is_direct()
+            || phase.source().method() != "phase-terminal"
+        {
+            return Err(RestRuntimeInvariantError::Catalog);
+        }
+        let response_received = receipt.evidence().iter().any(|item| {
+            item.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge()
+        });
+        if !response_received {
+            let bytes = rest_receipt_fact(
+                receipt,
+                &HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+            )?;
+            if state.terminal.is_none()
+                || state.legs.contains_key(&receipt.stage())
+                || receipt.evidence().len() != 2
+                || bytes.kind() != &EvidenceKind::Custom("rest-review".to_owned())
+                || !bytes.origin().is_direct()
+                || bytes.source().method() != "response-body-size"
+                || bytes.value() != &EvidenceValue::Unsigned(0)
+                || phase.value() != &EvidenceValue::Boolean(true)
+            {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+            terminal_committed = true;
+            continue;
+        }
+        let selected = selection.ok_or(RestRuntimeInvariantError::Catalog)?;
+        let parents = super::secret_exposure::rest_response_privacy_parent_ids(
+            receipt.evidence(),
+            receipt.case(),
+            receipt.stage(),
+            receipt.executor_id(),
+        )
+        .ok_or(RestRuntimeInvariantError::Catalog)?;
+        let lineage_predicate = KnowledgePredicate::new(
+            super::secret_exposure::SECRET_EXPOSURE_NAMESPACE,
+            super::secret_exposure::ACTIVE_REVIEW_BODY_LINEAGE,
+        )
+        .map_err(|_| RestRuntimeInvariantError::Catalog)?;
+        let lineage = rest_receipt_fact(receipt, &lineage_predicate)?;
+        if !super::secret_exposure::is_active_review_body_privacy_lineage(
+            lineage,
+            subject,
+            receipt.case().id(),
+            REST_REVIEW_EXECUTOR_ID,
+            &parents,
+        ) {
+            return Err(RestRuntimeInvariantError::Catalog);
+        }
+        for predicate in [
+            HttpEvidencePredicate::REQUEST_URL,
+            HttpEvidencePredicate::RESPONSE_FINAL_URL,
+        ] {
+            if rest_receipt_fact(receipt, &predicate.into_knowledge())?.value()
+                != &EvidenceValue::Text(selected.execution_url().to_string())
+            {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+        }
+        let fixed_predicates = [
+            HttpEvidencePredicate::REQUEST_METHOD,
+            HttpEvidencePredicate::REQUEST_URL,
+            HttpEvidencePredicate::RESPONSE_STATUS,
+            HttpEvidencePredicate::RESPONSE_FINAL_URL,
+            HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+            HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+            HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+            HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+            HttpEvidencePredicate::RESPONSE_MEDIA_TYPE,
+            HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE,
+        ]
+        .map(|predicate| predicate.into_knowledge());
+        for (predicate, kind, method) in [
+            (
+                HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+                EvidenceKind::RateLimit,
+                "rate-limit-status",
+            ),
+            (
+                HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+                EvidenceKind::RateLimit,
+                "rate-limit-headers",
+            ),
+        ] {
+            let item = rest_receipt_fact(receipt, &predicate.into_knowledge())?;
+            if item.kind() != &kind
+                || !item.origin().is_direct()
+                || item.source().method() != method
+                || !matches!(item.value(), EvidenceValue::Boolean(_))
+            {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+        }
+        let media_predicate = HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge();
+        let compatibility_predicate =
+            HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into_knowledge();
+        let media = receipt
+            .evidence()
+            .iter()
+            .find(|item| item.predicate() == &media_predicate);
+        let mut compatibility = receipt
+            .evidence()
+            .iter()
+            .filter(|item| item.predicate() == &compatibility_predicate);
+        match (media, compatibility.next()) {
+            (Some(media), Some(compatible)) => {
+                let EvidenceValue::Text(media_type) = media.value() else {
+                    return Err(RestRuntimeInvariantError::Catalog);
+                };
+                if compatibility.next().is_some()
+                    || compatible.kind() != &EvidenceKind::Http
+                    || !compatible.origin().is_direct()
+                    || compatible.source().method() != "response-media-type-json-compatibility"
+                    || compatible.value()
+                        != &EvidenceValue::Boolean(
+                            crate::http_evidence::json_compatible_media_type(media_type),
+                        )
+                {
+                    return Err(RestRuntimeInvariantError::Catalog);
+                }
+            },
+            (None, None) => {},
+            _ => return Err(RestRuntimeInvariantError::Catalog),
+        }
+        if receipt.evidence().iter().any(|item| {
+            let rest_fact = item.predicate().namespace() == REST_REVIEW_EVIDENCE_NAMESPACE
+                && matches!(
+                    item.predicate().name(),
+                    "view"
+                        | "phase-terminal"
+                        | "status-equivalent"
+                        | "fields-equivalent"
+                        | "resources-equivalent"
+                );
+            let known_fact = fixed_predicates.contains(item.predicate())
+                || rest_fact
+                || item.predicate() == &lineage_predicate
+                || item.predicate()
+                    == &crate::web_actions::native_web_review_response_marker_predicate()
+                || item.predicate().namespace()
+                    == super::assessment_defense::ASSESSMENT_DEFENSE_NAMESPACE;
+            !known_fact
+                || (item.predicate().namespace()
+                    == super::secret_exposure::SECRET_EXPOSURE_NAMESPACE
+                    && item.predicate() != &lineage_predicate)
+                || (item.predicate().namespace() == REST_REVIEW_EVIDENCE_NAMESPACE
+                    && !matches!(
+                        item.predicate().name(),
+                        "view"
+                            | "phase-terminal"
+                            | "status-equivalent"
+                            | "fields-equivalent"
+                            | "resources-equivalent"
+                    ))
+        }) {
+            return Err(RestRuntimeInvariantError::Catalog);
+        }
+        let view_predicate = KnowledgePredicate::new(REST_REVIEW_EVIDENCE_NAMESPACE, "view")
+            .map_err(|_| RestRuntimeInvariantError::Catalog)?;
+        let completion_predicate =
+            crate::web_actions::native_web_review_response_marker_predicate();
+        let completion = receipt
+            .evidence()
+            .iter()
+            .filter(|item| item.predicate() == &completion_predicate)
+            .collect::<Vec<_>>();
+        let classifications = receipt
+            .evidence()
+            .iter()
+            .filter(|item| {
+                item.predicate().namespace() == REST_REVIEW_EVIDENCE_NAMESPACE
+                    && item.predicate().name() != "phase-terminal"
+            })
+            .collect::<Vec<_>>();
+        let wire = standard
+            .transport()
+            .receipts()
+            .iter()
+            .filter(|item| item.action_id() == REST_REVIEW_ACTION_ID)
+            .nth(index)
+            .ok_or(RestRuntimeInvariantError::Catalog)?;
+        let bytes = rest_receipt_fact(
+            receipt,
+            &HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+        )?;
+        let Some(leg) = state.legs.get(&receipt.stage()) else {
+            if state.terminal.is_none()
+                || !classifications.is_empty()
+                || !completion.is_empty()
+                || phase.value() != &EvidenceValue::Boolean(true)
+                || !matches!(
+                    wire.outcome(),
+                    TransportDispatchOutcome::Completed
+                        | TransportDispatchOutcome::ResponseBudgetReached
+                )
+                || !matches!(bytes.value(), EvidenceValue::Unsigned(value) if *value <= wire.response_bytes())
+            {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+            terminal_committed = true;
+            continue;
+        };
+        let mut expected_parents = BTreeSet::new();
+        for item in receipt
+            .evidence()
+            .iter()
+            .filter(|item| fixed_predicates.contains(item.predicate()) || item.id() == phase.id())
+        {
+            if !item.origin().is_direct() {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+            expected_parents.insert(item.id().clone());
+        }
+        expected_parents.insert(lineage.id().clone());
+        let expected_parents = expected_parents.into_iter().collect::<Vec<_>>();
+        let view = rest_receipt_fact(receipt, &view_predicate)?;
+        let expected_view = EvidenceValue::TextList(vec![
+            format!("leg={}", rest_leg_identity(receipt.stage())),
+            format!("status={}", leg.view.status()),
+            "method=GET".to_owned(),
+            format!("media={}", observed_media_name(leg.media)),
+            "complete=true".to_owned(),
+            "truncated=false".to_owned(),
+            "rate_limited=false".to_owned(),
+            "challenged=false".to_owned(),
+        ]);
+        if completion.len() != 1
+            || !completion[0].origin().is_direct()
+            || completion[0].source().method() != "complete"
+            || completion[0].value() != &EvidenceValue::Boolean(true)
+            || phase.value() != &EvidenceValue::Boolean(false)
+            || bytes.value() != &EvidenceValue::Unsigned(leg.response_bytes)
+            || wire.outcome() != TransportDispatchOutcome::Completed
+            || wire.response_bytes() != leg.response_bytes
+            || rest_receipt_fact(
+                receipt,
+                &HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED.into_knowledge(),
+            )?
+            .value()
+                != &EvidenceValue::Boolean(false)
+            || rest_receipt_fact(
+                receipt,
+                &HttpEvidencePredicate::RATE_LIMIT_DETECTED.into_knowledge(),
+            )?
+            .value()
+                != &EvidenceValue::Boolean(false)
+            || rest_receipt_fact(
+                receipt,
+                &HttpEvidencePredicate::RESPONSE_STATUS.into_knowledge(),
+            )?
+            .value()
+                != &EvidenceValue::Unsigned(u64::from(leg.view.status()))
+            || rest_receipt_fact(
+                receipt,
+                &HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into_knowledge(),
+            )?
+            .value()
+                != &EvidenceValue::Boolean(true)
+            || view.value() != &expected_view
+            || view.source().method() != rest_leg_identity(receipt.stage())
+            || !valid_rest_classification(view, &expected_parents)
+        {
+            return Err(RestRuntimeInvariantError::Catalog);
+        }
+        let mut expected_ids = vec![view.id().clone()];
+        if receipt.stage() == DecisionExecutionStage::Active {
+            let candidate = state
+                .legs
+                .get(&DecisionExecutionStage::Passive)
+                .ok_or(RestRuntimeInvariantError::Catalog)?;
+            if !committed.contains(&DecisionExecutionStage::Passive) {
+                return Err(RestRuntimeInvariantError::Catalog);
+            }
+            let comparison = ApiVisibilityComparator::default()
+                .compare_exact_replay(&candidate.view, &leg.view)
+                .map_err(|_| RestRuntimeInvariantError::Catalog)?;
+            for (name, expected) in [
+                ("status-equivalent", comparison.status()),
+                ("fields-equivalent", comparison.fields()),
+                ("resources-equivalent", comparison.resources()),
+            ] {
+                let predicate = KnowledgePredicate::new(REST_REVIEW_EVIDENCE_NAMESPACE, name)
+                    .map_err(|_| RestRuntimeInvariantError::Catalog)?;
+                let item = rest_receipt_fact(receipt, &predicate)?;
+                if item.source().method() != name
+                    || item.value() != &EvidenceValue::Boolean(expected)
+                    || !valid_rest_classification(item, &expected_parents)
+                {
+                    return Err(RestRuntimeInvariantError::Catalog);
+                }
+                expected_ids.push(item.id().clone());
+            }
+        }
+        if classifications.len() != expected_ids.len() || leg.evidence_ids != expected_ids {
+            return Err(RestRuntimeInvariantError::Catalog);
+        }
+        committed.insert(receipt.stage());
+    }
+    Ok(state.legs.keys().all(|stage| committed.contains(stage))
+        && (state.terminal.is_none() || terminal_committed))
+}
+
+#[cfg(feature = "secret-exposure-review")]
+fn valid_rest_classification(item: &Evidence, parents: &[EvidenceId]) -> bool {
+    item.kind() == &EvidenceKind::Custom("rest-review".to_owned())
+        && item.origin().derivation().is_some_and(|derivation| {
+            derivation.algorithm().name() == REST_CLASSIFICATION_ALGORITHM
+                && derivation.algorithm().version() == 1
+                && derivation.parents() == parents
+        })
+}
+
+#[cfg(feature = "secret-exposure-review")]
+fn rest_receipt_fact<'a>(
+    receipt: &'a crate::DecisionEvidenceReceipt,
+    predicate: &KnowledgePredicate,
+) -> Result<&'a Evidence, RestRuntimeInvariantError> {
+    let mut matches = receipt
+        .evidence()
+        .iter()
+        .filter(|item| item.predicate() == predicate);
+    let item = matches.next().ok_or(RestRuntimeInvariantError::Catalog)?;
+    if matches.next().is_some() {
+        return Err(RestRuntimeInvariantError::Catalog);
+    }
+    Ok(item)
 }
 
 fn rest_transport_prefix_is_valid(receipts: &[&crate::TransportDispatchReceipt]) -> bool {
@@ -461,6 +924,7 @@ pub(super) enum RestRuntimeResult {
 
 pub(super) struct CommittedRestReview {
     subject: EntityId,
+    privacy: RestResponsePrivacy,
     target_identity: Option<String>,
     outcome: RestRuntimeOutcome,
     evidence_ids: Vec<EvidenceId>,
@@ -525,6 +989,7 @@ struct RestDecisionExecutor {
     requests: HttpRequestBroker,
     selection: StableRestSelectionSlot,
     subject: EntityId,
+    privacy: RestResponsePrivacy,
     state: Mutex<RestExecutionState>,
 }
 
@@ -662,7 +1127,7 @@ impl DecisionActionExecutor for RestDecisionExecutor {
                 None,
                 Some(RestAuditObservation::new(status, media)),
             )?;
-            return transport_evidence(request, &response, None, None, true);
+            return transport_evidence(request, &response, None, None, true, self.privacy);
         }
         if !response.has_json_compatible_media_type() {
             let outcome = match media {
@@ -677,7 +1142,7 @@ impl DecisionActionExecutor for RestDecisionExecutor {
                 None,
                 Some(RestAuditObservation::new(status, media)),
             )?;
-            return transport_evidence(request, &response, None, None, true);
+            return transport_evidence(request, &response, None, None, true, self.privacy);
         }
         let json: serde_json::Value = match serde_json::from_slice(response.body()) {
             Ok(json) => json,
@@ -687,7 +1152,7 @@ impl DecisionActionExecutor for RestDecisionExecutor {
                     None,
                     Some(RestAuditObservation::new(status, media)),
                 )?;
-                return transport_evidence(request, &response, None, None, true);
+                return transport_evidence(request, &response, None, None, true, self.privacy);
             },
         };
         let context_id = rest_leg_identity(request.stage());
@@ -710,7 +1175,7 @@ impl DecisionActionExecutor for RestDecisionExecutor {
                     None,
                     Some(RestAuditObservation::new(status, media)),
                 )?;
-                return transport_evidence(request, &response, None, None, true);
+                return transport_evidence(request, &response, None, None, true, self.privacy);
             },
             Err(_) => {
                 return Err(DecisionExecutorError::new("REST JSON view capture failed"));
@@ -741,6 +1206,7 @@ impl DecisionActionExecutor for RestDecisionExecutor {
             Some(&selection),
             comparison.as_ref(),
             false,
+            self.privacy,
         )?;
         let evidence_ids = evidence
             .iter()
@@ -862,11 +1328,14 @@ fn transport_evidence(
     selection: Option<&RestOperationSelection>,
     comparison: Option<&ApiExactReplayComparison>,
     terminal: bool,
+    privacy: RestResponsePrivacy,
 ) -> Result<Vec<Evidence>, DecisionExecutorError> {
-    let mut digest = Sha256::new();
-    digest.update(REST_REVIEW_BODY_DIGEST_DOMAIN);
-    digest.update(response.body());
-    let digest = format!("{:x}", digest.finalize());
+    let digest = (!privacy.is_value_free()).then(|| {
+        let mut digest = Sha256::new();
+        digest.update(REST_REVIEW_BODY_DIGEST_DOMAIN);
+        digest.update(response.body());
+        format!("{:x}", digest.finalize())
+    });
     let signal = response.openapi_defense_signal();
     let mut evidence = vec![
         make_typed_evidence(
@@ -913,13 +1382,6 @@ fn transport_evidence(
         )?,
         make_typed_evidence(
             request,
-            EvidenceKind::Content,
-            HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
-            EvidenceValue::Text(digest.clone()),
-            "response-body-sha256",
-        )?,
-        make_typed_evidence(
-            request,
             EvidenceKind::RateLimit,
             HttpEvidencePredicate::RATE_LIMIT_DETECTED.into_knowledge(),
             EvidenceValue::Boolean(response.status() == 429),
@@ -939,10 +1401,19 @@ fn transport_evidence(
             "phase-terminal",
         )?,
     ];
-    let defense_parents = evidence[..9]
-        .iter()
-        .map(|evidence| evidence.id().clone())
-        .collect();
+    if let Some(digest) = digest.as_ref() {
+        // Preserve historical evidence ordering and exact domain-separated hash.
+        evidence.insert(
+            6,
+            make_typed_evidence(
+                request,
+                EvidenceKind::Content,
+                HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+                EvidenceValue::Text(digest.clone()),
+                "response-body-sha256",
+            )?,
+        );
+    }
     if let Some(media) = response.normalized_media_type() {
         evidence.push(make_typed_evidence(
             request,
@@ -959,31 +1430,88 @@ fn transport_evidence(
             "response-media-type-json-compatibility",
         )?);
     }
+    if privacy.is_value_free() {
+        #[cfg(feature = "secret-exposure-review")]
+        evidence.push(
+            super::secret_exposure::project_rest_body_privacy_lineage(
+                request,
+                &evidence,
+                REST_REVIEW_EXECUTOR_ID,
+                ConfidenceScore::MAX,
+            )
+            .map_err(|_| DecisionExecutorError::new("REST privacy lineage failed"))?,
+        );
+        #[cfg(not(feature = "secret-exposure-review"))]
+        return Err(DecisionExecutorError::new(
+            "REST privacy selection is unavailable",
+        ));
+    }
+    let fixed_predicates = [
+        HttpEvidencePredicate::REQUEST_METHOD,
+        HttpEvidencePredicate::REQUEST_URL,
+        HttpEvidencePredicate::RESPONSE_STATUS,
+        HttpEvidencePredicate::RESPONSE_FINAL_URL,
+        HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+        HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+        HttpEvidencePredicate::RESPONSE_BODY_SHA256,
+        HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+        HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+    ]
+    .map(|predicate| predicate.into_knowledge());
+    let defense_parents = evidence
+        .iter()
+        .filter(|item| {
+            #[cfg(not(feature = "secret-exposure-review"))]
+            let privacy_parent = false;
+            #[cfg(feature = "secret-exposure-review")]
+            let privacy_parent = privacy.is_value_free()
+                && item.predicate().namespace()
+                    == super::secret_exposure::SECRET_EXPOSURE_NAMESPACE
+                && item.predicate().name() == super::secret_exposure::ACTIVE_REVIEW_BODY_LINEAGE;
+            fixed_predicates.contains(item.predicate()) || privacy_parent
+        })
+        .map(|item| item.id().clone())
+        .collect();
+    let classification_parents = evidence
+        .iter()
+        .map(|item| item.id().clone())
+        .collect::<Vec<_>>();
     if let Some(selection) = selection {
         let leg_identity = rest_leg_identity(request.stage());
-        evidence.push(make_evidence(
+        let mut values = vec![
+            format!("leg={leg_identity}"),
+            format!("status={}", response.status()),
+            "method=GET".into(),
+            format!(
+                "media={}",
+                observed_media_name(observed_media_class(
+                    response.normalized_media_type().as_deref()
+                ))
+            ),
+            format!("complete={}", response.body_complete()),
+            format!("truncated={}", response.body_truncated()),
+            format!("rate_limited={}", signal.state().is_rate_limited()),
+            format!("challenged={}", signal.state().is_challenged()),
+        ];
+        if let Some(digest) = digest.as_ref() {
+            values.insert(
+                1,
+                format!("operation={}", selection.operation_id().as_str()),
+            );
+            values.insert(2, format!("target={}", selection.target_identity()));
+            values.insert(8, format!("response={digest}"));
+        }
+        let item = make_evidence(
             request,
             KnowledgePredicate::new(REST_REVIEW_EVIDENCE_NAMESPACE, "view")
                 .map_err(|_| DecisionExecutorError::new("REST predicate failed"))?,
-            EvidenceValue::TextList(vec![
-                format!("leg={leg_identity}"),
-                format!("operation={}", selection.operation_id().as_str()),
-                format!("target={}", selection.target_identity()),
-                format!("status={}", response.status()),
-                "method=GET".into(),
-                format!(
-                    "media={}",
-                    observed_media_name(observed_media_class(
-                        response.normalized_media_type().as_deref()
-                    ))
-                ),
-                format!("complete={}", response.body_complete()),
-                format!("truncated={}", response.body_truncated()),
-                format!("response={digest}"),
-                format!("rate_limited={}", signal.state().is_rate_limited()),
-                format!("challenged={}", signal.state().is_challenged()),
-            ]),
+            EvidenceValue::TextList(values),
             leg_identity,
+        )?;
+        evidence.push(classification_evidence(
+            item,
+            &classification_parents,
+            privacy,
         )?);
     }
     if let Some(comparison) = comparison {
@@ -992,12 +1520,17 @@ fn transport_evidence(
             ("fields-equivalent", comparison.fields()),
             ("resources-equivalent", comparison.resources()),
         ] {
-            evidence.push(make_evidence(
+            let item = make_evidence(
                 request,
                 KnowledgePredicate::new(REST_REVIEW_EVIDENCE_NAMESPACE, name)
                     .map_err(|_| DecisionExecutorError::new("REST predicate failed"))?,
                 EvidenceValue::Boolean(equivalent),
                 name,
+            )?;
+            evidence.push(classification_evidence(
+                item,
+                &classification_parents,
+                privacy,
             )?);
         }
     }
@@ -1023,6 +1556,23 @@ fn transport_evidence(
         .map_err(|_| DecisionExecutorError::new("REST defense projection failed"))?,
     );
     Ok(evidence)
+}
+
+fn classification_evidence(
+    item: Evidence,
+    parents: &[EvidenceId],
+    privacy: RestResponsePrivacy,
+) -> Result<Evidence, DecisionExecutorError> {
+    if !privacy.is_value_free() {
+        return Ok(item);
+    }
+    let derivation = termivar_core::EvidenceDerivation::new(
+        parents.to_vec(),
+        termivar_core::DerivationAlgorithm::new(REST_CLASSIFICATION_ALGORITHM, 1)
+            .map_err(|_| DecisionExecutorError::new("REST classification algorithm failed"))?,
+    )
+    .map_err(|_| DecisionExecutorError::new("REST classification provenance failed"))?;
+    Ok(item.derived_from(derivation))
 }
 
 fn rest_leg_identity(stage: DecisionExecutionStage) -> &'static str {
@@ -1064,6 +1614,21 @@ fn audit(
     }
 }
 
+fn audit_for_privacy(
+    selection: Option<&RestOperationSelection>,
+    outcome: RestRuntimeOutcome,
+    requests: u8,
+    observation: Option<RestAuditObservation>,
+    projected: bool,
+    privacy: RestResponsePrivacy,
+) -> WebAssessmentRestAudit {
+    let mut audit = audit(selection, outcome, requests, observation, projected);
+    if privacy.is_value_free() {
+        audit.selected_operation_identity = None;
+    }
+    audit
+}
+
 pub(super) fn project_rest_item(
     context: &mut AssessmentProjectionContext,
     knowledge: &KnowledgeBase,
@@ -1073,11 +1638,15 @@ pub(super) fn project_rest_item(
         context.register_evidence(knowledge, evidence_id)?;
     }
     if review.outcome == RestRuntimeOutcome::SurfaceObserved {
-        let target_identity = review
-            .target_identity
-            .clone()
-            .ok_or(AssessmentItemProjectionError::InvalidStableSubjectIdentity)?;
-        let target = AssessmentItemTarget::rest_operation(target_identity)?;
+        let target = if review.privacy.is_value_free() {
+            AssessmentItemTarget::Subject
+        } else {
+            let target_identity = review
+                .target_identity
+                .clone()
+                .ok_or(AssessmentItemProjectionError::InvalidStableSubjectIdentity)?;
+            AssessmentItemTarget::rest_operation(target_identity)?
+        };
         context.project_observation(
             &REST_REVIEW_CAPABILITY,
             knowledge,
@@ -1188,5 +1757,875 @@ mod tests {
         assert_eq!(audit.request_count(), 2);
         assert_eq!(audit.active_verification_count(), 1);
         assert!(audit.replay_stable() && audit.item_projected());
+    }
+
+    // PRIVATE integration snippet: insert inside rest_runtime.rs's final cfg(test)
+    // module. Original synthetic committed-receipt oracles, NOT captured HTTP.
+    // This file has not been compiled or executed by its author.
+    #[cfg(feature = "secret-exposure-review")]
+    mod privacy_tests {
+        use super::*;
+        use crate::{
+            runtime_budget::RequestAccountingBroker, ActionCost, AdaptationLimits, AttackAction,
+            BenefitScore, DecisionEvidenceReceipt, DecisionLoop, DecisionLoopCommand,
+            DecisionLoopConfig, DecisionOutcomeReport, DecisionRunnerAdapter, DecisionSession,
+            DecisionStopReason, ExperiencePolicy, ExperienceStore, Expression, HypothesisSelector,
+            KnowledgeLayer, KnowledgeWrite, PlanningContext, RequiredStrength, RiskScore,
+            RuntimeBudget, RuntimeUsage, StandardWebDecisionRunReport,
+            StandardWebDecisionRuntimeTurn, VerificationCase, VerificationTarget,
+        };
+        use std::collections::BTreeSet;
+        use termivar_core::{DerivationAlgorithm, EvidenceDerivation, Probability};
+
+        const CASE: &str = "case:synthetic-rest-privacy";
+        const RESOURCE: &str = "https://example.test/health";
+
+        struct LiteralExecutor {
+            id: &'static str,
+            batch: Vec<Evidence>,
+        }
+
+        #[async_trait]
+        impl DecisionActionExecutor for LiteralExecutor {
+            fn id(&self) -> &str {
+                self.id
+            }
+
+            async fn execute(
+                &self,
+                _request: &DecisionExecutionRequest,
+            ) -> Result<Vec<Evidence>, DecisionExecutorError> {
+                assert!(self.batch.len() <= 32);
+                Ok(self.batch.clone())
+            }
+        }
+
+        fn subject() -> EntityId {
+            EntityId::new("endpoint:https://example.test/").unwrap()
+        }
+
+        fn fact(
+            kind: EvidenceKind,
+            predicate: KnowledgePredicate,
+            value: EvidenceValue,
+            method: &str,
+        ) -> Evidence {
+            Evidence::new(
+                subject(),
+                kind,
+                predicate,
+                value,
+                EvidenceSource::new("http.rest-review", method)
+                    .unwrap()
+                    .with_correlation_id(CASE)
+                    .unwrap(),
+                ConfidenceScore::MAX,
+            )
+        }
+
+        fn custom(name: &str, value: EvidenceValue, method: &str) -> Evidence {
+            fact(
+                EvidenceKind::Custom("rest-review".to_owned()),
+                KnowledgePredicate::new("web.rest-review.transport", name).unwrap(),
+                value,
+                method,
+            )
+        }
+
+        fn no_response_batch() -> Vec<Evidence> {
+            vec![
+                fact(
+                    EvidenceKind::Custom("rest-review".to_owned()),
+                    HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED.into_knowledge(),
+                    EvidenceValue::Unsigned(0),
+                    "response-body-size",
+                ),
+                fact(
+                    EvidenceKind::Custom("rest-review".to_owned()),
+                    crate::web_actions::rest_review_phase_terminal_predicate(),
+                    EvidenceValue::Boolean(true),
+                    "phase-terminal",
+                ),
+            ]
+        }
+
+        fn received_batch(parsed: bool, stage: DecisionExecutionStage) -> Vec<Evidence> {
+            // These literal values describe one original eight-byte JSON representation.
+            // No producer/proof helper supplies the expected view or classification.
+            let rows = [
+                (
+                    HttpEvidencePredicate::REQUEST_METHOD,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text("GET".to_owned()),
+                    "request-method",
+                ),
+                (
+                    HttpEvidencePredicate::REQUEST_URL,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text(RESOURCE.to_owned()),
+                    "request-url",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_STATUS,
+                    EvidenceKind::Http,
+                    EvidenceValue::Unsigned(if parsed { 200 } else { 404 }),
+                    "response-status",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_FINAL_URL,
+                    EvidenceKind::Http,
+                    EvidenceValue::Text(RESOURCE.to_owned()),
+                    "response-final-url",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_BODY_BYTES_OBSERVED,
+                    EvidenceKind::Content,
+                    EvidenceValue::Unsigned(8),
+                    "response-body-size",
+                ),
+                (
+                    HttpEvidencePredicate::RESPONSE_BODY_TRUNCATED,
+                    EvidenceKind::Content,
+                    EvidenceValue::Boolean(false),
+                    "response-body-truncation",
+                ),
+                (
+                    HttpEvidencePredicate::RATE_LIMIT_DETECTED,
+                    EvidenceKind::RateLimit,
+                    EvidenceValue::Boolean(false),
+                    "rate-limit-status",
+                ),
+                (
+                    HttpEvidencePredicate::RATE_LIMIT_ADVERTISED,
+                    EvidenceKind::RateLimit,
+                    EvidenceValue::Boolean(false),
+                    "rate-limit-headers",
+                ),
+            ];
+            let mut batch = rows
+                .into_iter()
+                .map(|(predicate, kind, value, method)| {
+                    fact(kind, predicate.into_knowledge(), value, method)
+                })
+                .collect::<Vec<_>>();
+            batch.push(fact(
+                EvidenceKind::Custom("rest-review".to_owned()),
+                crate::web_actions::rest_review_phase_terminal_predicate(),
+                EvidenceValue::Boolean(!parsed),
+                "phase-terminal",
+            ));
+            batch.push(fact(
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE.into_knowledge(),
+                EvidenceValue::Text("application/json".to_owned()),
+                "response-media-type",
+            ));
+            batch.push(fact(
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into_knowledge(),
+                EvidenceValue::Boolean(true),
+                "response-media-type-json-compatibility",
+            ));
+            // Six closed HTTP transport roots and the optional media root, independently
+            // specified here. A compatibility assertion is NOT a byte-lineage root.
+            let parents: Vec<_> = [0, 1, 2, 3, 4, 5, 9]
+                .into_iter()
+                .map(|index| batch[index].id().clone())
+                .collect();
+            batch.push(
+                fact(
+                    EvidenceKind::Custom("passive-secret-exposure".to_owned()),
+                    KnowledgePredicate::new("web.secret-exposure", "active_review_body_lineage")
+                        .unwrap(),
+                    EvidenceValue::Boolean(true),
+                    "active-review-body-digest-privacy-guard",
+                )
+                .derived_from(
+                    EvidenceDerivation::new(
+                        parents,
+                        DerivationAlgorithm::new(
+                            "web.secret-exposure.active-review-body-digest-privacy-guard",
+                            1,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                ),
+            );
+            if parsed {
+                let parents = batch
+                    .iter()
+                    .map(|item| item.id().clone())
+                    .collect::<Vec<_>>();
+                let (identity, view) = match stage {
+                    DecisionExecutionStage::Passive => (
+                        "rest-review:candidate",
+                        vec![
+                            "leg=rest-review:candidate",
+                            "status=200",
+                            "method=GET",
+                            "media=json-compatible",
+                            "complete=true",
+                            "truncated=false",
+                            "rate_limited=false",
+                            "challenged=false",
+                        ],
+                    ),
+                    DecisionExecutionStage::Active => (
+                        "rest-review:replay",
+                        vec![
+                            "leg=rest-review:replay",
+                            "status=200",
+                            "method=GET",
+                            "media=json-compatible",
+                            "complete=true",
+                            "truncated=false",
+                            "rate_limited=false",
+                            "challenged=false",
+                        ],
+                    ),
+                };
+                batch.push(
+                    custom(
+                        "view",
+                        EvidenceValue::TextList(view.into_iter().map(str::to_owned).collect()),
+                        identity,
+                    )
+                    .derived_from(
+                        EvidenceDerivation::new(
+                            parents.clone(),
+                            DerivationAlgorithm::new(
+                                "web.rest-review.value-free-classification",
+                                1,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                );
+                if stage == DecisionExecutionStage::Active {
+                    // Independent stable-replay oracle: the same literal JSON and status
+                    // on both legs imply all three true; no production compare is called.
+                    for name in [
+                        "status-equivalent",
+                        "fields-equivalent",
+                        "resources-equivalent",
+                    ] {
+                        batch.push(
+                            custom(name, EvidenceValue::Boolean(true), name).derived_from(
+                                EvidenceDerivation::new(
+                                    parents.clone(),
+                                    DerivationAlgorithm::new(
+                                        "web.rest-review.value-free-classification",
+                                        1,
+                                    )
+                                    .unwrap(),
+                                )
+                                .unwrap(),
+                            ),
+                        );
+                    }
+                }
+                batch.push(fact(
+                    EvidenceKind::Custom("rest-review".to_owned()),
+                    crate::web_actions::native_web_review_response_marker_predicate(),
+                    EvidenceValue::Boolean(true),
+                    "complete",
+                ));
+            }
+            batch
+        }
+
+        fn replace(
+            item: &Evidence,
+            kind: EvidenceKind,
+            value: EvidenceValue,
+            source: EvidenceSource,
+            parents: Option<Vec<EvidenceId>>,
+        ) -> Evidence {
+            let mut result = Evidence::with_id_at(
+                item.id().clone(),
+                item.subject().clone(),
+                kind,
+                item.predicate().clone(),
+                value,
+                source,
+                item.reliability(),
+                item.observed_at_ms(),
+            );
+            if let Some(original) = item.origin().derivation() {
+                result = result.derived_from(
+                    EvidenceDerivation::new(
+                        parents.unwrap_or_else(|| original.parents().to_vec()),
+                        original.algorithm().clone(),
+                    )
+                    .unwrap(),
+                );
+            }
+            result
+        }
+
+        async fn commit_route(
+            knowledge: &KnowledgeBase,
+            batch: Vec<Evidence>,
+            action: &str,
+            executor: &'static str,
+            stage: DecisionExecutionStage,
+        ) -> DecisionEvidenceReceipt {
+            // The ordinary runner commits even alternate-route fixtures; rejection by
+            // the narrower REST gate is not merely a failed executor setup.
+            let batch = if executor == "http.rest-review" {
+                batch
+            } else {
+                batch
+                    .into_iter()
+                    .map(|item| {
+                        let source = EvidenceSource::new(executor, item.source().method())
+                            .unwrap()
+                            .with_correlation_id(CASE)
+                            .unwrap();
+                        replace(
+                            &item,
+                            item.kind().clone(),
+                            item.value().clone(),
+                            source,
+                            None,
+                        )
+                    })
+                    .collect()
+            };
+            let mut registry = DecisionExecutorRegistry::new();
+            registry
+                .register(Arc::new(LiteralExecutor {
+                    id: executor,
+                    batch,
+                }))
+                .unwrap();
+            registry.route_action(stage, action, executor).unwrap();
+            let case = VerificationCase::new(CASE, subject(), action, "hypothesis:synthetic-rest")
+                .unwrap()
+                .without_hypothesis_transition();
+            let command = match stage {
+                DecisionExecutionStage::Passive => DecisionLoopCommand::ExecuteAction {
+                    case,
+                    executor: None,
+                    origin: DecisionActionOrigin::Planned,
+                    delay_ms: None,
+                },
+                DecisionExecutionStage::Active => {
+                    DecisionLoopCommand::CollectActiveEvidence { case }
+                },
+            };
+            DecisionRunnerAdapter::new(registry)
+                .execute_command(&command, knowledge)
+                .await
+                .unwrap()
+        }
+
+        async fn committed(batch: Vec<Evidence>) -> (KnowledgeBase, DecisionEvidenceReceipt) {
+            let knowledge = KnowledgeBase::new();
+            let receipt = commit_route(
+                &knowledge,
+                batch,
+                "web.review.rest.readonly-replay@1",
+                "http.rest-review",
+                DecisionExecutionStage::Passive,
+            )
+            .await;
+            (knowledge, receipt)
+        }
+
+        fn report(
+            receipt: Option<DecisionEvidenceReceipt>,
+            received: bool,
+        ) -> StandardWebDecisionRunReport {
+            let accounting = RequestAccountingBroker::new(RuntimeBudget::default());
+            if received {
+                let mut lease = accounting
+                    .try_begin(
+                        "web.review.rest.readonly-replay@1",
+                        DecisionExecutionStage::Passive,
+                        Some(DecisionActionOrigin::Planned),
+                    )
+                    .unwrap();
+                assert_eq!(lease.observe_response_bytes(8), 8);
+                lease.finish(TransportDispatchOutcome::Completed);
+            }
+            StandardWebDecisionRunReport {
+                bootstrap: None,
+                turns: Vec::new(),
+                unverified_evidence: receipt,
+                terminal: DecisionLoopCommand::Halt {
+                    reason: DecisionStopReason::NoEligibleAction,
+                },
+                usage: RuntimeUsage::default(),
+                transport: accounting.dispatch_audit(),
+                limit_exceeded: None,
+                execution_failure: None,
+            }
+        }
+
+        fn terminal_state() -> RestExecutionState {
+            RestExecutionState {
+                legs: BTreeMap::new(),
+                terminal: Some(RestRuntimeOutcome::NotFound),
+                terminal_observation: Some(RestAuditObservation::new(
+                    404,
+                    RestObservedMediaClass::JsonCompatible,
+                )),
+                runtime_limit: None,
+            }
+        }
+
+        fn parsed_leg(batch: &[Evidence], stage: DecisionExecutionStage) -> RestLeg {
+            let identity = match stage {
+                DecisionExecutionStage::Passive => "rest-review:candidate",
+                DecisionExecutionStage::Active => "rest-review:replay",
+            };
+            let names: &[&str] = if stage == DecisionExecutionStage::Passive {
+                &["view"]
+            } else {
+                &[
+                    "view",
+                    "status-equivalent",
+                    "fields-equivalent",
+                    "resources-equivalent",
+                ]
+            };
+            RestLeg {
+                // capture_view stages private state only. It is not the expected report,
+                // lineage, or comparison oracle and does not perform transport.
+                view: ApiVisibilityComparator::default()
+                    .capture_view(
+                        identity,
+                        super::selection().target_identity(),
+                        ApiSurfaceKind::JsonHttp,
+                        200,
+                        &serde_json::json!({"ok": 1}),
+                    )
+                    .unwrap(),
+                response_bytes: 8,
+                media: RestObservedMediaClass::JsonCompatible,
+                evidence_ids: names
+                    .iter()
+                    .map(|name| {
+                        batch
+                            .iter()
+                            .find(|item| {
+                                item.predicate().namespace() == "web.rest-review.transport"
+                                    && item.predicate().name() == *name
+                            })
+                            .unwrap()
+                            .id()
+                            .clone()
+                    })
+                    .collect(),
+            }
+        }
+
+        fn parsed_state(batch: &[Evidence]) -> RestExecutionState {
+            RestExecutionState {
+                legs: BTreeMap::from([(
+                    DecisionExecutionStage::Passive,
+                    parsed_leg(batch, DecisionExecutionStage::Passive),
+                )]),
+                ..RestExecutionState::default()
+            }
+        }
+
+        fn validate(
+            receipt: Option<DecisionEvidenceReceipt>,
+            knowledge: &KnowledgeBase,
+            state: &RestExecutionState,
+            received: bool,
+        ) -> Result<bool, RestRuntimeInvariantError> {
+            validate_value_free_rest_commits(
+                &report(receipt, received),
+                knowledge,
+                &subject(),
+                Some(&super::selection()),
+                state,
+            )
+        }
+
+        fn mutation(
+            template: &DecisionEvidenceReceipt,
+            batch: Vec<Evidence>,
+        ) -> (KnowledgeBase, DecisionEvidenceReceipt) {
+            let knowledge = KnowledgeBase::new();
+            let writes = knowledge.insert_evidence_batch(batch.clone()).unwrap();
+            let receipt = template.with_test_committed_batch(
+                batch,
+                writes,
+                knowledge.snapshot_for_subject(&subject()),
+            );
+            (knowledge, receipt)
+        }
+
+        // A real decision result is only a holder for the report's committed-turn
+        // shape. Neither its result nor its planner manufactures the REST oracle.
+        fn decision_holder(
+            knowledge: &KnowledgeBase,
+            receipt: &DecisionEvidenceReceipt,
+        ) -> DecisionOutcomeReport {
+            let planning = PlanningContext::new(
+                BenefitScore::from_percent(90).unwrap(),
+                100,
+                RiskScore::from_percent(50).unwrap(),
+            );
+            let config = DecisionLoopConfig::new(
+                planning,
+                AdaptationLimits::default(),
+                ExperiencePolicy::default(),
+                1,
+            )
+            .unwrap();
+            let mut decision = DecisionLoop::new(config);
+            let predicate = KnowledgePredicate::new("synthetic", "rest-holder").unwrap();
+            let holder_hypothesis = termivar_core::Hypothesis::with_id(
+                "hypothesis:synthetic-rest",
+                subject(),
+                predicate.clone(),
+                EvidenceValue::Boolean(true),
+                Probability::from_percent(50).unwrap(),
+            )
+            .unwrap();
+            knowledge.upsert_hypothesis(holder_hypothesis).unwrap();
+            let action = AttackAction::new(
+                "web.review.rest.readonly-replay@1",
+                "http.rest-review",
+                Expression::equals(
+                    KnowledgeLayer::Hypothesis,
+                    predicate.clone(),
+                    EvidenceValue::Boolean(true),
+                ),
+                HypothesisSelector::new(
+                    predicate,
+                    EvidenceValue::Boolean(true),
+                    Probability::from_percent(50).unwrap(),
+                    RequiredStrength::Strong,
+                ),
+                BenefitScore::from_percent(80).unwrap(),
+                ActionCost::new(10).unwrap(),
+                RiskScore::from_percent(10).unwrap(),
+                BTreeSet::new(),
+            )
+            .unwrap()
+            .with_verification_target(VerificationTarget::KnowledgeOnly);
+            decision.planner_mut().register(action).unwrap();
+            let mut wire = serde_json::to_value(DecisionSession::new(subject())).unwrap();
+            wire["action_cycles"] = serde_json::json!(1);
+            wire["state"] =
+                serde_json::json!({"state": "awaiting_passive", "case": receipt.case()});
+            let mut session: DecisionSession = serde_json::from_value(wire).unwrap();
+            // Explicit host refusal prevents any further automated work for
+            // this holder-only outcome; it is not a REST evidence oracle.
+            let suppressions = crate::planner::ActionSuppressionContext::new(
+                BTreeSet::new(),
+                BTreeSet::from(["web.review.rest.readonly-replay@1".to_owned()]),
+            );
+            decision
+                .submit_passive_with_action_suppressions(
+                    knowledge,
+                    &mut ExperienceStore::new(),
+                    &mut session,
+                    &suppressions,
+                )
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn rest_privacy_commits_require_receipts_and_accept_literal_candidate_replay_and_terminals(
+        ) {
+            let knowledge = KnowledgeBase::new();
+            assert!(!validate(None, &knowledge, &terminal_state(), false).unwrap());
+            let candidate = received_batch(true, DecisionExecutionStage::Passive);
+            assert!(!validate(None, &knowledge, &parsed_state(&candidate), true).unwrap());
+            let (knowledge, receipt) = committed(no_response_batch()).await;
+            assert!(validate(Some(receipt), &knowledge, &terminal_state(), false).unwrap());
+            let (knowledge, receipt) =
+                committed(received_batch(false, DecisionExecutionStage::Passive)).await;
+            assert!(validate(Some(receipt), &knowledge, &terminal_state(), true).unwrap());
+
+            let replay = received_batch(true, DecisionExecutionStage::Active);
+            let state = RestExecutionState {
+                legs: BTreeMap::from([
+                    (
+                        DecisionExecutionStage::Passive,
+                        parsed_leg(&candidate, DecisionExecutionStage::Passive),
+                    ),
+                    (
+                        DecisionExecutionStage::Active,
+                        parsed_leg(&replay, DecisionExecutionStage::Active),
+                    ),
+                ]),
+                ..RestExecutionState::default()
+            };
+            let (knowledge, first) = committed(candidate).await;
+            let holder = decision_holder(&knowledge, &first);
+            let second = commit_route(
+                &knowledge,
+                replay,
+                "web.review.rest.readonly-replay@1",
+                "http.rest-review",
+                DecisionExecutionStage::Active,
+            )
+            .await;
+            let accounting = RequestAccountingBroker::new(RuntimeBudget::default());
+            for stage in [
+                DecisionExecutionStage::Passive,
+                DecisionExecutionStage::Active,
+            ] {
+                let mut lease = accounting
+                    .try_begin(
+                        "web.review.rest.readonly-replay@1",
+                        stage,
+                        (stage == DecisionExecutionStage::Passive)
+                            .then_some(DecisionActionOrigin::Planned),
+                    )
+                    .unwrap();
+                assert_eq!(lease.observe_response_bytes(8), 8);
+                lease.finish(TransportDispatchOutcome::Completed);
+            }
+            let mut standard = report(Some(second), false);
+            standard
+                .turns
+                .push(StandardWebDecisionRuntimeTurn::Outcome {
+                    evidence: Box::new(first),
+                    decision: Box::new(holder),
+                });
+            standard.transport = accounting.dispatch_audit();
+            assert!(validate_value_free_rest_commits(
+                &standard,
+                &knowledge,
+                &subject(),
+                Some(&super::selection()),
+                &state
+            )
+            .unwrap());
+            // Merely staging an extra leg cannot authorize it when only the candidate
+            // receipt was committed. This is not a fabricated successful replay.
+            let staged_candidate = received_batch(true, DecisionExecutionStage::Passive);
+            let staged_replay = received_batch(true, DecisionExecutionStage::Active);
+            let staged_state = RestExecutionState {
+                legs: BTreeMap::from([
+                    (
+                        DecisionExecutionStage::Passive,
+                        parsed_leg(&staged_candidate, DecisionExecutionStage::Passive),
+                    ),
+                    (
+                        DecisionExecutionStage::Active,
+                        parsed_leg(&staged_replay, DecisionExecutionStage::Active),
+                    ),
+                ]),
+                ..RestExecutionState::default()
+            };
+            let (knowledge, first) = committed(staged_candidate).await;
+            assert!(!validate(Some(first), &knowledge, &staged_state, true).unwrap());
+        }
+
+        #[tokio::test]
+        async fn rest_privacy_commits_reject_rate_contradiction() {
+            let batch = received_batch(true, DecisionExecutionStage::Passive);
+            let state = parsed_state(&batch);
+            let (_, template) = committed(batch.clone()).await;
+            let mut contradicted = batch.clone();
+            let item = &batch[6];
+            contradicted[6] = replace(
+                item,
+                item.kind().clone(),
+                EvidenceValue::Boolean(true),
+                item.source().clone(),
+                None,
+            );
+            let (knowledge, receipt) = mutation(&template, contradicted);
+            assert!(
+                validate(Some(receipt), &knowledge, &state, true).is_err(),
+                "a committed rate-limit=true cannot support a positive rate_limited=false view"
+            );
+        }
+
+        #[tokio::test]
+        async fn rest_privacy_commits_reject_terminal_media_spoofs() {
+            let batch = received_batch(false, DecisionExecutionStage::Passive);
+            let (_, template) = committed(batch.clone()).await;
+            let compatibility = &batch[10];
+            let wrong_source = EvidenceSource::new("http.rest-review", "synthetic-wrong-method")
+                .unwrap()
+                .with_correlation_id(CASE)
+                .unwrap();
+            let replacements = [
+                replace(
+                    compatibility,
+                    EvidenceKind::Content,
+                    compatibility.value().clone(),
+                    compatibility.source().clone(),
+                    None,
+                ),
+                replace(
+                    compatibility,
+                    compatibility.kind().clone(),
+                    compatibility.value().clone(),
+                    wrong_source,
+                    None,
+                ),
+                replace(
+                    compatibility,
+                    compatibility.kind().clone(),
+                    EvidenceValue::Text("true".to_owned()),
+                    compatibility.source().clone(),
+                    None,
+                ),
+                replace(
+                    compatibility,
+                    compatibility.kind().clone(),
+                    EvidenceValue::Unsigned(1),
+                    compatibility.source().clone(),
+                    None,
+                ),
+                replace(
+                    compatibility,
+                    compatibility.kind().clone(),
+                    EvidenceValue::Text("null".to_owned()),
+                    compatibility.source().clone(),
+                    None,
+                ),
+            ];
+            for replacement in replacements {
+                let mut changed = batch.clone();
+                changed[10] = replacement;
+                let (knowledge, receipt) = mutation(&template, changed);
+                assert!(validate(Some(receipt), &knowledge, &terminal_state(), true).is_err());
+            }
+            let mut missing = batch.clone();
+            missing.remove(10);
+            let (knowledge, receipt) = mutation(&template, missing);
+            assert!(validate(Some(receipt), &knowledge, &terminal_state(), true).is_err());
+            let mut duplicate = batch;
+            duplicate.push(fact(
+                EvidenceKind::Http,
+                HttpEvidencePredicate::RESPONSE_MEDIA_TYPE_JSON_COMPATIBLE.into_knowledge(),
+                EvidenceValue::Boolean(true),
+                "response-media-type-json-compatibility",
+            ));
+            let (knowledge, receipt) = mutation(&template, duplicate);
+            assert!(validate(Some(receipt), &knowledge, &terminal_state(), true).is_err());
+            // Core EvidenceValue is a tagged typed enum, so JSON null cannot become an
+            // evidence row at all; Text("null") above separately tests a wrong typed row.
+            assert!(serde_json::from_value::<EvidenceValue>(serde_json::Value::Null).is_err());
+        }
+
+        #[tokio::test]
+        async fn rest_privacy_commits_reject_wrong_route_stage_executor_subject_and_write_authority(
+        ) {
+            for (action, executor, stage) in [
+                (
+                    "synthetic.other-action",
+                    "http.rest-review",
+                    DecisionExecutionStage::Passive,
+                ),
+                (
+                    "web.review.rest.readonly-replay@1",
+                    "synthetic.other-executor",
+                    DecisionExecutionStage::Passive,
+                ),
+                (
+                    "web.review.rest.readonly-replay@1",
+                    "http.rest-review",
+                    DecisionExecutionStage::Active,
+                ),
+            ] {
+                let knowledge = KnowledgeBase::new();
+                let receipt =
+                    commit_route(&knowledge, no_response_batch(), action, executor, stage).await;
+                assert!(validate(Some(receipt), &knowledge, &terminal_state(), false).is_err());
+            }
+            let (knowledge, receipt) = committed(no_response_batch()).await;
+            assert!(validate_value_free_rest_commits(
+                &report(Some(receipt), false),
+                &knowledge,
+                &EntityId::new("endpoint:https://sibling.invalid/").unwrap(),
+                Some(&super::selection()),
+                &terminal_state()
+            )
+            .is_err());
+            let batch = received_batch(true, DecisionExecutionStage::Passive);
+            let state = parsed_state(&batch);
+            let (knowledge, receipt) = committed(batch).await;
+            assert!(validate_value_free_rest_commits(
+                &report(Some(receipt), true),
+                &knowledge,
+                &subject(),
+                None,
+                &state
+            )
+            .is_err());
+
+            let batch = received_batch(true, DecisionExecutionStage::Passive);
+            let state = parsed_state(&batch);
+            let (knowledge, receipt) = committed(batch.clone()).await;
+            assert!(validate(Some(receipt.clone()), &KnowledgeBase::new(), &state, true).is_err());
+            let mut duplicate = batch;
+            duplicate.push(duplicate[0].clone());
+            let duplicated = receipt.with_test_committed_batch(
+                duplicate.clone(),
+                vec![KnowledgeWrite::Unchanged; duplicate.len()],
+                knowledge.snapshot_for_subject(&subject()),
+            );
+            assert!(validate(Some(duplicated), &knowledge, &state, true).is_err());
+            let wrong_writes = receipt.with_test_committed_batch(
+                receipt.evidence().to_vec(),
+                Vec::new(),
+                knowledge.snapshot_for_subject(&subject()),
+            );
+            assert!(validate(Some(wrong_writes), &knowledge, &state, true).is_err());
+        }
+
+        #[tokio::test]
+        async fn rest_privacy_commits_reject_content_identities_unknown_facts_and_lost_derivation_parents(
+        ) {
+            let batch = received_batch(true, DecisionExecutionStage::Passive);
+            let state = parsed_state(&batch);
+            let (_, template) = committed(batch.clone()).await;
+            for extra in [
+                fact(
+                    EvidenceKind::Content,
+                    HttpEvidencePredicate::RESPONSE_BODY_SHA256.into_knowledge(),
+                    EvidenceValue::Text("a".repeat(64)),
+                    "response-body-sha256",
+                ),
+                custom(
+                    "semantic_digest",
+                    EvidenceValue::Text("synthetic-unkeyed-content-identity".to_owned()),
+                    "semantic-digest",
+                ),
+                fact(
+                    EvidenceKind::Custom("passive-secret-exposure".to_owned()),
+                    KnowledgePredicate::new("web.secret-exposure", "response_body_lineage")
+                        .unwrap(),
+                    EvidenceValue::Boolean(true),
+                    "synthetic-extra-lineage",
+                ),
+            ] {
+                let mut changed = batch.clone();
+                changed.push(extra);
+                let (knowledge, receipt) = mutation(&template, changed);
+                assert!(validate(Some(receipt), &knowledge, &state, true).is_err());
+            }
+            for index in [11, 12] {
+                let mut changed = batch.clone();
+                let item = &batch[index];
+                let parents = item.origin().derivation().unwrap().parents()[1..].to_vec();
+                changed[index] = replace(
+                    item,
+                    item.kind().clone(),
+                    item.value().clone(),
+                    item.source().clone(),
+                    Some(parents),
+                );
+                let (knowledge, receipt) = mutation(&template, changed);
+                assert!(validate(Some(receipt), &knowledge, &state, true).is_err());
+            }
+        }
     }
 }

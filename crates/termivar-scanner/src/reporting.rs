@@ -5671,7 +5671,11 @@ impl<'a> AssessmentDocument<'a> {
         }
         #[cfg(feature = "rest-review")]
         if let Some(audit) = &self.rest_review {
-            audit.validate(&self.items)?;
+            #[cfg(feature = "secret-exposure-review")]
+            let response_privacy = self.secret_exposure_review.is_some();
+            #[cfg(not(feature = "secret-exposure-review"))]
+            let response_privacy = false;
+            audit.validate_for_response_privacy(&self.items, response_privacy)?;
         } else if self
             .items
             .iter()
@@ -9741,7 +9745,11 @@ impl AssessmentRestAuditDocument {
         }
     }
 
-    fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+    fn validate_for_response_privacy(
+        &self,
+        items: &[AssessmentItemDocument<'_>],
+        response_privacy: bool,
+    ) -> Result<(), ReportError> {
         let projected = items
             .iter()
             .filter(|item| item.capability_id == REST_REVIEW_CAPABILITY_ID)
@@ -9764,12 +9772,13 @@ impl AssessmentRestAuditDocument {
             || positive != self.item_projected
             || self.replay_stable != positive
             || !selected_identity_is_valid
+            || (response_privacy && self.selected_operation_identity.is_some())
             || (positive
                 && (usize::from(self.request_count) != MAX_REST_REVIEW_REQUESTS
                     || usize::from(self.active_verification_count)
                         != MAX_REST_REVIEW_ACTIVE_VERIFICATIONS
                     || self.eligible_operation_count == 0
-                    || self.selected_operation_identity.is_none()))
+                    || (self.selected_operation_identity.is_some() == response_privacy)))
         {
             return Err(ReportError::Serialization);
         }

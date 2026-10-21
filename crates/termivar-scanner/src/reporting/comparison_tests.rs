@@ -494,6 +494,64 @@ fn report_with_openapi_saved_audit(candidate_source: &str) -> Value {
     document
 }
 
+fn report_with_rest_saved_privacy(selected_privacy: bool, outcome: &str) -> Value {
+    // Literal synthetic saved-contract fixture, not a captured producer report
+    // or a claim that a terminal CLI run published a completed bundle.
+    let mut openapi_item = item(311);
+    openapi_item["capability_id"] = json!("api.openapi-contract-observed@1");
+    let mut items = vec![openapi_item];
+    if outcome == "surface_observed" {
+        let mut rest_item = item(312);
+        rest_item["capability_id"] = json!("api.rest-readonly-surface-observed@1");
+        items.push(rest_item);
+    }
+    let mut document = report(items);
+    document["openapi_review"] = openapi_saved_audit("discovered_swagger_json");
+    let mut rest = json!({
+        "schema":"security.rest-readonly-review-audit/v1",
+        "capability_id":"api.rest-readonly-surface-observed@1",
+        "enabled":true,
+        "method":"get",
+        "outcome":outcome,
+        "request_count":2,
+        "active_verification_count":1,
+        "eligible_operation_count":1,
+        "documented_response":"json_compatible",
+        "observed_media":"json_compatible",
+        "status_class":2,
+        "replay_stable":outcome == "surface_observed",
+        "item_projected":outcome == "surface_observed"
+    });
+    match outcome {
+        "surface_observed" | "replay_mismatch" => {},
+        "not_eligible" => {
+            rest["request_count"] = json!(0);
+            rest["active_verification_count"] = json!(0);
+            rest["eligible_operation_count"] = json!(0);
+            rest["documented_response"] = Value::Null;
+            rest["observed_media"] = json!("unknown");
+            rest.as_object_mut().unwrap().remove("status_class");
+        },
+        "not_found" => {
+            rest["request_count"] = json!(1);
+            rest["active_verification_count"] = json!(0);
+            rest["status_class"] = json!(4);
+        },
+        _ => panic!("fixture outcome must be an independently specified case"),
+    }
+    if selected_privacy {
+        document["openapi_review"]["semantic_digest"] = Value::Null;
+        document["secret_exposure_review"] = secret_exposure_audit(1, 1, 64, Vec::new(), 0);
+    } else if outcome != "not_eligible" {
+        // Synthetic opaque legacy identity; no derivation from a target body is
+        // claimed by this reader fixture.
+        rest["selected_operation_identity"] =
+            json!(format!("openapi-operation-sha256:{}", "b".repeat(64)));
+    }
+    document["rest_review"] = rest;
+    document
+}
+
 fn tls_leaf_observation(identity: u32, occurrence_count: u64) -> Value {
     json!({
         "leaf_certificate_sha256": format!("{identity:064x}"),
@@ -4047,6 +4105,215 @@ fn openapi_saved_reader_requires_explicit_null_digest_with_selected_secret_priva
             .remove("semantic_digest");
         assert!(import_assessment_summary(&bytes(&missing)).is_err());
     }
+}
+
+#[test]
+fn rest_saved_reader_accepts_selected_value_free_and_historical_identity_contracts() {
+    for selected_privacy in [false, true] {
+        let document = report_with_rest_saved_privacy(selected_privacy, "surface_observed");
+        assert!(import_assessment_summary(&bytes(&document)).is_ok());
+        let comparison = compare(&document, &document);
+        assert_eq!(comparison["unchanged"].as_array().map(Vec::len), Some(2));
+        for group in ["only_in_after", "only_in_before", "changed"] {
+            assert_eq!(comparison[group].as_array().map(Vec::len), Some(0));
+        }
+        let saved = comparison["before"]["optional_audits"]["rest_review"]
+            .as_object()
+            .unwrap();
+        if selected_privacy {
+            assert!(!saved.contains_key("selected_operation_identity"));
+            assert!(
+                comparison["before"]["optional_audits"]["openapi_review"]["semantic_digest"]
+                    .is_null()
+            );
+        } else {
+            assert_eq!(
+                saved["selected_operation_identity"],
+                json!(format!("openapi-operation-sha256:{}", "b".repeat(64)))
+            );
+        }
+    }
+
+    // Selecting a valid empty privacy audit is not the absence of that audit.
+    // It does not need to manufacture a secret observation to qualify the mode.
+    let mut selected_empty = report_with_rest_saved_privacy(true, "surface_observed");
+    selected_empty["secret_exposure_review"] = secret_exposure_audit(0, 0, 0, Vec::new(), 0);
+    assert!(import_assessment_summary(&bytes(&selected_empty)).is_ok());
+}
+
+#[test]
+fn rest_saved_reader_requires_valid_selected_privacy_before_withholding_identity() {
+    let valid = report_with_rest_saved_privacy(true, "surface_observed");
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+
+    let mut absent = valid.clone();
+    absent
+        .as_object_mut()
+        .unwrap()
+        .remove("secret_exposure_review");
+    reject(&absent);
+    for value in [Value::Null, json!(false), json!([]), json!({}), json!(1)] {
+        let mut invalid = valid.clone();
+        invalid["secret_exposure_review"] = value;
+        reject(&invalid);
+    }
+    for (field, replacement) in [
+        ("selected", json!(false)),
+        ("schema", json!("security.passive-secret-exposure-audit/v2")),
+        ("context", json!("credentialed-get")),
+        ("raw_values_retained", json!(true)),
+        ("public_secret_hashes_retained", json!(true)),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["secret_exposure_review"][field] = replacement;
+        reject(&invalid);
+    }
+
+    // Presence of a well-shaped legacy digest is still forbidden when privacy
+    // is selected; null is not the writer's omitted optional field either.
+    for value in [
+        json!(format!("openapi-operation-sha256:{}", "b".repeat(64))),
+        Value::Null,
+        json!(false),
+        json!(0),
+        json!([]),
+        json!({}),
+        json!(""),
+    ] {
+        let mut inconsistent = valid.clone();
+        inconsistent["rest_review"]["selected_operation_identity"] = value;
+        reject(&inconsistent);
+    }
+
+    let mut historical_missing = report_with_rest_saved_privacy(false, "surface_observed");
+    historical_missing["rest_review"]
+        .as_object_mut()
+        .unwrap()
+        .remove("selected_operation_identity");
+    reject(&historical_missing);
+    for value in [
+        Value::Null,
+        json!(true),
+        json!("openapi-operation-sha256:short"),
+    ] {
+        let mut malformed = report_with_rest_saved_privacy(false, "surface_observed");
+        malformed["rest_review"]["selected_operation_identity"] = value;
+        reject(&malformed);
+    }
+}
+
+#[test]
+fn rest_saved_reader_keeps_selected_zero_item_and_terminal_audits_explicit() {
+    for outcome in ["not_eligible", "replay_mismatch", "not_found"] {
+        let document = report_with_rest_saved_privacy(true, outcome);
+        assert!(import_assessment_summary(&bytes(&document)).is_ok());
+        let comparison = compare(&document, &document);
+        assert_eq!(comparison["unchanged"].as_array().map(Vec::len), Some(1));
+        for group in ["only_in_after", "only_in_before", "changed"] {
+            assert_eq!(comparison[group].as_array().map(Vec::len), Some(0));
+        }
+        let audit = &comparison["before"]["optional_audits"]["rest_review"];
+        assert_eq!(audit["outcome"], json!(outcome));
+        assert_eq!(audit["item_projected"], json!(false));
+        assert!(!audit
+            .as_object()
+            .unwrap()
+            .contains_key("selected_operation_identity"));
+        let mut invented_identity = document.clone();
+        invented_identity["rest_review"]["selected_operation_identity"] =
+            json!(format!("openapi-operation-sha256:{}", "b".repeat(64)));
+        reject(&invented_identity);
+        let mut invented_observation = document;
+        invented_observation["rest_review"]["item_projected"] = json!(true);
+        reject(&invented_observation);
+    }
+}
+
+#[test]
+fn rest_saved_reader_rejects_missing_types_duplicates_and_unreviewed_identity_fields() {
+    let valid = report_with_rest_saved_privacy(true, "surface_observed");
+    assert!(import_assessment_summary(&bytes(&valid)).is_ok());
+    for field in [
+        "schema",
+        "capability_id",
+        "enabled",
+        "method",
+        "outcome",
+        "request_count",
+        "active_verification_count",
+        "eligible_operation_count",
+        "documented_response",
+        "observed_media",
+        "replay_stable",
+        "item_projected",
+    ] {
+        let mut missing = valid.clone();
+        missing["rest_review"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        reject(&missing);
+    }
+    for (field, replacement) in [
+        ("request_count", json!(true)),
+        ("request_count", json!(-1)),
+        ("request_count", json!(1)),
+        ("active_verification_count", json!(false)),
+        ("active_verification_count", json!(0)),
+        ("eligible_operation_count", json!(false)),
+        ("eligible_operation_count", json!(0)),
+        ("enabled", json!(false)),
+        ("method", json!("post")),
+        ("outcome", json!("confirmed")),
+        ("observed_media", Value::Null),
+        ("documented_response", json!([])),
+        ("status_class", json!(false)),
+        ("status_class", json!(6)),
+        ("replay_stable", json!(false)),
+        ("item_projected", json!(false)),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["rest_review"][field] = replacement;
+        reject(&invalid);
+    }
+    for field in [
+        "response_body_sha256",
+        "semantic_digest",
+        "target_identity",
+        "unexpected",
+    ] {
+        let mut extra = valid.clone();
+        extra["rest_review"][field] = json!("synthetic-unreviewed-identity");
+        reject(&extra);
+    }
+    // presentation_target is deliberately not serialized. The reader cannot
+    // reverse an opaque item fingerprint to prove its runtime target kind, and
+    // cannot accept an invented wire field as a substitute for that proof.
+    for field in ["presentation_target", "target_kind", "target_identity"] {
+        let mut extra_item = valid.clone();
+        extra_item["items"][1][field] = json!("assessment_subject");
+        reject(&extra_item);
+    }
+    let mut wrong_total = valid.clone();
+    wrong_total["item_count"] = json!(true);
+    reject(&wrong_total);
+    wrong_total["item_count"] = json!(1);
+    reject(&wrong_total);
+    let mut duplicate_item = valid.clone();
+    duplicate_item["items"][1]["fingerprint"] = duplicate_item["items"][0]["fingerprint"].clone();
+    reject(&duplicate_item);
+
+    let original = String::from_utf8(bytes(&valid)).unwrap();
+    let duplicate_key = original.replacen(
+        "\"eligible_operation_count\":1",
+        "\"eligible_operation_count\":1,\"eligible_operation_count\":1",
+        1,
+    );
+    assert_ne!(
+        duplicate_key, original,
+        "duplicate mutation must alter fixture"
+    );
+    assert!(import_assessment_summary(duplicate_key.as_bytes()).is_err());
 }
 
 #[test]

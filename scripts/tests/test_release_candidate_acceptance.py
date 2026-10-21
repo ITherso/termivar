@@ -287,8 +287,16 @@ EXPECTED_SECRET_EXPOSURE_LIMITATION = (
     "semantic_digest is present and null, and the informational item uses a coarse "
     "assessment-subject identity with exact committed opaque lineage, not cross-run document "
     "equality. OpenAPI retains its own authorized two-request/one-active allowance; this "
-    "privacy boundary adds no request or budget. V1 fails closed when REST, resource "
-    "authorization, or WordPress discovery is selected, and when OpenAPI and SSRF-OAST are "
+    "privacy boundary adds no request or budget. When combined with explicit REST review "
+    "and its required OpenAPI review, the separately planned anonymous GET candidate and "
+    "replay responses are not detector inputs. Full value-sensitive Status, Fields and "
+    "Resources replay equality remains private; public whole-body/view digests and "
+    "catalogue-derived operation/target identities are suppressed. The "
+    "selected_operation_identity field is omitted, and the REST informational item uses "
+    "the coarse assessment-subject identity, not cross-run resource equality. REST retains "
+    "its own authorized two-request/one-active allowance and exact committed opaque lineage; "
+    "this composition adds no REST request or budget. V1 fails closed when resource "
+    "authorization or WordPress discovery is selected, and when OpenAPI and SSRF-OAST are "
     "both selected. Compiled availability alone selects neither review. Those response paths "
     "do not share its value-free body-digest boundary. Credential validity, ownership, source authenticity, "
     "provider acceptance, exploit execution, and impact "
@@ -4116,7 +4124,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              "classification uses an uncommitted whole-body hash"),
             ("GraphQL retains its own authorized request allowance; this privacy boundary adds no request",
              "GraphQL receives a fresh request allowance"),
-            ("V1 fails closed when REST, resource authorization, or WordPress discovery is selected",
+            ("V1 fails closed when resource authorization or WordPress discovery is selected",
              "All response-producing reviews are supported"),
             ("Authenticated supplied-session response bodies are not selected",
              "Authenticated supplied-session response bodies are selected"),
@@ -4137,7 +4145,7 @@ class CapabilityInventoryContractTests(unittest.TestCase):
         mutations = (
             ("When combined with explicit OpenAPI review",
              "During automatic OpenAPI review"),
-            ("anonymous GET candidate and replay responses are not detector inputs",
+            ("When combined with explicit OpenAPI review, its anonymous GET candidate and replay responses are not detector inputs",
              "all OpenAPI responses are detector inputs"),
             ("Complete semantic replay equality remains private",
              "Equal aggregate counts establish replay equality"),
@@ -4158,6 +4166,44 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              "Compiled SSRF-OAST availability always refuses OpenAPI"),
             ("Those response paths do not share its value-free body-digest boundary",
              "All response paths have unrestricted body capture"),
+        )
+        for reviewed, unsupported in mutations:
+            with self.subTest(boundary=reviewed):
+                self.assertEqual(EXPECTED_SECRET_EXPOSURE_LIMITATION.count(reviewed), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.secret-exposure-review")
+                surface["limitation"] = EXPECTED_SECRET_EXPOSURE_LIMITATION.replace(
+                    reviewed, unsupported, 1)
+                self.assert_rejected(document, "limitation")
+
+    def test_secret_exposure_rest_composition_preserves_each_reviewed_boundary(self):
+        # Independently written current literal, not captured executable output.
+        # The complete real consumer must accept it, including an uncompiled
+        # optional REST surface in the unchanged curated package inventory.
+        self.validate(capabilities())
+        mutations = (
+            ("When combined with explicit REST review and its required OpenAPI review",
+             "REST review starts automatically without an OpenAPI review"),
+            ("separately planned anonymous GET candidate and replay responses are not detector inputs",
+             "all credentialed REST responses are detector inputs"),
+            ("Full value-sensitive Status, Fields and Resources replay equality remains private",
+             "Matching status and aggregate field counts establish replay equality"),
+            ("public whole-body/view digests and catalogue-derived operation/target identities are suppressed",
+             "public whole-body/view digests and catalogue-derived operation/target identities are retained"),
+            ("selected_operation_identity field is omitted",
+             "selected_operation_identity contains a public catalogue digest"),
+            ("REST informational item uses the coarse assessment-subject identity",
+             "REST informational item uses an operation-derived identity"),
+            ("not cross-run resource equality", "proof of cross-run resource equality"),
+            ("REST retains its own authorized two-request/one-active allowance",
+             "REST receives an additional unbounded request allowance"),
+            ("REST retains its own authorized two-request/one-active allowance and exact committed opaque lineage",
+             "REST retains its existing allowance but trusts uncommitted response assertions"),
+            ("this composition adds no REST request or budget",
+             "this composition retries REST requests with a new budget"),
+            ("V1 fails closed when resource authorization or WordPress discovery is selected",
+             "V1 automatically selects resource authorization and WordPress discovery"),
         )
         for reviewed, unsupported in mutations:
             with self.subTest(boundary=reviewed):

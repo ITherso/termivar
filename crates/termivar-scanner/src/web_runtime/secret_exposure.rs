@@ -1641,6 +1641,47 @@ pub(crate) fn project_openapi_body_privacy_lineage(
     )
 }
 
+/// The separately planned REST GET is not passive detector input. This wrapper
+/// admits only the existing scanner-owned read-only candidate/replay route.
+#[cfg(feature = "rest-review")]
+pub(crate) fn rest_response_privacy_parent_ids(
+    evidence: &[Evidence],
+    case: &crate::VerificationCase,
+    stage: DecisionExecutionStage,
+    executor: &str,
+) -> Option<Vec<EvidenceId>> {
+    if !super::rest_runtime::rest_privacy_route_is_valid(case, stage, executor)
+        || !evidence.iter().any(|item| {
+            item.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge()
+                && item.value() == &EvidenceValue::Text("GET".to_owned())
+        })
+    {
+        return None;
+    }
+    secret_exposure_response_parent_ids_for_executor(evidence, case.subject(), case.id(), executor)
+}
+
+#[cfg(feature = "rest-review")]
+pub(crate) fn project_rest_body_privacy_lineage(
+    decision: &crate::DecisionExecutionRequest,
+    evidence: &[Evidence],
+    executor: &str,
+    reliability: ConfidenceScore,
+) -> Result<Evidence, HttpEvidenceError> {
+    let parents =
+        rest_response_privacy_parent_ids(evidence, decision.case(), decision.stage(), executor)
+            .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
+                invariant: "REST privacy lineage requires closed GET transport provenance",
+            })?;
+    project_active_review_privacy_parts(
+        decision.case().subject(),
+        executor,
+        decision.case().id(),
+        reliability,
+        parents,
+    )
+}
+
 fn response_parent_ids(
     evidence: &[Evidence],
     expected_subject: &EntityId,
