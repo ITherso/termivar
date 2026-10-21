@@ -281,9 +281,16 @@ EXPECTED_SECRET_EXPOSURE_LIMITATION = (
     "detector inputs: their public whole-body and GraphQL response digests are suppressed "
     "while categorical classification, replay agreement and exact committed opaque lineage "
     "are retained. GraphQL retains its own authorized request allowance; this privacy "
-    "boundary adds no request. V1 fails closed when OpenAPI, REST, resource authorization, "
-    "or WordPress discovery is selected because those response paths do not share its "
-    "value-free body-digest boundary. Credential validity, ownership, source authenticity, "
+    "boundary adds no request. When combined with explicit OpenAPI review, its anonymous "
+    "GET candidate and replay responses are not detector inputs. Complete semantic replay "
+    "equality remains private; public whole-body and catalogue digests are suppressed, "
+    "semantic_digest is present and null, and the informational item uses a coarse "
+    "assessment-subject identity with exact committed opaque lineage, not cross-run document "
+    "equality. OpenAPI retains its own authorized two-request/one-active allowance; this "
+    "privacy boundary adds no request or budget. V1 fails closed when REST, resource "
+    "authorization, or WordPress discovery is selected, and when OpenAPI and SSRF-OAST are "
+    "both selected. Compiled availability alone selects neither review. Those response paths "
+    "do not share its value-free body-digest boundary. Credential validity, ownership, source authenticity, "
     "provider acceptance, exploit execution, and impact "
     "validation are not established or performed. Authenticated supplied-session response "
     "bodies are not selected."
@@ -4109,10 +4116,48 @@ class CapabilityInventoryContractTests(unittest.TestCase):
              "classification uses an uncommitted whole-body hash"),
             ("GraphQL retains its own authorized request allowance; this privacy boundary adds no request",
              "GraphQL receives a fresh request allowance"),
-            ("V1 fails closed when OpenAPI, REST, resource authorization, or WordPress discovery is selected",
+            ("V1 fails closed when REST, resource authorization, or WordPress discovery is selected",
              "All response-producing reviews are supported"),
             ("Authenticated supplied-session response bodies are not selected",
              "Authenticated supplied-session response bodies are selected"),
+        )
+        for reviewed, unsupported in mutations:
+            with self.subTest(boundary=reviewed):
+                self.assertEqual(EXPECTED_SECRET_EXPOSURE_LIMITATION.count(reviewed), 1)
+                document = capabilities()
+                surface = next(surface for surface in document["surfaces"]
+                               if surface["key"] == "option.secret-exposure-review")
+                surface["limitation"] = EXPECTED_SECRET_EXPOSURE_LIMITATION.replace(
+                    reviewed, unsupported, 1)
+                self.assert_rejected(document, "limitation")
+
+    def test_secret_exposure_openapi_composition_preserves_each_reviewed_boundary(self):
+        # Original literal oracle: these mutations must fail even if JSON is
+        # otherwise well formed. No producer text is used to build this input.
+        mutations = (
+            ("When combined with explicit OpenAPI review",
+             "During automatic OpenAPI review"),
+            ("anonymous GET candidate and replay responses are not detector inputs",
+             "all OpenAPI responses are detector inputs"),
+            ("Complete semantic replay equality remains private",
+             "Equal aggregate counts establish replay equality"),
+            ("public whole-body and catalogue digests are suppressed",
+             "public whole-body and catalogue digests are retained"),
+            ("semantic_digest is present and null",
+             "semantic_digest contains a public catalogue hash"),
+            ("coarse assessment-subject identity with exact committed opaque lineage",
+             "catalogue-derived identity with uncommitted evidence"),
+            ("not cross-run document equality", "proof of cross-run document equality"),
+            ("OpenAPI retains its own authorized two-request/one-active allowance",
+             "OpenAPI receives a new unbounded request allowance"),
+            ("this privacy boundary adds no request or budget",
+             "this privacy boundary retries failed requests"),
+            ("when OpenAPI and SSRF-OAST are both selected",
+             "only when OpenAPI is selected"),
+            ("Compiled availability alone selects neither review",
+             "Compiled SSRF-OAST availability always refuses OpenAPI"),
+            ("Those response paths do not share its value-free body-digest boundary",
+             "All response paths have unrestricted body capture"),
         )
         for reviewed, unsupported in mutations:
             with self.subTest(boundary=reviewed):

@@ -320,6 +320,12 @@ const SECRET_EXPOSURE_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passiv
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture"#;
 const VALUE_FREE_GRAPHQL_SMOKE_GATE: &str = r#"      - name: Exercise value-free GraphQL privacy composition CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features graphql-review,secret-exposure-review --test graphql_secret_exposure_cli -- --nocapture"#;
+const VALUE_FREE_OPENAPI_SMOKE_GATE: &str = r#"      - name: Exercise value-free OpenAPI privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features openapi-review,secret-exposure-review,ssrf-oast-review --test openapi_secret_exposure_cli -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting openapi_saved_reader_ -- --nocapture"#;
 const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture"#;
 const TLS_NEGOTIATION_OWNED_HTTPS_SMOKE_GATE: &str = r#"      - name: Exercise active TLS negotiation through the owned HTTPS profile
@@ -1107,6 +1113,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: four-platform runtime smoke must execute the exact unsuppressed release-profile value-free GraphQL privacy composition CLI regression"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-reviews",
+        "Exercise value-free OpenAPI privacy composition and feature-off reader",
+        VALUE_FREE_OPENAPI_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime reviews must execute the exact unsuppressed value-free OpenAPI CLI and feature-independent saved-reader regressions"
         ));
     }
     if !job_has_exact_step(
@@ -4626,6 +4642,47 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("value-free GraphQL"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_free_openapi_runtime_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert!(capabilities_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            valid.clone()
+        )])
+        .is_empty());
+        assert_eq!(valid.matches(VALUE_FREE_OPENAPI_SMOKE_GATE).count(), 1);
+        for changed in [
+            String::new(),
+            VALUE_FREE_OPENAPI_SMOKE_GATE.replace("        shell: bash\n", ""),
+            VALUE_FREE_OPENAPI_SMOKE_GATE.replace("shell: bash", "shell: pwsh"),
+            VALUE_FREE_OPENAPI_SMOKE_GATE.replace("--release --locked", "--locked"),
+            VALUE_FREE_OPENAPI_SMOKE_GATE.replace(
+                "openapi-review,secret-exposure-review,ssrf-oast-review",
+                "openapi-review",
+            ),
+            VALUE_FREE_OPENAPI_SMOKE_GATE.replace(
+                "--test openapi_secret_exposure_cli",
+                "--test secret_exposure_cli",
+            ),
+            VALUE_FREE_OPENAPI_SMOKE_GATE.replace(
+                "--features reporting openapi_saved_reader_",
+                "--features openapi-review openapi_saved_reader_",
+            ),
+            format!("{VALUE_FREE_OPENAPI_SMOKE_GATE}\n        if: false"),
+            format!("{VALUE_FREE_OPENAPI_SMOKE_GATE}\n        continue-on-error: true"),
+        ] {
+            let mutated = valid.replacen(VALUE_FREE_OPENAPI_SMOKE_GATE, &changed, 1);
+            assert_ne!(mutated, valid);
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutated)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("value-free OpenAPI"),
                 "{violations:?}"
             );
         }

@@ -54,11 +54,12 @@ The first slice deliberately does not inspect supplied-session response bodies.
 Selecting `supplied-session-review` does not transfer its credentials or
 authenticated body authority to this observer.
 
-V1 fails closed when the same invocation selects OpenAPI, REST, resource
-authorization, or WordPress discovery. Those separate
-response-producing paths do not yet implement this feature's value-free body
-digest boundary. This is a preflight refusal before target traffic or output
+V1 fails closed when the same invocation selects REST, resource authorization,
+or WordPress discovery, or selects both OpenAPI and SSRF-OAST. Those separate
+response-producing paths do not yet implement this feature's complete value-free
+body-digest boundary. This is a preflight refusal before target traffic or output
 reservation, not an assertion that those reviews found or leaked a secret.
+Merely compiling OpenAPI or SSRF-OAST does not select either review.
 Supplied-session review remains compatible because its authenticated bodies are
 reduced inside their context-specific runtime and are never selected by this
 anonymous observer.
@@ -102,6 +103,56 @@ digest checks. The owned fixture is stopped and joined before bundle Verify and
 self-Compare; these offline operations must preserve bundle bytes. Incomplete
 GraphQL collection must not publish a completed bundle. No inventory, account,
 real secret or external provider is required by these fixtures.
+
+## Explicit OpenAPI composition
+
+A binary compiled with both `openapi-review` and `secret-exposure-review` may
+select the existing options against an authorized application. For an already
+running owned loopback fixture, substitute its actual port:
+
+```console
+termivar scan http://127.0.0.1:<fixture-port>/ \
+  --profile web-review --openapi-review --secret-exposure-review \
+  --report-dir assessment-openapi-value-free
+```
+
+OpenAPI's separately planned anonymous GET candidate and exact replay are not
+ordinary passive detector inputs: they do not add detector response,
+interpreted-byte, match or observation counts. OpenAPI still consumes its
+existing parent-accounted allowance of at most two requests and one logical
+active verification. This privacy composition adds no request, retry, budget,
+described operation execution or extra assessment.
+
+The complete semantic comparison stays private and still compares the actual
+bounded catalogues, not just aggregate counts. Different paths with equal
+counts must not qualify as a replay match. All received OpenAPI responses use
+exact receipt-bound, committed value-free lineage instead of a public whole-body
+hash. The public document evidence omits the catalogue digest, and the existing
+`security.openapi-review-audit/v1` keeps `semantic_digest` explicitly present
+and null. A qualifying informational item uses the existing coarse
+`assessment_subject` target rather than a content-derived document identity.
+No schema, feature or installed-version authority is added.
+
+The coarse item can compare unchanged across different private catalogues; this
+does not establish cross-run document or byte equality. The before/after audits
+retain their categorical outcomes and counts, and the existing Compare
+interpretation limits still apply. Historical option-off digest and document
+identity behavior is unchanged. Current serialized and previously admitted
+candidate-source spellings remain readable by feature-independent Verify/Compare readers.
+Those readers reject a non-null OpenAPI semantic digest when the selected
+secret-exposure audit is also present.
+
+The existing S04 suppression of entry-body discovery facts remains in force.
+An OpenAPI link found only in that withheld body cannot nominate a custom
+document; the explicit conventional `/openapi.json` fallback can still run.
+No second parse bypasses the privacy boundary. Off/on trace equality is proven
+only for the controlled fallback fixture, not every possible application.
+
+Process regressions cover stable and reordered catalogues, equal-count semantic
+mismatch, terminal/incomplete responses and all central formats with original
+synthetic canaries. The fixture shuts down before actual Verify, self-Compare
+and controlled Compare; these offline operations must preserve the saved bytes.
+No credentials, vendor feed or live service is required.
 
 ## Fixed V1 detector catalogue
 

@@ -1591,6 +1591,56 @@ struct ResponseParentContext<'a> {
     graphql_post: bool,
 }
 
+/// OpenAPI's separately planned GET is not passive detector input. Only its
+/// closed candidate/replay route can mint this value-free replacement lineage.
+#[cfg(feature = "openapi-review")]
+pub(crate) fn openapi_response_privacy_parent_ids(
+    evidence: &[Evidence],
+    case: &crate::VerificationCase,
+    stage: DecisionExecutionStage,
+    executor_id: &str,
+) -> Option<Vec<EvidenceId>> {
+    if !super::openapi_runtime::openapi_privacy_route_is_valid(case, stage, executor_id)
+        || !evidence.iter().any(|item| {
+            item.predicate() == &HttpEvidencePredicate::REQUEST_METHOD.into_knowledge()
+                && item.value() == &EvidenceValue::Text("GET".to_owned())
+        })
+    {
+        return None;
+    }
+    secret_exposure_response_parent_ids_for_executor(
+        evidence,
+        case.subject(),
+        case.id(),
+        executor_id,
+    )
+}
+
+#[cfg(feature = "openapi-review")]
+pub(crate) fn project_openapi_body_privacy_lineage(
+    decision: &crate::DecisionExecutionRequest,
+    evidence: &[Evidence],
+    executor_id: &str,
+    reliability: ConfidenceScore,
+) -> Result<Evidence, HttpEvidenceError> {
+    let parents = openapi_response_privacy_parent_ids(
+        evidence,
+        decision.case(),
+        decision.stage(),
+        executor_id,
+    )
+    .ok_or(HttpEvidenceError::AssessmentObserverInvariant {
+        invariant: "OpenAPI privacy lineage requires closed GET transport provenance",
+    })?;
+    project_active_review_privacy_parts(
+        decision.case().subject(),
+        executor_id,
+        decision.case().id(),
+        reliability,
+        parents,
+    )
+}
+
 fn response_parent_ids(
     evidence: &[Evidence],
     expected_subject: &EntityId,

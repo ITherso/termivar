@@ -14445,6 +14445,11 @@ fn openapi(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), 
         fields,
         "candidate_source",
         &[
+            // Current typed Serde producer names. The older explicit as_str
+            // spellings remain admitted below for historical saved documents.
+            "discovered_open_api_json",
+            "discovered_open_api_yaml",
+            "conventional_open_api_json",
             "discovered_openapi_json",
             "discovered_openapi_yaml",
             "discovered_swagger_json",

@@ -447,6 +447,12 @@ jobs:
         run: cargo test --release --locked -p termivar-cli --no-default-features --features secret-exposure-review --test secret_exposure_cli -- --nocapture
       - name: Exercise value-free GraphQL privacy composition CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features graphql-review,secret-exposure-review --test graphql_secret_exposure_cli -- --nocapture
+      - name: Exercise value-free OpenAPI privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features openapi-review,secret-exposure-review,ssrf-oast-review --test openapi_secret_exposure_cli -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting openapi_saved_reader_ -- --nocapture
       - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture
       - name: Exercise opt-in JWT target-acceptance review CLI

@@ -2670,8 +2670,8 @@ impl WebAssessmentRuntimeBuilder {
     #[cfg(feature = "secret-exposure-review")]
     fn secret_exposure_response_source_conflict(&self) -> bool {
         let conflict = false;
-        #[cfg(feature = "openapi-review")]
-        let conflict = conflict || self.openapi_review;
+        #[cfg(all(feature = "openapi-review", feature = "ssrf-oast-review"))]
+        let conflict = conflict || (self.openapi_review && self.ssrf_oast_review.is_some());
         #[cfg(feature = "rest-review")]
         let conflict = conflict || self.rest_review;
         #[cfg(feature = "authorization-review")]
@@ -3297,9 +3297,16 @@ impl WebAssessmentRuntimeBuilder {
             jwt_target_acceptance_review,
             #[cfg(feature = "openapi-review")]
             openapi_review: self.openapi_review.then(|| {
-                OpenApiReviewConfig::new(
+                let config = OpenApiReviewConfig::new(
                     select_openapi_candidate(&root.url, []).expect("fixed exact-origin fallback"),
-                )
+                );
+                #[cfg(feature = "secret-exposure-review")]
+                let config = if self.secret_exposure_review {
+                    config.with_value_free_response_privacy()
+                } else {
+                    config
+                };
+                config
             }),
             #[cfg(feature = "rest-review")]
             rest_review: self.rest_review,
@@ -4271,7 +4278,7 @@ impl WebAssessmentRuntime {
                     let forced_runtime_limit = standard.limit_exceeded().cloned();
                     match binding.finalize(
                         self.authority.knowledge(),
-                        standard.transport(),
+                        &standard,
                         forced_outcome,
                         forced_runtime_limit,
                     ) {

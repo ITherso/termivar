@@ -3321,6 +3321,13 @@ fn openapi_review_source_contract_violations(
     web_runtime: &str,
 ) -> Vec<String> {
     let mut violations = Vec::new();
+    // Existing strict boundary helper requires exactly one final cfg(test)
+    // module. Test-owned runner/accounting fixtures are not production owners,
+    // and cannot supply the required runtime markers from inside their module.
+    let runtime = match exact_inline_tests_production("OpenAPI review", runtime) {
+        Ok(production) => production,
+        Err(errors) => return errors,
+    };
     let compact_runtime = squash_ascii_whitespace(runtime);
     let compact_actions = squash_ascii_whitespace(actions);
     let compact_web_runtime = squash_ascii_whitespace(web_runtime);
@@ -3370,7 +3377,7 @@ fn openapi_review_source_contract_violations(
             "response.body_truncated()",
             "response.body_complete()",
             "project_assessment_defense_signal(",
-            "TransportDispatchAudit",
+            "StandardWebDecisionRunReport",
             "transport.omitted_receipt_count()!=0",
             "openapi_transport_prefix_is_valid(&receipts)",
             "captured_openapi_prefix_reconciles(&state,&receipts)",
@@ -16271,7 +16278,7 @@ mod tests {
             "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
             "fn claim() { let _ = AssessmentDisposition::Confirmed; }",
         ] {
-            let mutation = format!("{runtime}\n{forbidden}");
+            let mutation = runtime.replacen("#[cfg(test)]", &format!("{forbidden}\n#[cfg(test)]"), 1);
             assert!(
                 !openapi_review_source_contract_violations(
                     &mutation,
@@ -16294,9 +16301,7 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("two-GET")));
 
-        let second_dispatch = format!(
-            "{runtime}\nfn duplicate_dispatch(binding: &OpenApiDecisionExecutor) {{ let _ = binding.requests.collect_for_runtime(); }}"
-        );
+        let second_dispatch = runtime.replacen("#[cfg(test)]", "fn duplicate_dispatch(binding: &OpenApiDecisionExecutor) { let _ = binding.requests.collect_for_runtime(); }\n#[cfg(test)]", 1);
         assert!(openapi_review_source_contract_violations(
             &second_dispatch,
             actions,
@@ -16312,6 +16317,42 @@ mod tests {
             .unwrap()
             .iter()
             .any(|violation| violation.contains("exact cfg")));
+    }
+
+    #[test]
+    fn openapi_contract_markers_in_tests_do_not_replace_production_contracts() {
+        let runtime =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/openapi_runtime.rs");
+        let actions =
+            include_str!("../../../crates/termivar-scanner/src/web_actions/native_review.rs");
+        let broker =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let web_runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime.rs");
+        let required = "pub const MAX_OPENAPI_REVIEW_REQUESTS: usize = 2;";
+        assert_eq!(runtime.matches(required).count(), 1);
+        let moved = runtime.replacen(required, "", 1).replacen(
+            "mod tests {",
+            &format!("mod tests {{\n{required}"),
+            1,
+        );
+        assert!(
+            openapi_review_source_contract_violations(&moved, actions, broker, web_runtime)
+                .iter()
+                .any(|item| item.contains("request ceiling"))
+        );
+        for escaped in [
+            format!("{runtime}\nfn escaped_production() {{}}"),
+            runtime.replace("#[cfg(test)]\nmod tests", "mod tests"),
+        ] {
+            assert!(openapi_review_source_contract_violations(
+                &escaped,
+                actions,
+                broker,
+                web_runtime
+            )
+            .iter()
+            .any(|item| item.contains("cfg(test)")));
+        }
     }
 
     #[test]

@@ -40,6 +40,41 @@ authorization behavior, sensitive-data exposure, exploitability, or a
 vulnerability. Malformed, oversized, truncated, unsupported, redirected, or
 replay-mismatched responses fail closed without an item.
 
+## Selected value-free response privacy
+
+When the binary also compiles `secret-exposure-review`, explicit
+`--openapi-review --secret-exposure-review --profile web-review` selects the
+existing value-free composition. OpenAPI's separately planned anonymous GET
+candidate/replay bodies are not passive secret-detector inputs. The full bounded
+semantic replay comparison remains private; equal counts are not an equality
+oracle. The same broker, two-request/one-active ceiling and parent accounting
+remain in force, with no extra request or budget.
+
+Each received response needs exact committed opaque lineage. Public evidence
+retains neither its whole-body hash nor the catalogue digest. The existing audit
+retains `semantic_digest` as an explicitly present null, and a qualifying
+informational item targets the coarse `assessment_subject`, not a
+content-derived document identity. Different catalogues can therefore produce
+the same coarse item identity: an unchanged Compare item is not proof of
+cross-run document equality. Categorical audit outcomes/counts remain visible,
+and feature-independent readers preserve strict current and historical input
+contracts. With this privacy option absent, historical digest, document identity
+and request behavior remain unchanged.
+
+S04's existing entry-body privacy boundary also withholds body-derived discovery
+hints. A custom document link available only inside that body is therefore not
+re-parsed to select OpenAPI; the explicitly enabled `/openapi.json` fallback may
+be selected instead. The controlled fallback fixture preserves its request trace,
+but this is not a promise of identical document selection or generic coverage
+between every option-off and privacy-selected run.
+
+Selected REST, resource authorization or WordPress discovery still conflict with
+secret-exposure review. Selecting both OpenAPI and SSRF-OAST also conflicts;
+merely compiling SSRF-OAST does not. Preflight rejects those combinations before
+secret acquisition, target traffic or output publication. See
+[passive response secret-exposure review](passive-secret-exposure-review.md) for
+the owned-fixture invocation, detector admission and privacy limitations.
+
 ## Current limitations
 
 V1 does not parse YAML, convert Swagger 2.0, fetch external references, send

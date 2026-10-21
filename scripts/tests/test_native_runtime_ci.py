@@ -91,6 +91,14 @@ PAYLOADS = {
 }
 GUARD = """      - name: Test native runtime orchestration contracts
         run: python -m unittest discover -s scripts/tests -p test_native_runtime_ci.py"""
+# Deliberately additive to the frozen 54-payload oracle; do not rewrite the
+# historical snapshot to manufacture agreement with this new native slice.
+OPENAPI_PRIVACY = """      - name: Exercise value-free OpenAPI privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features openapi-review,secret-exposure-review,ssrf-oast-review --test openapi_secret_exposure_cli -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting openapi_saved_reader_ -- --nocapture"""
 MATRIX = "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]"
 BUDGET = "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}"
 CHECKOUT = """      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -207,12 +215,32 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
             expected = [self.original[name] for name in payloads]
             if phase == "core":
                 expected.insert(0, GUARD)
+            if phase == "reviews":
+                expected.insert(2, OPENAPI_PRIVACY)
             self.assertEqual(blocks[4:], expected)
         self.assertEqual(jobs["platform-runtime-smoke"], AGGREGATE)
         # This also catches duplicate payloads relocated outside the native workers.
         all_names = re.findall(r"^      - name: (.+)$", text.replace("\r\n", "\n"), re.MULTILINE)
         for payload in self.original:
             self.assertEqual(all_names.count(payload), 1)
+        self.assertEqual(all_names.count(step_name(OPENAPI_PRIVACY)), 1)
+
+    def test_openapi_privacy_extension_cannot_be_omitted_or_weakened(self):
+        for changed in (
+            "", OPENAPI_PRIVACY + "\n" + OPENAPI_PRIVACY,
+            OPENAPI_PRIVACY.replace("        shell: bash\n", ""),
+            OPENAPI_PRIVACY.replace("shell: bash", "shell: pwsh"),
+            OPENAPI_PRIVACY.replace("--release --locked", "--locked"),
+            OPENAPI_PRIVACY.replace(
+                "openapi-review,secret-exposure-review,ssrf-oast-review", "openapi-review"),
+            OPENAPI_PRIVACY.replace("--test openapi_secret_exposure_cli", "--test secret_exposure_cli"),
+            OPENAPI_PRIVACY.replace("--features reporting openapi_saved_reader_", "--features openapi-review openapi_saved_reader_"),
+            OPENAPI_PRIVACY + "\n        if: false",
+            OPENAPI_PRIVACY + "\n        continue-on-error: true",
+        ):
+            with self.subTest(mutation=changed):
+                with self.assertRaises(AssertionError):
+                    self.assert_contract(self.workflow.replace(OPENAPI_PRIVACY, changed, 1))
 
     def test_frozen_reviewed_source_is_independent_and_complete(self):
         self.assertEqual(hashlib.sha256(self.baseline.encode("utf-8")).hexdigest(),

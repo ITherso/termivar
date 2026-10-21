@@ -885,6 +885,10 @@ impl<'ast> Visit<'ast> for WebSocketAccountingReferenceVisitor {
 
 fn inspect_openapi_runtime_transport_boundary(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
+    let mut production_syntax = syntax.clone();
+    production_syntax
+        .items
+        .retain(|item| !has_cfg_test(item_attributes(item)));
     let mut alias_collector = broker_constructor_alias_collector();
     alias_collector.visit_file(&syntax);
     let aliases = resolve_broker_constructor_aliases(alias_collector);
@@ -905,7 +909,7 @@ fn inspect_openapi_runtime_transport_boundary(source: &str) -> Result<Vec<String
         "StandardWebDecisionRuntime",
         "WebAssessmentRuntime",
     ] {
-        if syntax_references_exact_ident(&syntax, forbidden) {
+        if syntax_references_exact_ident(&production_syntax, forbidden) {
             violations.insert(format!(
                 "OpenAPI review references forbidden child-owned runtime/accounting authority {forbidden}"
             ));
@@ -1153,8 +1157,8 @@ fn native_review_execution_fingerprint_violations(source: &str, syntax: &syn::Fi
     }
 }
 
-const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 41_038;
-const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0x081c_f925_4650_b2ea_1709_87da_82ba_da9b;
+const EXACT_OPENAPI_RUNTIME_TOKEN_BYTES: usize = 55_693;
+const EXACT_OPENAPI_RUNTIME_FINGERPRINT: u128 = 0xc38e_14ee_a1ee_c25d_b899_8931_45a3_9aed;
 
 fn openapi_runtime_fingerprint_violations(source: &str, syntax: &syn::File) -> Vec<String> {
     if !matches!(syntax.items.last(), Some(Item::Mod(module))
@@ -14092,6 +14096,35 @@ fn relative_source_name(workspace_root: &Path, path: &Path) -> Result<String, Bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openapi_transport_test_fixtures_cannot_hide_production_authority() {
+        let source =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/openapi_runtime.rs");
+        assert!(inspect_openapi_runtime_transport_boundary(source)
+            .unwrap()
+            .is_empty());
+        let fixture = "fn test_owned_only() { let _ = RequestAccountingBroker::new(RuntimeBudget::default()); let _ = DecisionRunnerAdapter::new(registry()); }";
+        let under_tests = source.replacen("mod tests {", &format!("mod tests {{\n{fixture}"), 1);
+        assert!(inspect_openapi_runtime_transport_boundary(&under_tests)
+            .unwrap()
+            .is_empty());
+        for escaped in [
+            source.replacen("#[cfg(test)]", &format!("{fixture}\n#[cfg(test)]"), 1),
+            source.replace("#[cfg(test)]\nmod tests", "mod tests"),
+            format!("{source}\n{fixture}"),
+        ] {
+            assert_ne!(escaped, source);
+            let violations = inspect_openapi_runtime_transport_boundary(&escaped).unwrap();
+            assert!(
+                violations
+                    .iter()
+                    .any(|item| item.contains("accounting")
+                        || item.contains("RequestAccountingBroker")),
+                "{violations:?}"
+            );
+        }
+    }
 
     #[test]
     fn xml_application_selection_cannot_fall_back_to_positive_item_presence() {

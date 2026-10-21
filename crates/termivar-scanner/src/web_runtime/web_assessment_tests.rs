@@ -1066,12 +1066,43 @@ fn secret_exposure_accepts_graphql_with_the_value_free_response_boundary() {
 
 #[cfg(all(feature = "secret-exposure-review", feature = "openapi-review"))]
 #[test]
-fn secret_exposure_rejects_openapi_at_builder_preflight() {
+fn secret_exposure_accepts_openapi_with_the_value_free_response_boundary() {
     let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
         .enable_secret_exposure_review()
         .enable_openapi_review()
         .build();
 
+    assert!(result.is_ok());
+}
+
+#[cfg(all(
+    feature = "secret-exposure-review",
+    feature = "openapi-review",
+    feature = "ssrf-oast-review"
+))]
+#[test]
+fn secret_exposure_rejects_selected_openapi_oast_handoff_at_builder_preflight() {
+    // Synthetic inert policy: construction alone must refuse the combination,
+    // without opening either target or provider connections.
+    let origin = Url::parse("https://example.test/").unwrap();
+    let policy = crate::ssrf_oast_review::SsrfOastReviewPolicy::parse_toml(
+        &origin,
+        br#"schema = "security.ssrf-oast-review-policy/v1"
+target_origin = "https://example.test/"
+provider_origin = "https://oast.example.test"
+acknowledge_external_interaction = true
+polls_per_leg = 1
+poll_interval_ms = 250
+lifetime_ms = 5000
+"#,
+    )
+    .unwrap();
+    let administrator = crate::ssrf_oast_review::SsrfOastAdminToken::new(vec![b'x'; 32]).unwrap();
+    let result = WebAssessmentRuntime::builder(origin)
+        .enable_secret_exposure_review()
+        .enable_openapi_review()
+        .with_ssrf_oast_review(policy, administrator)
+        .build();
     assert!(matches!(
         result,
         Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
@@ -4106,6 +4137,15 @@ async fn run_openapi_fixture(
     mode: OpenApiFixtureMode,
     enabled: bool,
 ) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_openapi_fixture_with_privacy(mode, enabled, false).await
+}
+
+#[cfg(feature = "openapi-review")]
+async fn run_openapi_fixture_with_privacy(
+    mode: OpenApiFixtureMode,
+    enabled: bool,
+    value_free: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
     let openapi_hits = Arc::new(AtomicUsize::new(0));
     let hits = openapi_hits.clone();
     let server = serve(move |request| {
@@ -4194,10 +4234,333 @@ async fn run_openapi_fixture(
     if enabled {
         builder = builder.enable_openapi_review();
     }
+    #[cfg(feature = "secret-exposure-review")]
+    if value_free {
+        builder = builder.enable_secret_exposure_review();
+    }
+    #[cfg(not(feature = "secret-exposure-review"))]
+    assert!(!value_free);
     let mut runtime = builder.build().unwrap();
     let report = runtime.analyze().await.unwrap();
     let requests = server.requests().await;
     (report, requests)
+}
+
+#[cfg(all(feature = "openapi-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn openapi_value_free_review_uses_normal_runtime_and_preserves_private_replay() {
+    for (mode, expected) in [
+        (
+            OpenApiFixtureMode::Stable30,
+            OpenApiRuntimeOutcome::DocumentObserved,
+        ),
+        (
+            OpenApiFixtureMode::ReorderedReplay,
+            OpenApiRuntimeOutcome::DocumentObserved,
+        ),
+        (
+            OpenApiFixtureMode::SemanticMismatch,
+            OpenApiRuntimeOutcome::ReplayMismatch,
+        ),
+    ] {
+        let (report, requests) = run_openapi_fixture_with_privacy(mode, true, true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(report.usage().total_requests(), 3);
+        assert_eq!(openapi_requests(&requests).len(), 2);
+        for request in &requests {
+            assert_eq!(request.method, "GET");
+            assert!(!request.headers.contains_key("authorization"));
+            assert!(!request.headers.contains_key("cookie"));
+        }
+        let audit = report.openapi_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert!(audit.semantic_digest().is_none());
+        assert_eq!(audit.request_count(), 2);
+        assert_eq!(audit.active_verification_count(), 1);
+        assert_eq!(
+            audit.item_projected(),
+            expected == OpenApiRuntimeOutcome::DocumentObserved
+        );
+        assert_eq!(
+            report
+                .assessment_items()
+                .iter()
+                .filter(|item| item.capability_id() == "api.openapi-contract-observed@1")
+                .count(),
+            usize::from(expected == OpenApiRuntimeOutcome::DocumentObserved)
+        );
+        #[cfg(feature = "reporting")]
+        {
+            let product =
+                ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                    .unwrap();
+            for format in [
+                ReportFormat::Json,
+                ReportFormat::Html,
+                ReportFormat::Markdown,
+                ReportFormat::Csv,
+            ] {
+                let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+                assert!(!rendered.contains("openapi-catalog-sha256:"));
+                assert!(!rendered.contains(&format!("{:x}", Sha256::digest(OPENAPI_30_DOCUMENT))));
+                if matches!(format, ReportFormat::Json) {
+                    let document: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+                    assert!(document["openapi_review"]
+                        .as_object()
+                        .unwrap()
+                        .get("semantic_digest")
+                        .unwrap()
+                        .is_null());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "openapi-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn openapi_value_free_review_retains_typed_terminal_responses_without_projection() {
+    // These are the existing transport/parser outcomes, not a success quota.
+    // Selecting privacy does not repair a response or authorize a replay.
+    for (mode, expected) in [
+        (
+            OpenApiFixtureMode::Malformed,
+            OpenApiRuntimeOutcome::Malformed,
+        ),
+        (
+            OpenApiFixtureMode::GenericJson,
+            OpenApiRuntimeOutcome::Malformed,
+        ),
+        (
+            OpenApiFixtureMode::Html,
+            OpenApiRuntimeOutcome::UnsupportedMedia,
+        ),
+        (
+            OpenApiFixtureMode::Yaml,
+            OpenApiRuntimeOutcome::UnsupportedMedia,
+        ),
+        (
+            OpenApiFixtureMode::UnsupportedVersion,
+            OpenApiRuntimeOutcome::UnsupportedVersion,
+        ),
+        (
+            OpenApiFixtureMode::NotFound,
+            OpenApiRuntimeOutcome::HttpError,
+        ),
+        (
+            OpenApiFixtureMode::ServerError,
+            OpenApiRuntimeOutcome::HttpError,
+        ),
+        (
+            OpenApiFixtureMode::Redirect,
+            OpenApiRuntimeOutcome::RedirectObserved,
+        ),
+        (
+            OpenApiFixtureMode::RateLimited,
+            OpenApiRuntimeOutcome::RateLimited,
+        ),
+        (
+            OpenApiFixtureMode::RateLimitAdvertised,
+            OpenApiRuntimeOutcome::RateLimited,
+        ),
+        (
+            OpenApiFixtureMode::Challenge,
+            OpenApiRuntimeOutcome::DefensiveInterference,
+        ),
+    ] {
+        let (report, requests) = run_openapi_fixture_with_privacy(mode, true, true).await;
+        assert_report_reconciles(&report);
+        let audit = report.openapi_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(audit.request_count(), 1);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert!(!audit.item_projected());
+        assert!(!audit.replay_matched());
+        assert!(audit.semantic_digest().is_none());
+        assert_eq!(openapi_requests(&requests).len(), 1);
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| { item.capability_id() == "api.openapi-contract-observed@1" }));
+        for request in requests {
+            assert_eq!(request.method, "GET");
+            assert!(request.body().is_empty());
+            assert!(!request.headers.contains_key("authorization"));
+            assert!(!request.headers.contains_key("cookie"));
+        }
+        #[cfg(feature = "reporting")]
+        {
+            // The phase-terminal Blocked decision remains human-review
+            // incomplete. A finalizable child audit cannot publish a complete
+            // assessment; the real CLI regression checks its safe diagnostic.
+            assert!(matches!(
+                ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap(),),
+                Err(crate::web_runtime::AssessmentRunReportError::AssessmentIncomplete)
+            ));
+        }
+    }
+}
+
+#[cfg(all(feature = "openapi-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn openapi_value_free_review_request_budget_does_not_promote_a_single_leg() {
+    let server = serve(|request| {
+        FixtureReply::Response(if request.path() == "/openapi.json" {
+            FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+        } else {
+            FixtureResponse::html("fixture root")
+        })
+    })
+    .await;
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_requests(2)
+        .unwrap();
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .limits(limits)
+        .enable_openapi_review()
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    let audit = report.openapi_review_audit().unwrap();
+    assert_eq!(audit.outcome(), OpenApiRuntimeOutcome::BudgetExhausted);
+    assert_eq!(audit.request_count(), 1);
+    assert_eq!(audit.active_verification_count(), 0);
+    assert!(audit.semantic_digest().is_none());
+    assert!(!audit.item_projected());
+    assert_eq!(server.hit_count("/openapi.json").await, 1);
+    assert_eq!(report.usage().total_requests(), 2);
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete));
+    assert!(!report
+        .assessment_items()
+        .iter()
+        .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+}
+
+#[cfg(all(feature = "openapi-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn openapi_value_free_review_partial_and_shared_byte_limits_never_project() {
+    // Ordinary entry bytes fit both limits. Only the OpenAPI body crosses the
+    // chosen bound; a delivered chunk can exceed the remaining accounting cap.
+    for (limits, expected_outcome) in [
+        (
+            WebAssessmentLimits::default()
+                .with_max_response_body_bytes(32)
+                .unwrap(),
+            OpenApiRuntimeOutcome::Truncated,
+        ),
+        (
+            WebAssessmentLimits::default()
+                .with_max_total_response_bytes(32)
+                .unwrap(),
+            OpenApiRuntimeOutcome::BudgetExhausted,
+        ),
+    ] {
+        let server = serve(|request| {
+            FixtureReply::Response(if request.path() == "/openapi.json" {
+                FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+                    .chunked()
+            } else {
+                FixtureResponse::html("fixture root")
+            })
+        })
+        .await;
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .limits(limits)
+            .enable_openapi_review()
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        assert_report_reconciles(&report);
+        let audit = report.openapi_review_audit().unwrap();
+        assert_eq!(audit.request_count(), 1);
+        assert_eq!(audit.active_verification_count(), 0);
+        assert_eq!(audit.outcome(), expected_outcome);
+        assert!(audit.semantic_digest().is_none());
+        assert!(!audit.item_projected());
+        assert_eq!(server.hit_count("/openapi.json").await, 1);
+        assert_eq!(report.usage().total_requests(), 2);
+        assert!(report.usage().response_bytes() >= 32);
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete));
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+    }
+}
+
+#[cfg(all(feature = "openapi-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn openapi_value_free_review_cancellation_at_either_leg_preserves_incompleteness() {
+    for cancelled_leg in [1, 2] {
+        let openapi_started = Arc::new(Notify::new());
+        let observed = Arc::clone(&openapi_started);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let observed_hits = Arc::clone(&hits);
+        let server = serve(move |request| {
+            if request.path() == "/openapi.json" {
+                let hit = observed_hits.fetch_add(1, Ordering::SeqCst) + 1;
+                if hit == cancelled_leg {
+                    observed.notify_one();
+                    FixtureReply::Stall
+                } else {
+                    FixtureReply::Response(FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        OPENAPI_30_DOCUMENT,
+                    ))
+                }
+            } else {
+                FixtureReply::Response(FixtureResponse::html("fixture root"))
+            }
+        })
+        .await;
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let canceller = tokio::spawn(async move {
+            openapi_started.notified().await;
+            cancel.cancel();
+        });
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .cancellation_token(cancellation)
+            .enable_openapi_review()
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        canceller.await.unwrap();
+        assert_report_reconciles(&report);
+        let audit = report.openapi_review_audit().unwrap();
+        assert_eq!(audit.outcome(), OpenApiRuntimeOutcome::Cancelled);
+        assert_eq!(usize::from(audit.request_count()), cancelled_leg);
+        assert!(audit.semantic_digest().is_none());
+        assert!(!audit.item_projected());
+        assert_eq!(server.hit_count("/openapi.json").await, cancelled_leg);
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::HostCancellation));
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::OpenApiReviewIncomplete));
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+    }
 }
 
 #[cfg(feature = "openapi-review")]
@@ -4397,6 +4760,64 @@ async fn openapi_review_reuses_one_committed_root_discovery_candidate_for_replay
         .assessment_items()
         .iter()
         .any(|item| item.capability_id() == "api.openapi-contract-observed@1"));
+}
+
+#[cfg(all(feature = "openapi-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn openapi_value_free_review_does_not_reintroduce_withheld_entry_body_hints() {
+    // The pre-existing S04 boundary withholds body-derived discovery facts.
+    // This composition must not parse them a second time to manufacture a
+    // hint. Only the explicitly enabled conventional fallback is then eligible.
+    for selected in [false, true] {
+        let server = serve(|request| {
+            FixtureReply::Response(match request.path() {
+                "/" => FixtureResponse::html(r#"<a href="/spec/swagger.json">Contract</a>"#),
+                "/spec/swagger.json" | "/openapi.json" => {
+                    FixtureResponse::new("200 OK", Some("application/json"), OPENAPI_30_DOCUMENT)
+                },
+                _ => FixtureResponse::new("404 Not Found", Some("text/plain"), "not found"),
+            })
+        })
+        .await;
+        let builder = WebAssessmentRuntime::builder(server.url("/")).enable_openapi_review();
+        let builder = if selected {
+            builder.enable_secret_exposure_review()
+        } else {
+            builder
+        };
+        let report = builder.build().unwrap().analyze().await.unwrap();
+        assert_report_reconciles(&report);
+        let requests = server.requests().await;
+        let documents = requests.iter().filter(|request| {
+            request.headers.get("accept").map(String::as_str) == Some("application/vnd.oai.openapi+json, application/json, application/yaml, application/x-yaml, text/yaml, text/plain")
+        }).collect::<Vec<_>>();
+        assert_eq!(
+            documents.len(),
+            2,
+            "selected={selected}; outcome={:?}; total={}",
+            report.openapi_review_audit().map(|audit| audit.outcome()),
+            report.usage().total_requests()
+        );
+        let expected_path = if selected {
+            "/openapi.json"
+        } else {
+            "/spec/swagger.json"
+        };
+        assert!(documents
+            .iter()
+            .all(|request| request.path() == expected_path));
+        let audit = report.openapi_review_audit().unwrap();
+        assert_eq!(audit.outcome(), OpenApiRuntimeOutcome::DocumentObserved);
+        assert_eq!(
+            audit.candidate_source(),
+            if selected {
+                OpenApiCandidateSource::ConventionalOpenApiJson
+            } else {
+                OpenApiCandidateSource::DiscoveredSwaggerJson
+            }
+        );
+        assert_eq!(audit.semantic_digest().is_none(), selected);
+    }
 }
 
 #[cfg(feature = "openapi-review")]

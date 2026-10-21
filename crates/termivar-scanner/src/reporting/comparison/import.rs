@@ -188,6 +188,14 @@ pub(super) fn parse(bytes: &[u8]) -> Result<ImportedDocument, ComparisonError> {
             optional_audits.insert(name.to_owned(), value.clone());
         }
     }
+    // This combination is emitted only by the value-free OpenAPI path. The
+    // field remains required under the existing audit, but cannot retain an
+    // unkeyed content identity when selected response privacy is present.
+    if secret_exposure.is_some() {
+        if let Some(openapi) = optional_audits.get("openapi_review") {
+            check(object(openapi)?.get("semantic_digest") == Some(&Value::Null))?;
+        }
+    }
     if let Some(websocket) = websocket_review.as_ref() {
         audits::validate_websocket_supplied_session_cross_links(
             websocket,

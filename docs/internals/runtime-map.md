@@ -75,6 +75,15 @@ most two requests and one logical active verification. Only replayed OpenAPI
 `api.openapi-contract-observed@1` item. YAML and Swagger 2.0 create no runtime
 item, and described operations are not executed.
 
+Explicit `--secret-exposure-review` may compose with OpenAPI without selecting
+REST or the OpenAPI-plus-SSRF-OAST combination. The
+separately planned GET candidate/replay are not passive detector inputs. Full
+semantic replay equality stays private; exact committed value-free lineage
+replaces public response/catalogue digests, the existing audit keeps
+`semantic_digest: null`, and the item uses a coarse assessment-subject identity.
+That identity does not establish cross-run document equality. The privacy guard
+adds no request or allowance, and option-off behavior is unchanged.
+
 ## REST read-only review
 
 The non-default `rest-review` scanner/CLI feature adds no work by itself. It
@@ -690,9 +699,10 @@ created. See [REST read-only review](rest-readonly-review.md).
 
 The non-default `secret-exposure-review` scanner/CLI feature requires explicit
 `--secret-exposure-review --profile web-review`. V1 rejects combinations with
-OpenAPI, REST, resource authorization, or WordPress
-discovery before target or output work because those separate response paths do
-not yet share its value-free body-digest boundary. One shared observer stages
+REST, resource authorization, or WordPress discovery, and the selected
+OpenAPI-plus-SSRF-OAST combination, before target or output work because those
+separate response paths do not yet share its value-free body-digest boundary.
+One shared observer stages
 value-free facts inside the ordinary anonymous GET response transaction; only
 the committed ledger may consume them. It adds zero requests or active
 verifications. Explicit GraphQL composition preserves the fixed anonymous POST
@@ -700,6 +710,13 @@ classification, root-presence and replay-agreement facts with exact committed
 opaque lineage instead of public whole-body or framed GraphQL response digests.
 Those POSTs are not detector inputs and add no detector response/match count;
 GraphQL keeps its existing parent-accounted request and replay allowances.
+Explicit OpenAPI composition similarly keeps the complete semantic replay
+comparison private and projects only exact committed value-free lineage,
+categorical counts and a coarse subject item with a present/null semantic
+digest. Its separately planned GETs are not detector inputs; its existing
+two-request/one-active allowance is unchanged. Compiled availability alone does
+not select either review, and unchanged coarse items do not prove catalogue
+equality across runs.
 Admission fails closed for redirects,
 explicit request headers, credentials, content coding, inconsistent lengths,
 unsupported media types, invalid UTF-8, truncation, failure, or configured
