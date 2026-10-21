@@ -602,17 +602,102 @@ fn compare(before: &Path, after: &Path) -> Output {
 fn comparison_partitions(output: &Output, before: &Value, after: &Value, unchanged: bool) {
     success(output, "offline actual comparison");
     let document: Value = serde_json::from_slice(&output.stdout).expect("comparison JSON");
+    assert!(document.is_object());
     assert_eq!(document["schema"], "termivar-report-comparison/v1");
+    let expected_before_ids = identities(before);
+    let expected_after_ids = identities(after);
     let mut before_ids = BTreeSet::new();
     let mut after_ids = BTreeSet::new();
-    for group in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+    let mut counts = [0; 4];
+    // Literal current ItemProjection fields, independent of the producer's
+    // changed_fields function. This is a local oracle, not a saved importer.
+    const PROJECTION_FIELDS: [&str; 10] = [
+        "title",
+        "category",
+        "disposition",
+        "claim_basis",
+        "severity",
+        "cwe",
+        "confidence_ppm",
+        "redacted_summary",
+        "remediation",
+        "evidence",
+    ];
+    for (index, group) in ["only_in_before", "only_in_after", "changed", "unchanged"]
+        .into_iter()
+        .enumerate()
+    {
         let rows = document[group]
             .as_array()
             .expect("required four comparison arrays");
+        counts[index] = rows.len();
         if unchanged && group != "unchanged" {
             assert!(rows.is_empty());
         }
         for row in rows {
+            let fields = row.as_object().expect("comparison row object");
+            assert_eq!(
+                fields.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+                BTreeSet::from([
+                    "fingerprint",
+                    "capability_id",
+                    "before",
+                    "after",
+                    "changed_fields"
+                ])
+            );
+            let old = fields.get("before").expect("explicit before");
+            let new = fields.get("after").expect("explicit after");
+            match group {
+                "only_in_before" => assert!(old.is_object() && new.is_null()),
+                "only_in_after" => assert!(old.is_null() && new.is_object()),
+                "changed" | "unchanged" => assert!(old.is_object() && new.is_object()),
+                _ => unreachable!(),
+            }
+            for projection in [old, new].into_iter().filter(|value| value.is_object()) {
+                let projection = projection.as_object().unwrap();
+                assert_eq!(
+                    projection
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<BTreeSet<_>>(),
+                    BTreeSet::from(PROJECTION_FIELDS)
+                );
+                for field in [
+                    "title",
+                    "category",
+                    "disposition",
+                    "claim_basis",
+                    "redacted_summary",
+                ] {
+                    assert!(projection[field].is_string());
+                }
+                for field in ["severity", "cwe"] {
+                    assert!(projection[field].is_null() || projection[field].is_string());
+                }
+                assert!(projection["confidence_ppm"]
+                    .as_u64()
+                    .is_some_and(|value| value <= 1_000_000));
+                assert!(
+                    projection["remediation"].is_object() && projection["evidence"].is_object()
+                );
+            }
+            let changes = fields["changed_fields"]
+                .as_array()
+                .expect("changed fields array")
+                .iter()
+                .map(|field| field.as_str().expect("changed field string"))
+                .collect::<Vec<_>>();
+            if matches!(group, "changed" | "unchanged") {
+                let expected_changes = PROJECTION_FIELDS
+                    .into_iter()
+                    .filter(|field| old[*field] != new[*field])
+                    .collect::<Vec<_>>();
+                assert_eq!(changes, expected_changes);
+                assert_eq!(changes.is_empty(), group == "unchanged");
+            } else {
+                assert!(changes.is_empty());
+            }
             let identity = (
                 row["fingerprint"]
                     .as_str()
@@ -623,19 +708,167 @@ fn comparison_partitions(output: &Output, before: &Value, after: &Value, unchang
                     .expect("row capability")
                     .to_owned(),
             );
-            if row["before"].is_object() {
+            if old.is_object() {
                 assert!(before_ids.insert(identity.clone()));
             }
-            if row["after"].is_object() {
+            if new.is_object() {
                 assert!(after_ids.insert(identity));
-            }
-            if group == "unchanged" {
-                assert_eq!(row["changed_fields"].as_array().map(Vec::len), Some(0));
             }
         }
     }
-    assert_eq!(before_ids, identities(before));
-    assert_eq!(after_ids, identities(after));
+    assert_eq!(counts[0] + counts[2] + counts[3], expected_before_ids.len());
+    assert_eq!(counts[1] + counts[2] + counts[3], expected_after_ids.len());
+    assert_eq!(before_ids, expected_before_ids);
+    assert_eq!(after_ids, expected_after_ids);
+}
+
+#[test]
+fn comparison_oracle_rejects_ghost_and_mispartitioned_rows() {
+    // Original synthetic comparison-wire projection, NOT captured CLI output.
+    // The source below is only this helper's identity/count projection, not a
+    // saved assessment accepted by the product importer.
+    let source = serde_json::json!({
+        "item_count": 1,
+        "items": [{"fingerprint": "a".repeat(64), "capability_id": REST_CAPABILITY}]
+    });
+    let projection = serde_json::json!({
+        "title": "Original synthetic observation", "category": "API surface",
+        "disposition": "informational", "claim_basis": "observation",
+        "severity": null, "cwe": null, "confidence_ppm": 900000,
+        "redacted_summary": "Original synthetic scope",
+        "remediation": {"id": "synthetic-review", "summary": "Review the owned fixture"},
+        "evidence": {
+            "evidence_count": 1, "evidence_reference_count": 1,
+            "control_reference_count": 0, "candidate_reference_count": 0,
+            "case_present": false, "outcome_present": false, "verification_stage": null
+        }
+    });
+    let row = serde_json::json!({
+        "fingerprint": "a".repeat(64), "capability_id": REST_CAPABILITY,
+        "before": projection, "after": projection, "changed_fields": []
+    });
+    let valid = serde_json::json!({
+        "schema": "termivar-report-comparison/v1",
+        "only_in_before": [], "only_in_after": [], "changed": [], "unchanged": [row]
+    });
+    let synthetic_output = |document: &Value| Output {
+        status: std::process::ExitStatus::default(),
+        stdout: serde_json::to_vec(document).unwrap(),
+        stderr: Vec::new(),
+    };
+    comparison_partitions(&synthetic_output(&valid), &source, &source, true);
+
+    let mut ghost = valid.clone();
+    ghost["unchanged"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "fingerprint": "f".repeat(64), "capability_id": REST_CAPABILITY,
+            "before": null, "after": null, "changed_fields": []
+        }));
+    assert!(
+        std::panic::catch_unwind(|| {
+            comparison_partitions(&synthetic_output(&ghost), &source, &source, true);
+        })
+        .is_err(),
+        "a ghost paired row must not evade per-side identity conservation"
+    );
+    let rejected = |document: &Value, only_unchanged| {
+        assert!(
+            std::panic::catch_unwind(|| {
+                comparison_partitions(
+                    &synthetic_output(document),
+                    &source,
+                    &source,
+                    only_unchanged,
+                );
+            })
+            .is_err(),
+            "malformed synthetic comparison must be rejected"
+        );
+    };
+    let mut changed = valid.clone();
+    let mut changed_row = row.clone();
+    changed_row["after"]["title"] = Value::String("Different synthetic title".to_owned());
+    changed_row["changed_fields"] = serde_json::json!(["title"]);
+    changed["unchanged"] = serde_json::json!([]);
+    changed["changed"] = serde_json::json!([changed_row]);
+    comparison_partitions(&synthetic_output(&changed), &source, &source, false);
+
+    // One-sided partitions are legitimate when pairing is unavailable: one
+    // matched item is still counted once on each independent source side.
+    let mut one_sided = valid.clone();
+    one_sided["unchanged"] = serde_json::json!([]);
+    let mut old = row.clone();
+    old["after"] = Value::Null;
+    let mut new = row.clone();
+    new["before"] = Value::Null;
+    one_sided["only_in_before"] = serde_json::json!([old]);
+    one_sided["only_in_after"] = serde_json::json!([new]);
+    comparison_partitions(&synthetic_output(&one_sided), &source, &source, false);
+
+    for group in ["only_in_before", "only_in_after", "changed"] {
+        let mut mispartitioned = valid.clone();
+        mispartitioned["unchanged"] = serde_json::json!([]);
+        mispartitioned[group] = serde_json::json!([row]);
+        rejected(&mispartitioned, false);
+    }
+    let mut unreported_change = valid.clone();
+    unreported_change["unchanged"][0]["after"]["title"] =
+        Value::String("Unreported title change".to_owned());
+    rejected(&unreported_change, true);
+    for invalid_fields in [
+        Value::Null,
+        serde_json::json!("title"),
+        serde_json::json!({}),
+        serde_json::json!(1),
+        serde_json::json!(true),
+        serde_json::json!(["title", "title"]),
+        serde_json::json!(["unknown"]),
+    ] {
+        let mut malformed = changed.clone();
+        malformed["changed"][0]["changed_fields"] = invalid_fields;
+        rejected(&malformed, false);
+    }
+    for field in ["before", "after", "changed_fields"] {
+        let mut missing = valid.clone();
+        missing["unchanged"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        rejected(&missing, true);
+    }
+    for group in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(group);
+        rejected(&missing, false);
+        for invalid in [
+            Value::Null,
+            serde_json::json!(""),
+            serde_json::json!({}),
+            serde_json::json!(0),
+            serde_json::json!(false),
+        ] {
+            let mut malformed = valid.clone();
+            malformed[group] = invalid;
+            rejected(&malformed, false);
+        }
+    }
+    let mut malformed_projection = valid.clone();
+    malformed_projection["unchanged"][0]["before"] = serde_json::json!({});
+    rejected(&malformed_projection, true);
+    let mut duplicate = valid.clone();
+    duplicate["unchanged"]
+        .as_array_mut()
+        .unwrap()
+        .push(row.clone());
+    rejected(&duplicate, true);
+    let mut substituted = valid.clone();
+    substituted["unchanged"][0]["fingerprint"] = Value::String("b".repeat(64));
+    rejected(&substituted, true);
+    let mut empty = valid.clone();
+    empty["unchanged"] = serde_json::json!([]);
+    rejected(&empty, true);
 }
 
 fn offline(
