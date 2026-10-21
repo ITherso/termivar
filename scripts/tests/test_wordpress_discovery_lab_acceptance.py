@@ -53,6 +53,7 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "V1: one of --session-auth-env, --session-auth-file, or --session-auth-stdin",
         "V2: --session-cookie-file FILE",
         "V3: --session-login-file FILE",
+        "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
         "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
         "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
     ],
@@ -60,8 +61,8 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "complete health-qualified session-resource HTML may nominate public WordPress "
         "metadata; the credential is not sent to metadata or fingerprint requests; "
         "authenticated-page fingerprint acquisition is not selected; WordPress "
-        "supplied-session composition remains limited to V1/V2; V3 is rejected before "
-        "its secret file is read"
+        "supplied-session composition remains limited to V1/V2; V3/V4 are rejected "
+        "before their secret files are read"
     ),
 }
 DISCOVERY_METHOD = {
@@ -1646,6 +1647,30 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "capabilities do not report compiled supplied-session review",
         ):
             runner._validate_discovery_capability(missing_v3)
+
+        missing_v4 = copy.deepcopy(document)
+        missing_v4["surfaces"][1]["prerequisites"].remove(
+            "V4: --session-cookie-file FILE and explicit scheduled renewal policy"
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "capabilities do not report compiled supplied-session review",
+        ):
+            runner._validate_discovery_capability(missing_v4)
+
+        stale_wordpress_boundary = copy.deepcopy(document)
+        stale_wordpress_boundary["surfaces"][1]["limitation"] = (
+            stale_wordpress_boundary["surfaces"][1]["limitation"].replace(
+                "V3/V4 are rejected before their secret files are read",
+                "V3 is rejected before its secret file is read",
+            )
+        )
+        self.assertNotEqual(stale_wordpress_boundary, document)
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "capabilities omit the supplied-session WordPress authority boundary",
+        ):
+            runner._validate_discovery_capability(stale_wordpress_boundary)
 
         widened_wordpress = copy.deepcopy(document)
         widened_wordpress["surfaces"][1]["limitation"] = (
