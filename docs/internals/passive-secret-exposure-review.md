@@ -274,6 +274,12 @@ closed detector classes:
 | `stripe_live_secret` | `exposure.response-stripe-live-secret@1` | A bounded `sk_live_` or `rk_live_` secret/restricted-key shape; publishable `pk_*` keys are not this detector class |
 | `authorization_bearer_assignment` | `exposure.response-bearer-authorization@1` | An explicit bounded `Authorization: Bearer ...`-style assignment with a plausible token68 value |
 
+The saved reader also recognizes the exact historical consumer spelling
+`bearer_authorization_assignment` for that same capability. It canonicalizes
+this alias only in its private comparison projection, not in saved report bytes
+or integrity hashes; an alias change alone is not changed target coverage.
+Other detector spellings and mismatched capabilities remain invalid.
+
 Common documentation placeholders and low-variety synthetic filler are
 rejected. An AWS access-key ID by itself is not the secret-access-key half and
 does not satisfy the paired detector. The catalogue is not configurable by a

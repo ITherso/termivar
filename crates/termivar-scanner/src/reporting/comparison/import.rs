@@ -16,6 +16,13 @@ use super::{
 
 mod audits;
 
+#[cfg(feature = "supplied-session-review")]
+pub(super) fn validate_supplied_session_oauth_code(
+    value: &Value,
+) -> Result<super::ImportedSuppliedSessionAudit, ComparisonError> {
+    audits::validate_supplied_session_oauth_code(value, &BTreeMap::new())
+}
+
 pub(super) fn validate_supplied_session_renewal(
     value: &Value,
 ) -> Result<super::ImportedSuppliedSessionAudit, ComparisonError> {

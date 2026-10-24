@@ -1182,6 +1182,11 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         workspace_root,
         &web_runtime_source,
     )?);
+    violations.extend(oauth_code_source_contract_violations(
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/supplied_session_review/oauth_code.rs"))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_code.rs"))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_code.rs"))?,
+    ));
     violations.extend(private_natural_child_module_violations(
         &web_runtime_source,
         "scan_profile",
@@ -2320,6 +2325,94 @@ fn resource_authorization_review_contract_violations(
         web_runtime_source,
     )?);
     Ok(violations)
+}
+
+fn oauth_code_source_contract_violations(codec: &str, runtime: &str, reader: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let codec = match exact_inline_tests_production("OAuth-code codec", codec) {
+        Ok(source) => source,
+        Err(errors) => return errors,
+    };
+    // The runtime has exactly one external test module. Test-owned source
+    // cannot supply a missing production authority predicate.
+    let runtime = runtime.replace("\r\n", "\n");
+    let boundary = "#[cfg(test)]\n#[path = \"oauth_code_tests.rs\"]\nmod tests;";
+    if runtime.matches(boundary).count() != 1 {
+        return vec![
+            "OAuth-code runtime requires its exact isolated test-module boundary".to_owned(),
+        ];
+    }
+    let runtime = runtime.replacen(boundary, "", 1);
+    if runtime.contains("#[cfg(test)]")
+        || syn::parse_file(&runtime).is_err()
+        || syn::parse_file(reader).is_err()
+    {
+        return vec![
+            "OAuth-code runtime/reader must remain valid production-only source".to_owned(),
+        ];
+    }
+    for (label, source, required) in [
+        (
+            "codec",
+            codec,
+            &[
+                "letbacking=Zeroizing::new(source);",
+                "if!self.matches_policy(policy)",
+                "pub(crate)fnis_fresh_at(",
+                "MAX_JSON_NODES:usize=256",
+                "MAX_JSON_DEPTH:usize=8",
+                "\"id_token\"=>returnErr(OAuthCodeInputError::UnsupportedTokenProfile)",
+                "!token_type.as_str().eq_ignore_ascii_case(\"Bearer\")",
+            ][..],
+        ),
+        (
+            "runtime",
+            runtime.as_str(),
+            &[
+                "knowledge_authority:crate::knowledge::KnowledgeAuthority",
+                "self.knowledge_authority.is_same_as(knowledge.authority())",
+                "policy.principal_alias()==self.principal_alias",
+                "knowledge.inspect_evidence(&id,|stored|stored==&self.expected_evidence)",
+                "audit.request_attempt_count=1;",
+                "receipt.is_valid_for(context.policy,context.authority.knowledge())",
+                "token_signature_validation_performed:false",
+                "token_interpretation:\"opaque_bearer_not_oidc_identity\"",
+                "state_nonce_verified:false",
+            ][..],
+        ),
+        (
+            "reader",
+            reader,
+            &[
+                "security.supplied-session-audit/v5",
+                "check(!boolean(code,field)?)?;",
+                "letadmitted=number(code,\"request_admitted_count\",attempted)?;",
+                "check(total_requests<=2+2*selected)?;",
+                "validate_supplied_session(&Value::Object(common),items)?;",
+            ][..],
+        ),
+    ] {
+        let compact = squash_ascii_whitespace(source);
+        for marker in required {
+            if !compact.contains(marker) {
+                violations.push(format!(
+                    "OAuth-code {label} lost a reviewed private/bounded contract: {marker}"
+                ));
+            }
+        }
+        for forbidden in [
+            "reqwest::",
+            "std::process::",
+            "std::fs::",
+            "KnowledgeBase::new()",
+            "danger_accept_invalid_certs",
+        ] {
+            if compact.contains(forbidden) {
+                violations.push(format!("OAuth-code {label} cannot create ambient transport/storage/authority: {forbidden}"));
+            }
+        }
+    }
+    violations
 }
 
 fn supplied_session_review_contract_violations(
@@ -6543,6 +6636,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<AssessmentSuppliedSessionRenewalDocument>",
             ),
             (
+                "oauth_code",
+                "Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>",
+            ),
+            (
                 "health_oracle",
                 "AssessmentSuppliedSessionHealthOracleDocument",
             ),
@@ -8423,6 +8520,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                                     | "cookie_lifecycle"
                                     | "login"
                                     | "renewal"
+                                    | "oauth_code"
                             ))
                         || (name == "AssessmentSuppliedSessionLoginDocument"
                             && field_name == "form_error_code")
@@ -11080,8 +11178,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 660_089;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x8c12_4fb6_f9c9_827b_654c_ff55_e462_518c;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 662_210;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x3a4b_d0fe_94b0_8055_f190_30d9_2e75_a7af;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -11303,6 +11401,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
@@ -11564,6 +11663,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentSuppliedSessionAuditDocument::from_audit",
     "AssessmentSuppliedSessionCheckpointDocument::from_checkpoint",
     "comparison::validate_supplied_session_renewal",
+    "comparison::validate_supplied_session_oauth_code",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
     "WordPressSuppliedSessionPageCollectionDocument::validate",
@@ -11692,6 +11792,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionAuditOutcome::RenewalUnavailable",
     "SuppliedSessionAuditOutcome::LoginFormUnavailable",
     "SuppliedSessionAuditOutcome::LoginSubmitUnavailable",
+    "SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable",
     "SuppliedSessionAuditOutcome::ResourceUnavailable",
     "SuppliedSessionAuditOutcome::RuntimeLimit",
     "SuppliedSessionAuditOutcome::SessionLost",
@@ -11705,6 +11806,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionCredentialMechanism::AuthorizationHeader",
     "SuppliedSessionCredentialMechanism::CookieJar",
     "SuppliedSessionCredentialAcquisition::BoundedFormLogin",
+    "SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce",
     "SuppliedSessionCredentialAcquisition::SuppliedAuthorization",
     "SuppliedSessionCredentialAcquisition::SuppliedCookieJar",
     "SuppliedSessionHealthCheckpointPhase::Startup",
@@ -12015,6 +12117,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
@@ -12033,6 +12136,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentOpenApiAudit",
     "crate::web_runtime::WebAssessmentRestAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
+    "crate::web_runtime::SuppliedSessionOAuthCodeAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
@@ -12207,6 +12311,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
 const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentSuppliedSessionCheckpointDocument::from_checkpoint",
     "comparison::validate_supplied_session_renewal",
+    "comparison::validate_supplied_session_oauth_code",
     "AssessmentTlsNegotiationReviewAuditDocument::from_audit",
     "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
@@ -12471,6 +12576,10 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 ];
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
+    "oauth_code",
+    "idp_reference",
+    "credential_commit_count",
+    "declared_token_lifetime_seconds",
     "after_resource_count",
     "applied_cookie_count",
     "health",
@@ -13532,6 +13641,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::SUPPLIED_SESSION_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
                     | "crate::web_runtime::SuppliedSessionAuditOutcome"
@@ -15847,6 +15957,70 @@ mod tests {
             violation.contains("web assessment must own and forward")
                 && violation.contains("authenticated_transport_is_allowed")
         }));
+    }
+
+    #[test]
+    fn oauth_code_child_contracts_cannot_move_authority_into_codecs_or_saved_readers() {
+        let codec = include_str!(
+            "../../../crates/termivar-scanner/src/supplied_session_review/oauth_code.rs"
+        );
+        let runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_code.rs");
+        let reader = include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_code.rs");
+        let valid = oauth_code_source_contract_violations(codec, runtime, reader);
+        assert!(valid.is_empty(), "{valid:#?}");
+        for (from, to) in [
+            (
+                "self.knowledge_authority.is_same_as(knowledge.authority())",
+                "true",
+            ),
+            ("policy.principal_alias() == self.principal_alias", "true"),
+            ("stored == &self.expected_evidence", "true"),
+            (
+                "token_signature_validation_performed: false",
+                "token_signature_validation_performed: true",
+            ),
+            ("state_nonce_verified: false", "state_nonce_verified: true"),
+        ] {
+            let changed = runtime.replace(from, to);
+            assert_ne!(
+                changed, runtime,
+                "mutation must match production source: {from}"
+            );
+            assert!(!oauth_code_source_contract_violations(codec, &changed, reader).is_empty());
+        }
+        let changed_codec = codec.replacen(
+            "MAX_JSON_NODES: usize = 256",
+            "MAX_JSON_NODES: usize = 257",
+            1,
+        );
+        assert_ne!(changed_codec, codec);
+        assert!(!oauth_code_source_contract_violations(&changed_codec, runtime, reader).is_empty());
+        let changed_reader = reader.replacen(
+            "check(!boolean(code, field)?)?;",
+            "check(boolean(code, field)?)?;",
+            1,
+        );
+        assert_ne!(changed_reader, reader);
+        assert!(!oauth_code_source_contract_violations(codec, runtime, &changed_reader).is_empty());
+        for (codec, runtime, reader) in [
+            (
+                format!("{codec}\nfn escaped_test_tail() {{}}"),
+                runtime.to_owned(),
+                reader.to_owned(),
+            ),
+            (
+                codec.to_owned(),
+                format!("{runtime}\nfn detached() {{ KnowledgeBase::new(); }}"),
+                reader.to_owned(),
+            ),
+            (
+                codec.to_owned(),
+                runtime.to_owned(),
+                format!("{reader}\nuse reqwest::Client;"),
+            ),
+        ] {
+            assert!(!oauth_code_source_contract_violations(&codec, &runtime, &reader).is_empty());
+        }
     }
 
     #[test]
@@ -18699,6 +18873,7 @@ mod tests {
                     MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+                    SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
                 },
             };
@@ -19926,6 +20101,8 @@ mod tests {
                 login: Option<AssessmentSuppliedSessionLoginDocument>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 renewal: Option<AssessmentSuppliedSessionRenewalDocument>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                oauth_code: Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>,
                 health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
                 outcome: &'static str,
                 coverage: &'static str,

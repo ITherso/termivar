@@ -83,6 +83,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     SSRF_OAST_RUNTIME_SOURCE,
     XML_EXTERNAL_ENTITY_RUNTIME_SOURCE,
     SUPPLIED_SESSION_RUNTIME_SOURCE,
+    SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
     WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
     WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
@@ -142,6 +143,8 @@ const XML_EXTERNAL_ENTITY_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/xml_external_entity_runtime.rs";
 const SUPPLIED_SESSION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs";
+const SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_code.rs";
 const WORDPRESS_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
 const WORDPRESS_DISCOVERY_RUNTIME_SOURCE: &str =
@@ -1980,6 +1983,56 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
     let mut violations = Vec::new();
     let normalized_broker = broker.replace("\r\n", "\n");
     let broker = normalized_broker.as_str();
+    let oauth_isolation = broker
+        .split_once("    pub(crate) fn isolated_oauth_code(")
+        .and_then(|(_, tail)| tail.split_once("    pub(super) async fn collect("))
+        .map(|(body, _)| body);
+    let oauth_dispatch = broker
+        .split_once("impl OAuthCodeRequestBroker {")
+        .and_then(|(_, tail)| tail.split_once("fn oauth_content_length_matches("))
+        .map(|(body, _)| body);
+    if oauth_isolation.is_none_or(|body| {
+        body.matches("Client::builder()").count() != 1
+            || body.matches(".redirect(RedirectPolicy::none())").count() != 1
+            || body.matches(".retry(reqwest::retry::never())").count() != 1
+            || body.matches(".no_proxy()").count() != 1
+            || [".no_gzip()", ".no_brotli()", ".no_zstd()", ".no_deflate()"]
+                .iter().any(|marker| body.matches(marker).count() != 1)
+            || !body.contains("!mint.is_valid_for(policy)")
+            || !body.contains("self.validate_target(policy.application_url()).is_err()")
+            || !body.contains(".oauth_code_policy()")
+            || !body.contains("self\n            .accounting\n            .clone()")
+            || !body.contains("[idp.token_endpoint().clone()]")
+            || !body.contains("tls_observation: None")
+            || !body.contains("owned_xml_https_test_profile: None")
+            || !body.contains("attempted: std::sync::atomic::AtomicBool::new(false)")
+            || body.contains(".tls_built_in_root_certs(")
+            || body.contains(".add_root_certificate(")
+            || body.contains(".cookie_store(")
+    }) || oauth_dispatch.is_none_or(|body| {
+        let compact = body.split_whitespace().collect::<String>();
+        ["!self.mint.is_valid_for(policy)", "!descriptor.validate_against(policy)",
+         "!grant.matches_policy(policy)", "self.broker.validate_target(&descriptor.target).is_err()",
+         "!grant.is_fresh_at(now)", ".compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst,)",
+         "if!self.mint.is_valid_for(policy)||!descriptor.validate_against(policy)||!grant.matches_policy(policy)||self.broker.validate_target(&descriptor.target).is_err(){returnErr(OAuthCodeRequestError::InvalidDescriptor);}",
+         "if!grant.is_fresh_at(now){returnErr(OAuthCodeRequestError::GrantExpired);}",
+         "ifself.attempted.compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst,).is_err(){returnErr(OAuthCodeRequestError::AlreadyAttempted);}",
+         "grant.compose_form_body(policy)", "SUPPLIED_SESSION_OAUTH_CODE_ACTION_ID",
+         "DecisionExecutionStage::Active", "oauth_content_length_matches(&response)",
+         "oauth_json_representation(&response)", "Zeroizing::new(std::mem::take(&mutresponse.body))"]
+            .iter().any(|marker| !compact.contains(marker))
+            || body.matches(".post(").count() != 1
+            || body.matches(".header(").count() != 3
+            || body.matches(".collect_built_request(").count() != 1
+            || !body.contains(".header(CONTENT_TYPE, \"application/x-www-form-urlencoded\")")
+            || !body.contains(".header(ACCEPT, \"application/json\")")
+            || !body.contains(".header(reqwest::header::ACCEPT_ENCODING, \"identity\")")
+            || [".get(", ".put(", ".delete(", ".patch(", ".head(", ".send(",
+                ".header(AUTHORIZATION", ".header(COOKIE"]
+                .iter().any(|marker| body.contains(marker))
+    }) {
+        violations.push("the imported OAuth-code child must remain one sealed exact-IdP, identity-coded, anonymous, no-proxy, normal-TLS, once-attempted POST under shared parent accounting with descriptor/grant/freshness checks and a private guarded response".to_owned());
+    }
     if !http_evidence.contains("complete_response_observer_seal::Sealed")
         || !http_evidence
             .contains("impl Sealed for crate::web_runtime::AssessmentDiscoveryObserver {}")
@@ -2018,9 +2071,9 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
                 .to_owned(),
         );
     }
-    if broker.matches("Client::builder()").count() != 8
-        || broker.matches(".redirect(RedirectPolicy::none())").count() != 8
-        || broker.matches(".retry(reqwest::retry::never())").count() != 8
+    if broker.matches("Client::builder()").count() != 9
+        || broker.matches(".redirect(RedirectPolicy::none())").count() != 9
+        || broker.matches(".retry(reqwest::retry::never())").count() != 9
         || broker.matches(".tls_info(true)").count() != 8
         || broker.matches(".tls_built_in_root_certs(false)").count() != 2
         || broker.matches(".add_root_certificate(").count() != 3
@@ -2041,7 +2094,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             .matches("let anonymous_no_proxy_client = Client::builder()")
             .count()
             != 1
-        || broker.matches(".no_proxy()").count() != 7
+        || broker.matches(".no_proxy()").count() != 8
         || broker.matches("&self.anonymous_no_proxy_client").count() != 1
         || !broker.contains(
             "self.anonymous_no_proxy_client\n            .request(Method::GET, target.clone())",
@@ -2185,7 +2238,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         || broker
             .matches("supplied_session_no_proxy_client: None")
             .count()
-            != 1
+            != 2
         || broker
             .matches("broker.supplied_session_no_proxy_client = Some(")
             .count()
@@ -13111,6 +13164,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "supplied_session_runtime"
                 )
                 | (
+                    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs",
+                    "oauth_code"
+                )
+                | (
                     "crates/termivar-scanner/src/web_runtime.rs",
                     "wordpress_runtime"
                 )
@@ -19572,6 +19629,48 @@ mod tests {
             let violations =
                 inspect_assessment_transport_markers(&mutated_http, &mutated_broker).join("\n");
             assert!(violations.contains(needle), "{needle}: {violations}");
+        }
+    }
+
+    #[test]
+    fn imported_oauth_child_mint_descriptor_freshness_and_once_guards_cannot_be_removed() {
+        let mut http =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence.rs").to_owned();
+        for child in [
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/policy.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/probe.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/response.rs"),
+        ] {
+            http.push_str(child);
+        }
+        let broker =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let needle = "the imported OAuth-code child must remain one sealed exact-IdP";
+        let baseline = inspect_assessment_transport_markers(&http, broker).join("\n");
+        assert!(!baseline.contains(needle), "{baseline}");
+        for (from, to) in [
+            ("!self.mint.is_valid_for(policy)", "false"),
+            ("!descriptor.validate_against(policy)", "false"),
+            ("!grant.matches_policy(policy)", "false"),
+            ("if !grant.is_fresh_at(now)", "if false"),
+            (
+                "return Err(OAuthCodeRequestError::AlreadyAttempted);",
+                "return Err(OAuthCodeRequestError::GrantExpired);",
+            ),
+            (".no_gzip()", ""),
+        ] {
+            assert!(
+                broker.contains(from),
+                "missing reviewed OAuth guard mutation {from}"
+            );
+            let mutated = broker.replacen(from, to, 1);
+            assert_ne!(mutated, broker);
+            assert!(
+                inspect_assessment_transport_markers(&http, &mutated)
+                    .join("\n")
+                    .contains(needle),
+                "accepted removed OAuth guard {from}"
+            );
         }
     }
 }

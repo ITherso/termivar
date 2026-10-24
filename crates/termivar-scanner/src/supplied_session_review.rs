@@ -15,6 +15,9 @@ use thiserror::Error;
 use url::{Host, Url};
 use zeroize::Zeroizing;
 
+pub(crate) mod oauth_code;
+pub use oauth_code::{OAuthCodeInputError, SuppliedSessionOAuthGrant};
+
 /// Strict V1 supplied-session policy schema.
 pub const SUPPLIED_SESSION_POLICY_SCHEMA: &str = "security.supplied-session-policy/v1";
 /// Strict V2 supplied-cookie policy schema.
@@ -23,12 +26,17 @@ pub const SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA: &str = "security.supplied-sessi
 pub const SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA: &str = "security.supplied-session-policy/v3";
 /// Strict V4 supplied-cookie session with one explicitly scheduled renewal.
 pub const SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA: &str = "security.supplied-session-policy/v4";
+/// Strict V5 acquisition of a Bearer credential from an imported code transaction.
+pub const SUPPLIED_SESSION_OAUTH_CODE_POLICY_SCHEMA: &str = "security.supplied-session-policy/v5";
 /// Maximum accepted policy bytes.
 pub const HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES: usize = 64 * 1024;
 /// Maximum accepted supplied-cookie secret bytes.
 pub const HARD_MAX_SUPPLIED_SESSION_COOKIE_SECRET_BYTES: usize = 16 * 1024;
 /// Maximum accepted username/password secret bytes for one form-login attempt.
 pub const HARD_MAX_SUPPLIED_SESSION_FORM_SECRET_BYTES: usize = 8 * 1024;
+/// Maximum explicitly supplied code/PKCE transaction bytes. No browser is read.
+pub const HARD_MAX_SUPPLIED_SESSION_OAUTH_CODE_SECRET_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_SUPPLIED_SESSION_OAUTH_TOKEN_RESPONSE_BYTES: usize = 32 * 1024;
 /// Maximum supplied cookies declared by V2.
 pub const MAX_SUPPLIED_SESSION_COOKIES: usize = 8;
 /// Maximum composed `Cookie` request-header bytes.
@@ -53,6 +61,8 @@ pub(crate) const SUPPLIED_SESSION_LOGIN_PAGE_ACTION_ID: &str =
 pub(crate) const SUPPLIED_SESSION_LOGIN_SUBMIT_ACTION_ID: &str =
     "web.review.supplied-session.login-submit";
 pub(crate) const SUPPLIED_SESSION_RENEWAL_ACTION_ID: &str = "web.review.supplied-session.renewal";
+pub(crate) const SUPPLIED_SESSION_OAUTH_CODE_ACTION_ID: &str =
+    "web.review.supplied-session.oauth-code-exchange";
 
 const MAX_PRINCIPAL_ALIAS_BYTES: usize = 128;
 const MAX_HEALTH_FIELD_BYTES: usize = 128;
@@ -99,6 +109,8 @@ pub enum SuppliedSessionPolicyVersion {
     V3,
     /// Supplied host-only cookies and one bounded scheduled renewal.
     V4,
+    /// One imported external public-client code/PKCE credential acquisition.
+    V5,
 }
 
 impl SuppliedSessionPolicyVersion {
@@ -109,6 +121,7 @@ impl SuppliedSessionPolicyVersion {
             Self::V2 => SUPPLIED_SESSION_COOKIE_POLICY_SCHEMA,
             Self::V3 => SUPPLIED_SESSION_FORM_LOGIN_POLICY_SCHEMA,
             Self::V4 => SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA,
+            Self::V5 => SUPPLIED_SESSION_OAUTH_CODE_POLICY_SCHEMA,
         }
     }
 }
@@ -124,6 +137,9 @@ pub enum SuppliedSessionCredentialAcquisition {
     SuppliedCookieJar,
     /// One explicit form login established the bounded cookie jar.
     BoundedFormLogin,
+    /// One imported external code/PKCE transaction was selected for redemption.
+    #[serde(rename = "imported_oauth_code_pkce")]
+    ImportedOAuthCodePkce,
 }
 
 impl SuppliedSessionCredentialAcquisition {
@@ -133,6 +149,7 @@ impl SuppliedSessionCredentialAcquisition {
             Self::SuppliedAuthorization => "supplied_authorization",
             Self::SuppliedCookieJar => "supplied_cookie_jar",
             Self::BoundedFormLogin => "bounded_form_login",
+            Self::ImportedOAuthCodePkce => "imported_oauth_code_pkce",
         }
     }
 }
@@ -246,6 +263,9 @@ pub enum SuppliedSessionPolicyError {
     /// Form-login paths, field bindings, acquisition, or attempt limit were invalid.
     #[error("supplied-session form-login policy is invalid")]
     InvalidFormLogin,
+    /// The imported-code profile or its independently declared IdP authority is invalid.
+    #[error("supplied-session OAuth code policy is invalid or unsupported")]
+    InvalidOAuthCode,
     /// A policy limit was zero, inconsistent, or above a compiled maximum.
     #[error("supplied-session limits are invalid")]
     InvalidLimits,
@@ -927,6 +947,7 @@ pub struct SuppliedSessionPolicy {
     cookies: Vec<SuppliedSessionCookieMetadata>,
     login: Option<SuppliedSessionLoginPolicy>,
     renewal: Option<SuppliedSessionRenewalPolicy>,
+    oauth_code: Option<oauth_code::OAuthCodePolicy>,
     policy_reference: String,
     application_reference: String,
     principal_reference: String,
@@ -949,6 +970,8 @@ pub enum SuppliedSessionRuntimeInput {
     Ready(SuppliedSessionCredential),
     /// One username/password pair for a policy-bound form login.
     FormLogin(SuppliedSessionFormCredential),
+    /// One guarded, externally obtained authorization code/PKCE transaction.
+    OAuthCode(SuppliedSessionOAuthGrant),
 }
 
 impl SuppliedSessionRuntimeInput {
@@ -957,9 +980,11 @@ impl SuppliedSessionRuntimeInput {
         match self {
             Self::Ready(credential) => {
                 policy.version() != SuppliedSessionPolicyVersion::V3
+                    && policy.version() != SuppliedSessionPolicyVersion::V5
                     && policy.credential_mechanism() == credential.mechanism()
             },
             Self::FormLogin(credential) => credential.matches_policy(policy),
+            Self::OAuthCode(grant) => grant.matches_policy(policy),
         }
     }
 }
@@ -988,12 +1013,21 @@ impl From<SuppliedSessionFormCredential> for SuppliedSessionRuntimeInput {
     }
 }
 
+impl From<SuppliedSessionOAuthGrant> for SuppliedSessionRuntimeInput {
+    fn from(value: SuppliedSessionOAuthGrant) -> Self {
+        Self::OAuthCode(value)
+    }
+}
+
 impl fmt::Debug for SuppliedSessionRuntimeInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ready(_) => formatter.write_str("SuppliedSessionRuntimeInput::Ready(<redacted>)"),
             Self::FormLogin(_) => {
                 formatter.write_str("SuppliedSessionRuntimeInput::FormLogin(<redacted>)")
+            },
+            Self::OAuthCode(_) => {
+                formatter.write_str("SuppliedSessionRuntimeInput::OAuthCode(<redacted>)")
             },
         }
     }
@@ -1210,6 +1244,11 @@ impl SuppliedSessionPolicy {
             SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA => toml::from_str::<WireRenewalPolicy>(source)
                 .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
                 .and_then(|wire| Self::from_v4_wire(application_url, wire)),
+            SUPPLIED_SESSION_OAUTH_CODE_POLICY_SCHEMA => {
+                toml::from_str::<WireOAuthCodePolicy>(source)
+                    .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
+                    .and_then(|wire| Self::from_v5_wire(application_url, wire))
+            },
             _ => Err(SuppliedSessionPolicyError::UnsupportedSchema),
         }
     }
@@ -1286,6 +1325,7 @@ impl SuppliedSessionPolicy {
             cookies: Vec::new(),
             login: None,
             renewal: None,
+            oauth_code: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1431,6 +1471,7 @@ impl SuppliedSessionPolicy {
             cookies,
             login: None,
             renewal: None,
+            oauth_code: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1534,6 +1575,7 @@ impl SuppliedSessionPolicy {
                 max_attempts: wire.max_login_attempts,
             }),
             renewal: None,
+            oauth_code: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1620,6 +1662,65 @@ impl SuppliedSessionPolicy {
         Ok(policy)
     }
 
+    fn from_v5_wire(
+        application_url: &Url,
+        wire: WireOAuthCodePolicy,
+    ) -> Result<Self, SuppliedSessionPolicyError> {
+        let minimum_requests = wire
+            .resources
+            .len()
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(2))
+            .ok_or(SuppliedSessionPolicyError::InvalidLimits)?;
+        if wire.schema != SUPPLIED_SESSION_OAUTH_CODE_POLICY_SCHEMA
+            || wire.credential_acquisition != "imported_oauth_code_pkce"
+            || wire.resources.is_empty()
+            || wire.resources.len() > 3
+            || usize::from(wire.max_session_requests) != minimum_requests
+        {
+            return Err(SuppliedSessionPolicyError::InvalidOAuthCode);
+        }
+        let oauth_code = oauth_code::OAuthCodePolicy::from_wire(wire.oauth_code)?;
+        if !oauth_code.is_valid_for_application(application_url)
+            || oauth_code.max_token_response_bytes() > wire.max_response_body_bytes
+            || u64::try_from(oauth_code.max_token_response_bytes()).unwrap_or(u64::MAX)
+                > wire.max_total_response_bytes
+        {
+            return Err(SuppliedSessionPolicyError::InvalidOAuthCode);
+        }
+        // Reuse the historical target-scope, health, resource and parent-limit
+        // validators, not an IdP URL passed through target-origin authority.
+        let mut policy = Self::from_v1_wire(
+            application_url,
+            WirePolicy {
+                schema: SUPPLIED_SESSION_POLICY_SCHEMA.to_owned(),
+                principal_alias: wire.principal_alias,
+                credential_mechanism: wire.credential_mechanism,
+                health_path: wire.health_path,
+                health_json_field: wire.health_json_field,
+                resources: wire.resources,
+                max_session_requests: wire.max_session_requests,
+                max_total_response_bytes: wire.max_total_response_bytes,
+                max_response_body_bytes: wire.max_response_body_bytes,
+                max_wall_time_ms: wire.max_wall_time_ms,
+            },
+        )?;
+        let mut digest = Sha256::new();
+        digest.update(b"security.supplied-session-policy.reference.v5\0");
+        hash_field(&mut digest, policy.policy_reference.as_bytes());
+        hash_field(&mut digest, oauth_code.binding_reference().as_bytes());
+        hash_field(
+            &mut digest,
+            b"imported_oauth_code_pkce;one_exchange;external_context_asserted",
+        );
+        policy.policy_reference =
+            format!("supplied-session-policy-sha256:{}", hex(digest.finalize()));
+        policy.version = SuppliedSessionPolicyVersion::V5;
+        policy.credential_acquisition = SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce;
+        policy.oauth_code = Some(oauth_code);
+        Ok(policy)
+    }
+
     /// Policy schema generation.
     pub const fn version(&self) -> SuppliedSessionPolicyVersion {
         self.version
@@ -1703,6 +1804,10 @@ impl SuppliedSessionPolicy {
         &self.application_url
     }
 
+    pub(crate) fn oauth_code_policy(&self) -> Option<&oauth_code::OAuthCodePolicy> {
+        self.oauth_code.as_ref()
+    }
+
     pub(crate) fn health_json_field(&self) -> &str {
         &self.health_json_field
     }
@@ -1781,6 +1886,10 @@ impl fmt::Debug for SuppliedSessionPolicy {
             .field("cookie_update_policy", &self.cookie_update_policy)
             .field("cookie_count", &self.cookies.len())
             .field("login", &self.login.as_ref().map(|_| "<validated>"))
+            .field(
+                "oauth_code",
+                &self.oauth_code.as_ref().map(|_| "<validated>"),
+            )
             .field("policy_reference", &self.policy_reference)
             .field("application_reference", &self.application_reference)
             .field("principal_reference", &self.principal_reference)
@@ -2058,6 +2167,23 @@ struct WirePolicy {
     max_total_response_bytes: u64,
     max_response_body_bytes: usize,
     max_wall_time_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireOAuthCodePolicy {
+    schema: String,
+    principal_alias: String,
+    credential_mechanism: String,
+    credential_acquisition: String,
+    health_path: String,
+    health_json_field: String,
+    resources: Vec<String>,
+    max_session_requests: u8,
+    max_total_response_bytes: u64,
+    max_response_body_bytes: usize,
+    max_wall_time_ms: u64,
+    oauth_code: oauth_code::WireOAuthCodePolicy,
 }
 
 #[derive(Deserialize)]
@@ -2736,6 +2862,44 @@ fn http_token_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Original, independently specified imported-code profile. It does not
+    // assert that Termivar initiated an authorization or verified OIDC identity.
+    #[test]
+    fn imported_oauth_code_policy_is_a_distinct_bounded_acquisition() {
+        let source = br#"
+schema = "security.supplied-session-policy/v5"
+principal_alias = "canary-a"
+credential_mechanism = "authorization_header"
+credential_acquisition = "imported_oauth_code_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 6
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+
+[oauth_code]
+profile = "external-public-code-s256-bearer/v1"
+transport_profile = "verified-https/v1"
+issuer = "https://issuer.test/realm"
+token_endpoint = "https://issuer.test/realm/token"
+client_id = "termivar-owned-public"
+redirect_uri = "https://client.test/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+"#;
+        let application = Url::parse("https://application.test/app/").unwrap();
+        let parsed = SuppliedSessionPolicy::parse_toml(&application, source)
+            .expect("the imported-code slice must have its own strict policy");
+        assert_eq!(
+            parsed.version().schema(),
+            "security.supplied-session-policy/v5"
+        );
+        assert_eq!(parsed.resource_count(), 2);
+        assert_eq!(parsed.max_session_requests(), 6);
+    }
 
     pub(crate) fn renewal_policy() -> SuppliedSessionPolicy {
         SuppliedSessionPolicy::parse_toml(

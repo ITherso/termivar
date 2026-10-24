@@ -3,7 +3,7 @@
 These guarantees describe the current development source, not the published
 prerelease binaries. They apply to the CLI's shared credential/policy-file
 loader—including the non-bundled supplied-session Preview's V1 authorization
-sources and V2 cookie file—and the native
+sources, V2/V4 cookie file, V3 form credential and V5 imported-code file—and the native
 provider's administrator-token loader. Source selection, byte
 ceilings, validation, redacted errors and the absence of raw credential-value
 arguments remain unchanged.
@@ -34,6 +34,18 @@ special or network path can contact its owner before handle validation, so
 there is no general no-contact or bounded-latency guarantee for arbitrary paths.
 
 ## Owned intake memory
+
+The selected V5 imported OAuth transaction uses the same single-handle bounded
+regular-file intake, after non-secret policy/source preflight and output
+reservation. Its complete bytes move into guarded ownership before fallible
+TSV/context/S256 validation; no path is handed to the runtime for reopening.
+The code and verifier are form-body values only at the exact separately
+authorized IdP endpoint, never argv, a URL/query, a general observer or a saved
+body digest. A private bounded token reducer guards the response bytes and
+retains only the opaque Bearer credential plus classified facts. This does not
+claim to erase transport-library, kernel, Python controller, environment or
+allocator copies. See the V5 protocol and trust limitations in
+`supplied-session-review.md`.
 
 The CLI guards its owned input bytes before fallible validation. Environment
 values enter the guard before Unicode and size checks. File/stdin reads use

@@ -1,5 +1,14 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
+mod supplied_session_oauth_code;
+
+pub(super) fn validate_supplied_session_oauth_code(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    supplied_session_oauth_code::validate(value, items)
+}
+
 use super::super::{
     ImportedControlReferenceMappingAudit, ImportedJwtPolicyReviewAudit,
     ImportedReconCertSpotterAudit, ImportedReconSnapshotAudit, ImportedSecretExposureAudit,
@@ -546,7 +555,7 @@ const SECRET_EXPOSURE_CAPABILITIES: [(&str, &str); 4] = [
         "exposure.response-stripe-live-secret@1",
     ),
     (
-        "bearer_authorization_assignment",
+        "authorization_bearer_assignment",
         "exposure.response-bearer-authorization@1",
     ),
 ];
@@ -5395,8 +5404,17 @@ fn validate_secret_exposure_observations(
             ],
             &[],
         )?;
-        let detector_class = string(fields, "detector_class")?;
+        let wire_detector_class = string(fields, "detector_class")?;
         let capability_id = string(fields, "capability_id")?;
+        // Preserve the exact historical consumer spelling without changing
+        // supplied bytes. Both spellings identify the documented producer's
+        // one class, including uniqueness and semantic coverage comparison.
+        let detector_class = match (wire_detector_class, capability_id) {
+            ("bearer_authorization_assignment", "exposure.response-bearer-authorization@1") => {
+                "authorization_bearer_assignment"
+            },
+            _ => wire_detector_class,
+        };
         check(SECRET_EXPOSURE_CAPABILITIES.contains(&(detector_class, capability_id)))?;
         let occurrence_count = number(
             fields,
@@ -5464,6 +5482,9 @@ pub(super) fn validate_supplied_session(
 ) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
     let fields = object(value)?;
     let schema = string(fields, "schema")?;
+    if schema == "security.supplied-session-audit/v5" {
+        return validate_supplied_session_oauth_code(value, items);
+    }
     if schema == "security.supplied-session-audit/v4" {
         check(count(items, SUPPLIED_SESSION_CAPABILITY) == 0)?;
         return super::super::validate_supplied_session_renewal(value);

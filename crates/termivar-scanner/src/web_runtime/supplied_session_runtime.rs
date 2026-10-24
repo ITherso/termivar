@@ -1,5 +1,9 @@
 //! Bounded supplied-session orchestration under the assessment's shared authority.
 
+mod oauth_code;
+use oauth_code::{CommittedOAuthCodeReceipt, OAuthCodeAcquisitionContext};
+pub use oauth_code::{SuppliedSessionOAuthCodeAudit, SuppliedSessionOAuthCodeOutcome};
+
 use std::time::Duration;
 
 use serde::{
@@ -24,6 +28,7 @@ use crate::supplied_session_review::SuppliedSessionAuthorization;
 use crate::{
     http_evidence::{
         extract_supplied_session_login_csrf, CollectedHttpResponse, HttpRequestBroker,
+        OAuthCodeRequestBroker, OAuthCodeRequestDescriptor,
         SuppliedSessionCookieUpdateClassification, SuppliedSessionCookieUpdateObservation,
         SuppliedSessionLoginCsrfToken, SuppliedSessionLoginFormError, SuppliedSessionRequestError,
     },
@@ -299,6 +304,8 @@ pub const SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA: &str = "security.supplied-sessio
 pub const SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v3";
 /// Scheduled supplied-cookie renewal audit, preserving the historical audits.
 pub const SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v4";
+/// Imported-code acquisition plus the existing independently qualified health loop.
+pub const SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v5";
 /// Stable capability identity. This audit-only V1 emits no assessment item.
 pub const SUPPLIED_SESSION_CAPABILITY_ID: &str = "session.supplied-context-assessment@1";
 
@@ -382,6 +389,9 @@ pub enum SuppliedSessionAuditOutcome {
     LoginCookieUnavailable,
     /// The one selected renewal did not yield a usable replacement context.
     RenewalUnavailable,
+    /// The one external code exchange did not yield a committed usable credential.
+    #[serde(rename = "oauth_code_exchange_unavailable")]
+    OAuthCodeExchangeUnavailable,
 }
 
 /// Value-free result of selecting the one policy-bound login form.
@@ -795,6 +805,8 @@ pub struct WebAssessmentSuppliedSessionAudit {
     login: Option<SuppliedSessionLoginAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     renewal: Option<SuppliedSessionRenewalAudit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_code: Option<SuppliedSessionOAuthCodeAudit>,
 }
 
 /// Value-free record of the one explicit credential transition and its health gate.
@@ -861,6 +873,9 @@ const fn legacy_credential_acquisition(value: &SuppliedSessionCredentialAcquisit
 }
 
 impl WebAssessmentSuppliedSessionAudit {
+    pub fn oauth_code(&self) -> Option<&SuppliedSessionOAuthCodeAudit> {
+        self.oauth_code.as_ref()
+    }
     pub fn renewal(&self) -> Option<&SuppliedSessionRenewalAudit> {
         self.renewal.as_ref()
     }
@@ -962,6 +977,8 @@ pub(super) struct SuppliedSessionRuntimeConfig {
     requests: HttpRequestBroker,
     login_page: Option<SuppliedSessionRequestDescriptor>,
     login_submit: Option<SuppliedSessionRequestDescriptor>,
+    oauth_code_requests: Option<OAuthCodeRequestBroker>,
+    oauth_code_descriptor: Option<OAuthCodeRequestDescriptor>,
     health: SuppliedSessionRequestDescriptor,
     resources: Vec<(SuppliedSessionRequestDescriptor, String)>,
 }
@@ -1000,12 +1017,23 @@ impl SuppliedSessionRuntimeConfig {
             })
             .collect::<Option<Vec<_>>>()
             .ok_or(())?;
+        let (oauth_code_requests, oauth_code_descriptor) =
+            if policy.version() == SuppliedSessionPolicyVersion::V5 {
+                (
+                    Some(authority.mint_oauth_code_broker(&policy)?),
+                    Some(OAuthCodeRequestDescriptor::from_policy(&policy).ok_or(())?),
+                )
+            } else {
+                (None, None)
+            };
         Ok(Self {
             policy,
             input,
             requests,
             login_page,
             login_submit,
+            oauth_code_requests,
+            oauth_code_descriptor,
             health,
             resources,
         })
@@ -1022,6 +1050,8 @@ impl SuppliedSessionRuntimeConfig {
             requests,
             login_page,
             login_submit,
+            oauth_code_requests,
+            oauth_code_descriptor,
             health,
             resources,
         } = self;
@@ -1029,12 +1059,13 @@ impl SuppliedSessionRuntimeConfig {
         let timing = authority.start();
         let local_deadline = tokio::time::Instant::now()
             .checked_add(Duration::from_millis(policy.max_wall_time_ms()));
-        let deadline = earliest_deadline(timing.deadline(), local_deadline);
+        let mut deadline = earliest_deadline(timing.deadline(), local_deadline);
         let mut state = ExecutionState::new(&policy, selected_resource_count);
         if resource_observer.is_some_and(|observer| observer.begin(&policy, &resources).is_err()) {
             resource_observer.expect("observer remains present").fail();
         }
 
+        let mut oauth_receipt = None;
         let mut credential = match input {
             SuppliedSessionRuntimeInput::Ready(credential) => credential,
             SuppliedSessionRuntimeInput::FormLogin(form_credential) => {
@@ -1088,11 +1119,52 @@ impl SuppliedSessionRuntimeConfig {
                     },
                 }
             },
+            SuppliedSessionRuntimeInput::OAuthCode(grant) => {
+                let (Some(idp_requests), Some(descriptor)) =
+                    (oauth_code_requests.as_ref(), oauth_code_descriptor.as_ref())
+                else {
+                    state.outcome = SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable;
+                    state.add_not_dispatched(&resources);
+                    return state.finish(policy);
+                };
+                let (audit, acquired) = oauth_code::acquire(
+                    OAuthCodeAcquisitionContext {
+                        authority,
+                        requests: idp_requests,
+                        descriptor,
+                        policy: &policy,
+                        deadline,
+                        budget: state.dispatch_budget(),
+                    },
+                    &grant,
+                )
+                .await;
+                state.response_bytes = state.response_bytes.saturating_add(audit.response_bytes());
+                state.oauth_code = Some(audit);
+                match acquired {
+                    Ok(acquired) => {
+                        // Provider-declared lifetime narrows use; reaching it
+                        // is not an observed server-side expiration decision.
+                        deadline = earliest_deadline(
+                            deadline,
+                            tokio::time::Instant::now().checked_add(acquired.declared_lifetime),
+                        );
+                        oauth_receipt = Some(acquired.receipt);
+                        acquired.credential
+                    },
+                    Err(outcome) => {
+                        state.outcome = outcome;
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                }
+            },
         };
         let dispatch_context = DispatchContext {
             authority,
             requests: &requests,
             credential: &credential,
+            credential_acquisition: oauth_receipt.as_ref(),
             policy: &policy,
             deadline,
         };
@@ -1131,6 +1203,7 @@ impl SuppliedSessionRuntimeConfig {
                 authority,
                 requests: &requests,
                 credential: &credential,
+                credential_acquisition: oauth_receipt.as_ref(),
                 policy: &policy,
                 deadline,
             };
@@ -1234,6 +1307,7 @@ impl SuppliedSessionRuntimeConfig {
                     authority,
                     requests: &requests,
                     credential: &credential,
+                    credential_acquisition: oauth_receipt.as_ref(),
                     policy: &policy,
                     deadline,
                 };
@@ -1293,6 +1367,8 @@ impl SuppliedSessionRuntimeConfig {
             requests,
             login_page,
             login_submit,
+            oauth_code_requests: _,
+            oauth_code_descriptor: _,
             health,
             resources,
         } = self;
@@ -1326,7 +1402,8 @@ impl SuppliedSessionRuntimeConfig {
                 SuppliedSessionCredential::Authorization(value)
             },
             SuppliedSessionRuntimeInput::Ready(SuppliedSessionCredential::SuppliedCookies(_))
-            | SuppliedSessionRuntimeInput::FormLogin(_) => {
+            | SuppliedSessionRuntimeInput::FormLogin(_)
+            | SuppliedSessionRuntimeInput::OAuthCode(_) => {
                 state.outcome = SuppliedSessionAuditOutcome::ResourceUnavailable;
                 state.add_not_dispatched(&resources);
                 let websocket_audit = supplied_session_websocket_not_run(
@@ -1342,6 +1419,7 @@ impl SuppliedSessionRuntimeConfig {
             authority,
             requests: &requests,
             credential: &credential,
+            credential_acquisition: None,
             policy: &policy,
             deadline,
         };
@@ -1576,6 +1654,7 @@ struct ExecutionState {
     response_bytes: u64,
     epoch: u8,
     renewal: Option<SuppliedSessionRenewalAudit>,
+    oauth_code: Option<SuppliedSessionOAuthCodeAudit>,
 }
 
 #[derive(Clone, Copy)]
@@ -1596,6 +1675,7 @@ impl ExecutionState {
             selected_resource_count,
             response_bytes: 0,
             epoch: 1,
+            oauth_code: SuppliedSessionOAuthCodeAudit::selected(policy),
             renewal: policy
                 .renewal_after_resource_count()
                 .map(|after_resource_count| SuppliedSessionRenewalAudit {
@@ -1920,6 +2000,11 @@ impl ExecutionState {
             .unwrap_or(u8::MAX)
             .saturating_add(u8::try_from(dispatched_resources).unwrap_or(u8::MAX))
             .saturating_add(login_requests)
+            .saturating_add(
+                self.oauth_code
+                    .as_ref()
+                    .map_or(0, |audit| audit.request_admitted_count()),
+            )
             .saturating_add(self.renewal.as_ref().map_or(0, |renewal| {
                 renewal
                     .attempt_count
@@ -2322,6 +2407,11 @@ impl ExecutionState {
                 .as_ref()
                 .map_or(0, SuppliedSessionLoginAudit::response_bytes)
                 .saturating_add(
+                    self.oauth_code
+                        .as_ref()
+                        .map_or(0, |audit| audit.response_bytes())
+                )
+                .saturating_add(
                     self.checkpoints
                         .iter()
                         .map(WebAssessmentSuppliedSessionCheckpointAudit::response_bytes)
@@ -2348,6 +2438,7 @@ impl ExecutionState {
                 SuppliedSessionPolicyVersion::V2 => SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V3 => SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V4 => SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+                SuppliedSessionPolicyVersion::V5 => SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
             },
             capability_id: SUPPLIED_SESSION_CAPABILITY_ID,
             policy_reference: policy.policy_reference().to_owned(),
@@ -2384,6 +2475,7 @@ impl ExecutionState {
             cookie_lifecycle,
             login: self.login,
             renewal: self.renewal,
+            oauth_code: self.oauth_code,
         }
     }
 }
@@ -2503,6 +2595,7 @@ struct DispatchContext<'a> {
     authority: &'a SharedWebRuntimeAuthority,
     requests: &'a HttpRequestBroker,
     credential: &'a SuppliedSessionCredential,
+    credential_acquisition: Option<&'a CommittedOAuthCodeReceipt>,
     policy: &'a SuppliedSessionPolicy,
     deadline: Option<tokio::time::Instant>,
 }
@@ -2681,6 +2774,16 @@ async fn dispatch(
     expected_purpose: SuppliedSessionRequestPurpose,
 ) -> DispatchResult {
     if descriptor.purpose() != expected_purpose {
+        return DispatchResult::InvalidDescriptor;
+    }
+    let acquisition_is_valid = if context.policy.version() == SuppliedSessionPolicyVersion::V5 {
+        context.credential_acquisition.is_some_and(|receipt| {
+            receipt.is_valid_for(context.policy, context.authority.knowledge())
+        })
+    } else {
+        context.credential_acquisition.is_none()
+    };
+    if !acquisition_is_valid {
         return DispatchResult::InvalidDescriptor;
     }
     if context.authority.cancellation().is_cancelled() {
@@ -3359,6 +3462,7 @@ fn health_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static str
         SuppliedSessionPolicyVersion::V2 => HEALTH_COMMIT_EVIDENCE_METHOD_V2,
         SuppliedSessionPolicyVersion::V3 => HEALTH_COMMIT_EVIDENCE_METHOD_V3,
         SuppliedSessionPolicyVersion::V4 => "supplied-session-health/v4",
+        SuppliedSessionPolicyVersion::V5 => "supplied-session-health/v5",
     }
 }
 
@@ -3368,6 +3472,7 @@ fn resource_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static s
         SuppliedSessionPolicyVersion::V2 => RESOURCE_COMMIT_EVIDENCE_METHOD_V2,
         SuppliedSessionPolicyVersion::V3 => RESOURCE_COMMIT_EVIDENCE_METHOD_V3,
         SuppliedSessionPolicyVersion::V4 => "supplied-session-resource/v4",
+        SuppliedSessionPolicyVersion::V5 => "supplied-session-resource/v5",
     }
 }
 

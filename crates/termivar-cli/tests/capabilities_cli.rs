@@ -752,6 +752,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "V2: --session-cookie-file FILE",
             "V3: --session-login-file FILE",
             "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
+            "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
             "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
@@ -794,10 +795,18 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "Domain never expands it",
         "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
         "explicitly authorized login POST can have server-side effects",
-        "No browser-profile import, form discovery, credential guessing, OAuth, MFA bypass",
+        "V5 alone accepts --session-oauth-code-file",
+        "at most one separately authorized IdP token POST",
+        "same parent and nine-request session allowance",
+        "2 + 2 * resource_count",
+        "An imported transaction and S256 context are operator assertions",
+        "no OIDC identity or token signature validation",
+        "exact committed private acquisition receipt",
+        "owned-numeric-loopback-http/v1",
+        "No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass",
         "exploit, or impact validation",
         "WordPress supplied-session composition remains limited to V1/V2",
-        "V3/V4 are rejected before their secret files are read",
+        "V3/V4/V5 are rejected before their secret files are read",
     ] {
         assert!(
             session_limit.contains(required),
@@ -1024,6 +1033,11 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         surface_state(&document, "option.supplied-session-review") == "compiled",
         scan.contains("--session-login-file"),
         "supplied-session login source/help drift"
+    );
+    assert_eq!(
+        surface_state(&document, "option.supplied-session-review") == "compiled",
+        scan.contains("--session-oauth-code-file"),
+        "imported OAuth code source/help drift"
     );
     for option in [
         "--jwt-public-jwk",

@@ -307,6 +307,75 @@ const WORDPRESS_REVIEW_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordP
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_review_cli -- --nocapture"#;
 const WORDPRESS_DISCOVERY_SMOKE_GATE: &str = r#"      - name: Exercise opt-in WordPress discovery CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features wordpress-review --test wordpress_discovery_cli -- --nocapture"#;
+const OAUTH_CODE_SMOKE_GATE: &str = r#"      - name: Exercise imported OAuth-code session and feature-off reader
+        shell: bash
+        env:
+          TERMIVAR_NATIVE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,secret-exposure-review --test supplied_session_oauth_code_cli --test capabilities_cli -- --nocapture
+          python -c 'import hashlib,json,os,pathlib,platform; e=os.environ; p=pathlib.Path("target/release/termivar"+(".exe" if os.name=="nt" else "")); assert p.is_file() and not p.is_symlink(); n=p.stat().st_size; assert 0<n<=2**27; print(json.dumps(dict(schema="native-oauth-executable/v1",source=e["TERMIVAR_NATIVE_SOURCE"],run_id=e["GITHUB_RUN_ID"],run_attempt=e["GITHUB_RUN_ATTEMPT"],host=platform.system(),arch=platform.machine(),features="supplied-session-review,secret-exposure-review",profile="release",bytes=n,sha256=hashlib.file_digest(p.open("rb"),"sha256").hexdigest(),assurance="self_reported_hash_not_attestation"),sort_keys=True))'
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_code::tests:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_code_saved_reader_ -- --nocapture"#;
+const OAUTH_CODE_LAB_JOB: &str = r#"  oauth-code-lab:
+    name: OAuth Code Session Lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # 1.88.0
+        with:
+          toolchain: "1.88.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Test pinned OAuth-code lab contracts
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s scripts/tests -p test_oauth_code_lab_acceptance.py
+          python scripts/oauth_code_lab_acceptance.py --validate-only
+      - name: Inspect approved owned-IdP container runtime
+        run: |
+          set -euo pipefail
+          docker version
+          test "$(docker info --format '{{.Architecture}}')" = x86_64
+      - name: Build feature-minimal OAuth-code session CLI
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-oauth-code-target-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test ! -e "$CARGO_TARGET_DIR"
+          cargo +1.88.0 build --release --locked -p termivar-cli --no-default-features --features supplied-session-review
+      - name: Accept imported code against pinned disposable Keycloak
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/termivar-oauth-code-target-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/termivar-oauth-code-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$evidence_dir"
+          test -x "$CARGO_TARGET_DIR/release/termivar"
+          python scripts/oauth_code_lab_acceptance.py \
+            --binary "$CARGO_TARGET_DIR/release/termivar" \
+            --output-dir "$evidence_dir" \
+            --source-ref "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --expect-version 0.10.0-alpha.3
+      - name: Upload bounded real-IdP acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oauth-code-lab-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/termivar-oauth-code-evidence-${{ github.run_id }}-${{ github.run_attempt }}/oauth-code-lab-acceptance.json
+          if-no-files-found: error
+          retention-days: 30"#;
 const SUPPLIED_SESSION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in supplied-session review CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features supplied-session-review --test supplied_session_cli -- --nocapture"#;
 const SUPPLIED_SESSION_WORDPRESS_PREFLIGHT_GATE: &str = r#"      - name: Exercise supplied-session WordPress preflight boundaries
@@ -872,6 +941,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &files,
     ));
     violations.extend(wordpress_discovery_lab_workflow_policy_violations(&files));
+    violations.extend(oauth_code_lab_workflow_policy_violations(&files));
     violations.extend(wordpress_discovery_fuzz_workflow_policy_violations(&files));
     violations.extend(release_acceptance_test_workflow_policy_violations(&files));
     let baseline_accepted = workspace_root.join(COVERAGE_BASELINE_POINTER).is_file();
@@ -1033,6 +1103,16 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     };
     let normalized = contents.replace("\r\n", "\n");
     let mut violations = Vec::new();
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-core",
+        "Exercise imported OAuth-code session and feature-off reader",
+        OAUTH_CODE_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform core must execute the exact unsuppressed release-profile imported-code CLI, normal-runtime proof and feature-off reader regressions"
+        ));
+    }
     let runtime_jobs = NATIVE_RUNTIME_WORKERS
         .iter()
         .flat_map(|(job_id, _)| named_job_blocks(&normalized, job_id))
@@ -1500,6 +1580,20 @@ fn wordpress_resource_acceptance_workflow_policy_violations(
         vec![format!(
             "{TESTS_WORKFLOW}: WordPress resource acceptance must match the exact Linux-only, Rust 1.88, feature-minimal, isolated-target, unsuppressed measurement and bounded-evidence contract"
         )]
+    }
+}
+
+fn oauth_code_lab_workflow_policy_violations(files: &[(String, String)]) -> Vec<String> {
+    let Some((_, contents)) = files.iter().find(|(path, _)| path == TESTS_WORKFLOW) else {
+        return vec![format!(
+            "{TESTS_WORKFLOW}: reviewed owned OAuth-code lab is missing"
+        )];
+    };
+    let normalized = contents.replace("\r\n", "\n");
+    if named_job_blocks(&normalized, "oauth-code-lab").as_slice() == [OAUTH_CODE_LAB_JOB] {
+        Vec::new()
+    } else {
+        vec![format!("{TESTS_WORKFLOW}: owned OAuth-code lab must retain the exact source, pinned setup, Linux-only isolated release-profile execution and single safe JSON upload contract")]
     }
 }
 
@@ -3244,6 +3338,67 @@ mod tests {
     }
 
     #[test]
+    fn oauth_code_native_and_real_idp_contracts_cannot_be_weakened() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert_eq!(valid.matches(OAUTH_CODE_SMOKE_GATE).count(), 1);
+        assert_eq!(
+            named_job_blocks(&valid, "oauth-code-lab").as_slice(),
+            [OAUTH_CODE_LAB_JOB]
+        );
+        assert!(oauth_code_lab_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            valid.clone()
+        )])
+        .is_empty());
+        assert!(!oauth_code_lab_workflow_policy_violations(&[]).is_empty());
+        for changed in [
+            String::new(),
+            format!("{OAUTH_CODE_SMOKE_GATE}\n{OAUTH_CODE_SMOKE_GATE}"),
+            OAUTH_CODE_SMOKE_GATE.replace("--release --locked", "--locked"),
+            OAUTH_CODE_SMOKE_GATE.replace("secret-exposure-review", "wordpress-review"),
+            OAUTH_CODE_SMOKE_GATE.replace("oauth_code::tests::", "nonexistent_filter::"),
+            OAUTH_CODE_SMOKE_GATE.replace(
+                "--features reporting supplied_session_oauth_code_saved_reader_",
+                "--features supplied-session-review supplied_session_oauth_code_saved_reader_",
+            ),
+            format!("{OAUTH_CODE_SMOKE_GATE}\n        if: false"),
+            format!("{OAUTH_CODE_SMOKE_GATE}\n        continue-on-error: true"),
+        ] {
+            assert_ne!(changed, OAUTH_CODE_SMOKE_GATE);
+            let mutated = valid.replacen(OAUTH_CODE_SMOKE_GATE, &changed, 1);
+            assert!(!capabilities_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutated
+            )])
+            .is_empty());
+        }
+        for changed in [
+            String::new(),
+            format!("{OAUTH_CODE_LAB_JOB}\n{OAUTH_CODE_LAB_JOB}"),
+            OAUTH_CODE_LAB_JOB.replace("    runs-on: ubuntu-latest", "    runs-on: windows-latest"),
+            OAUTH_CODE_LAB_JOB.replace("    permissions:", "    if: false\n    permissions:"),
+            OAUTH_CODE_LAB_JOB.replace("persist-credentials: false", "persist-credentials: true"),
+            OAUTH_CODE_LAB_JOB.replace("--release --locked", "--locked"),
+            OAUTH_CODE_LAB_JOB.replace(
+                "--features supplied-session-review",
+                "--features release-bundle",
+            ),
+            OAUTH_CODE_LAB_JOB.replace("oauth-code-lab-acceptance.json", "**"),
+            OAUTH_CODE_LAB_JOB.replace("if: always()", "if: success()"),
+            OAUTH_CODE_LAB_JOB.replace("if-no-files-found: error", "if-no-files-found: ignore"),
+            OAUTH_CODE_LAB_JOB.replace("--source-ref", "--invented-resume"),
+        ] {
+            assert_ne!(changed, OAUTH_CODE_LAB_JOB);
+            let mutated = valid.replacen(OAUTH_CODE_LAB_JOB, &changed, 1);
+            assert!(!oauth_code_lab_workflow_policy_violations(&[(
+                TESTS_WORKFLOW.to_owned(),
+                mutated
+            )])
+            .is_empty());
+        }
+    }
+
+    #[test]
     fn native_runtime_orchestration_tests_cannot_be_omitted_replaced_or_suppressed() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         assert_eq!(valid.matches(NATIVE_RUNTIME_CONTRACT_TEST_STEP).count(), 1);
@@ -3333,6 +3488,11 @@ mod tests {
     fn native_runtime_contracts_cannot_move_to_another_partition() {
         let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
         for (step, owner, substitute) in [
+            (
+                OAUTH_CODE_SMOKE_GATE,
+                "platform-runtime-core",
+                "platform-runtime-reviews",
+            ),
             (
                 CAPABILITIES_SMOKE_GATE,
                 "platform-runtime-core",

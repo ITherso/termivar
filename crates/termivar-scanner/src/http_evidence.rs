@@ -83,6 +83,10 @@ pub(crate) use request_broker::{HttpRequestBroker, HttpRequestBrokerError};
 pub(crate) use request_broker::{
     JwtTargetAcceptanceRequestDescriptor, JwtTargetAcceptanceRequestError,
 };
+#[cfg(feature = "supplied-session-review")]
+pub(crate) use request_broker::{
+    OAuthCodeRequestBroker, OAuthCodeRequestDescriptor, OAuthCodeRequestError,
+};
 #[cfg(feature = "xml-external-entity-review")]
 pub(crate) use request_broker::{
     XmlExternalEntityRequestBroker, XmlExternalEntityRequestDescriptor,

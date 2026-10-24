@@ -135,7 +135,8 @@ use crate::{
         MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
         MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
         SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
-        SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
     },
 };
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
@@ -5898,7 +5899,7 @@ const SECRET_EXPOSURE_CAPABILITIES: [(&str, &str); 4] = [
         "exposure.response-stripe-live-secret@1",
     ),
     (
-        "bearer_authorization_assignment",
+        "authorization_bearer_assignment",
         "exposure.response-bearer-authorization@1",
     ),
 ];
@@ -9879,6 +9880,8 @@ struct AssessmentSuppliedSessionAuditDocument {
     login: Option<AssessmentSuppliedSessionLoginDocument>,
     #[serde(skip_serializing_if = "Option::is_none")]
     renewal: Option<AssessmentSuppliedSessionRenewalDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_code: Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>,
     health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
     outcome: &'static str,
     coverage: &'static str,
@@ -10247,10 +10250,12 @@ impl AssessmentSuppliedSessionAuditDocument {
             credential_mechanism: supplied_session_credential_mechanism_token(
                 audit.credential_mechanism(),
             ),
-            credential_acquisition: (audit.schema() == SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA)
-                .then(|| {
-                    supplied_session_credential_acquisition_token(audit.credential_acquisition())
-                }),
+            credential_acquisition: matches!(
+                audit.schema(),
+                SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA | SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA
+            )
+            .then(|| supplied_session_credential_acquisition_token(audit.credential_acquisition())),
+            oauth_code: audit.oauth_code().cloned(),
             cookie_policy: audit.cookie_policy().map(|policy| {
                 AssessmentSuppliedSessionCookiePolicyDocument {
                     declared_count: policy.declared_count(),
@@ -10366,6 +10371,18 @@ impl AssessmentSuppliedSessionAuditDocument {
     }
 
     fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        if self.schema == SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA {
+            if items
+                .iter()
+                .any(|item| item.capability_id == SUPPLIED_SESSION_CAPABILITY_ID)
+            {
+                return Err(ReportError::Serialization);
+            }
+            let value = serde_json::to_value(self).map_err(|_| ReportError::Serialization)?;
+            return comparison::validate_supplied_session_oauth_code(&value)
+                .map(|_| ())
+                .map_err(|_| ReportError::Serialization);
+        }
         if self.schema == SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA {
             if items
                 .iter()
@@ -10379,6 +10396,7 @@ impl AssessmentSuppliedSessionAuditDocument {
                 .map_err(|_| ReportError::Serialization);
         }
         if self.renewal.is_some()
+            || self.oauth_code.is_some()
             || self
                 .checkpoints
                 .iter()
@@ -10777,6 +10795,23 @@ impl AssessmentSuppliedSessionAuditDocument {
         if let Some(acquisition) = self.credential_acquisition {
             metadata.push(("Credential acquisition", acquisition.to_owned()));
         }
+        if let Some(code) = self.oauth_code.as_ref() {
+            metadata.extend([
+                ("OAuth code profile", "external-public-code-s256-bearer/v1".to_owned()),
+                ("OAuth IdP reference", code.idp_reference().to_owned()),
+                ("OAuth acquisition outcome", code.outcome().as_str().to_owned()),
+                ("OAuth attempted dispatches", code.request_attempt_count().to_string()),
+                ("OAuth admitted requests", code.request_admitted_count().to_string()),
+                ("OAuth complete responses", code.response_completed_count().to_string()),
+                ("OAuth committed credentials", code.credential_commit_count().to_string()),
+                ("OAuth response bytes", code.response_bytes().to_string()),
+                ("OAuth declared token lifetime seconds", code.declared_token_lifetime_seconds()
+                    .map_or_else(|| "not_established".to_owned(), |seconds| seconds.to_string())),
+                ("OAuth transaction assurance", "operator_declared_external_transaction; original S256 enforcement and front-channel CSRF not established".to_owned()),
+                ("OAuth token meaning", "opaque Bearer credential, not OIDC identity; target health and coverage qualified separately".to_owned()),
+                ("OAuth initiation / callback / state-nonce / OIDC / signature verification", "not_performed".to_owned()),
+            ]);
+        }
         if let Some(policy) = self.cookie_policy.as_ref() {
             metadata.extend([
                 ("Declared cookies", policy.declared_count.to_string()),
@@ -10975,6 +11010,9 @@ const fn supplied_session_audit_outcome_token(value: SuppliedSessionAuditOutcome
         SuppliedSessionAuditOutcome::LoginSubmitUnavailable => "login_submit_unavailable",
         SuppliedSessionAuditOutcome::LoginCookieUnavailable => "login_cookie_unavailable",
         SuppliedSessionAuditOutcome::RenewalUnavailable => "renewal_unavailable",
+        SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable => {
+            "oauth_code_exchange_unavailable"
+        },
     }
 }
 
@@ -21325,6 +21363,7 @@ mod tests {
             cookie_lifecycle: None,
             login: None,
             renewal: None,
+            oauth_code: None,
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: "json_boolean_true",
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),

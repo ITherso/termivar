@@ -316,6 +316,10 @@ fn scan_wordpress_supplied_session_policy_conflict(
     version: termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,
 ) -> Option<&'static str> {
     if selected
+        && version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5
+    {
+        Some("`--wordpress-supplied-session` does not support imported OAuth code policies")
+    } else if selected
         && version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4
     {
         Some("`--wordpress-supplied-session` does not support renewal policies")
@@ -1062,7 +1066,7 @@ struct ScanArgs {
     oast_admin_token_stdin: bool,
     /// Read one strict bounded supplied-session policy (Authorization V1,
     /// supplied-cookie V2, one bounded form-login V3, or bounded supplied-cookie
-    /// renewal V4).
+    /// renewal V4, or imported external code/PKCE Bearer acquisition V5).
     /// The policy selects one bounded credential acquisition, a small exact set
     /// of operator-authorized resources for bodyless GETs, and a structured
     /// session-health oracle. It is inert without exactly one matching
@@ -1094,7 +1098,8 @@ struct ScanArgs {
             "session_auth_file",
             "session_auth_stdin",
             "session_cookie_file",
-            "session_login_file"
+            "session_login_file",
+            "session_oauth_code_file"
         ]
     )]
     session_auth_env: Option<OsString>,
@@ -1109,7 +1114,8 @@ struct ScanArgs {
             "session_auth_env",
             "session_auth_stdin",
             "session_cookie_file",
-            "session_login_file"
+            "session_login_file",
+            "session_oauth_code_file"
         ]
     )]
     session_auth_file: Option<PathBuf>,
@@ -1123,6 +1129,7 @@ struct ScanArgs {
             "session_auth_file",
             "session_cookie_file",
             "session_login_file",
+            "session_oauth_code_file",
             "auth_stdin"
         ]
     )]
@@ -1147,7 +1154,8 @@ struct ScanArgs {
             "session_auth_env",
             "session_auth_file",
             "session_auth_stdin",
-            "session_login_file"
+            "session_login_file",
+            "session_oauth_code_file"
         ]
     )]
     session_cookie_file: Option<PathBuf>,
@@ -1163,10 +1171,22 @@ struct ScanArgs {
             "session_auth_env",
             "session_auth_file",
             "session_auth_stdin",
-            "session_cookie_file"
+            "session_cookie_file",
+            "session_oauth_code_file"
         ]
     )]
     session_login_file: Option<PathBuf>,
+    /// Read a bounded V5 external authorization-code/PKCE transaction from one
+    /// explicit regular file. Performs at most one separately authorized IdP
+    /// token POST, then uses the existing Bearer health/resource loop. It does
+    /// not initiate authorization, receive a browser callback, validate OIDC
+    /// identity, refresh tokens, or prove the imported S256/state context.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(long, value_name = "FILE", requires = "session_policy", conflicts_with_all = [
+        "session_auth_env", "session_auth_file", "session_auth_stdin",
+        "session_cookie_file", "session_login_file"
+    ])]
+    session_oauth_code_file: Option<PathBuf>,
     /// Select the centralized typed assessment renderer. Valid only with
     /// `--profile web-review`. Without this option, text maps to Markdown
     /// and JSON maps to JSON for completed web-review reports.
@@ -1571,6 +1591,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         session_cookie_file,
         #[cfg(feature = "supplied-session-review")]
         session_login_file,
+        #[cfg(feature = "supplied-session-review")]
+        session_oauth_code_file,
         report_format,
         report_output,
         report_dir,
@@ -1802,13 +1824,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         || session_auth_file.is_some()
         || session_auth_stdin
         || session_cookie_file.is_some()
-        || session_login_file.is_some();
+        || session_login_file.is_some()
+        || session_oauth_code_file.is_some();
     #[cfg(feature = "supplied-session-review")]
     let supplied_session_credential_selected = session_auth_env.is_some()
         || session_auth_file.is_some()
         || session_auth_stdin
         || session_cookie_file.is_some()
-        || session_login_file.is_some();
+        || session_login_file.is_some()
+        || session_oauth_code_file.is_some();
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     if let Some(message) = scan_wordpress_supplied_session_flags_conflict(
         profile,
@@ -1996,16 +2020,30 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         ),
     )?;
     #[cfg(feature = "supplied-session-review")]
-    let supplied_session_input = auth_input::SuppliedSessionInput::select(
-        session_policy,
-        auth_input::AuthorizationSourceOptions::new(
-            session_auth_env,
-            session_auth_file,
-            session_auth_stdin,
-        ),
-        session_cookie_file,
-        session_login_file,
-    )?;
+    let supplied_session_input = if let Some(code_file) = session_oauth_code_file {
+        auth_input::SuppliedSessionInput::select_with_oauth_code(
+            session_policy,
+            auth_input::AuthorizationSourceOptions::new(
+                session_auth_env,
+                session_auth_file,
+                session_auth_stdin,
+            ),
+            session_cookie_file,
+            session_login_file,
+            code_file,
+        )?
+    } else {
+        auth_input::SuppliedSessionInput::select(
+            session_policy,
+            auth_input::AuthorizationSourceOptions::new(
+                session_auth_env,
+                session_auth_file,
+                session_auth_stdin,
+            ),
+            session_cookie_file,
+            session_login_file,
+        )?
+    };
     #[cfg(all(
         feature = "ssrf-oast-review",
         not(feature = "xml-external-entity-review")

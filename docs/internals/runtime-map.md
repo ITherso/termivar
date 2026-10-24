@@ -64,6 +64,25 @@ feature-independent reader preserve epoch-bound receipt, accounting and offline
 comparison semantics; historical v1–v3 bytes remain unchanged. WordPress and
 WebSocket session consumers reject v4 before credential/output acquisition.
 
+V5 `security.supplied-session-policy/v5` adds only imported external public-code
+S256 credential acquisition. Explicit `--session-oauth-code-file` supplies a
+bounded secret transaction, never a browser/profile search. A sealed exact IdP
+descriptor permits one token POST in a separate no-proxy/no-cookie/no-retry pool
+under the SAME parent/session accounting; there is no IdP discovery or callback.
+Complete uncoded JSON is privately reduced before general observation, and a
+read-back committed context-bound acquisition receipt is required before Bearer
+startup health/resources. The exact schedule is `2 + 2 * N`, `N <= 3`, within the
+unchanged nine-request session ceiling; smaller parent/body/time bounds win.
+The imported front-channel/S256 context remains an operator assertion. State,
+nonce, OIDC identity, token signature and remote PKCE enforcement are not
+established; a token response does not replace the target health oracle. V5
+audit and strict feature-independent readers retain null unevaluated facts,
+opaque references and actual admitted/completed/committed counts, not token/code
+bytes or public unkeyed secret/body hashes. WordPress/WebSocket V5 composition,
+refresh and interactive OAuth/OIDC login are unsupported. The feature and
+curated bundle composition do not change. See the complete V5 limitations in
+`docs/internals/supplied-session-review.md`.
+
 ## OpenAPI surface review
 
 The non-default `openapi-review` scanner/CLI feature adds no work by itself.

@@ -772,6 +772,7 @@ enum SuppliedSessionSecretSource {
     Authorization(AuthorizationInputSource),
     Cookies(PathBuf),
     FormLogin(PathBuf),
+    OAuthCode(PathBuf),
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -781,6 +782,7 @@ impl SuppliedSessionSecretSource {
             Self::Authorization(_) => SuppliedSessionCredentialAcquisition::SuppliedAuthorization,
             Self::Cookies(_) => SuppliedSessionCredentialAcquisition::SuppliedCookieJar,
             Self::FormLogin(_) => SuppliedSessionCredentialAcquisition::BoundedFormLogin,
+            Self::OAuthCode(_) => SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce,
         }
     }
 }
@@ -792,6 +794,7 @@ impl fmt::Debug for SuppliedSessionSecretSource {
             Self::Authorization(_) => "authorization",
             Self::Cookies(_) => "cookies",
             Self::FormLogin(_) => "form_login",
+            Self::OAuthCode(_) => "imported_oauth_code",
         };
         formatter
             .debug_struct("SuppliedSessionSecretSource")
@@ -832,12 +835,41 @@ impl SuppliedSessionInput {
         cookie_file: Option<PathBuf>,
         login_file: Option<PathBuf>,
     ) -> Result<Option<Self>, SuppliedSessionInputError> {
+        Self::select_all(policy_file, authorization, cookie_file, login_file, None)
+    }
+
+    /// Selects the explicit V5 code file without opening it or changing the
+    /// historical selection path when this option is absent.
+    pub(crate) fn select_with_oauth_code(
+        policy_file: Option<PathBuf>,
+        authorization: AuthorizationSourceOptions,
+        cookie_file: Option<PathBuf>,
+        login_file: Option<PathBuf>,
+        oauth_code_file: PathBuf,
+    ) -> Result<Option<Self>, SuppliedSessionInputError> {
+        Self::select_all(
+            policy_file,
+            authorization,
+            cookie_file,
+            login_file,
+            Some(oauth_code_file),
+        )
+    }
+
+    fn select_all(
+        policy_file: Option<PathBuf>,
+        authorization: AuthorizationSourceOptions,
+        cookie_file: Option<PathBuf>,
+        login_file: Option<PathBuf>,
+        oauth_code_file: Option<PathBuf>,
+    ) -> Result<Option<Self>, SuppliedSessionInputError> {
         let any_selected = policy_file.is_some()
             || authorization.environment.is_some()
             || authorization.file.is_some()
             || authorization.stdin
             || cookie_file.is_some()
-            || login_file.is_some();
+            || login_file.is_some()
+            || oauth_code_file.is_some();
         if !any_selected {
             return Ok(None);
         }
@@ -849,16 +881,20 @@ impl SuppliedSessionInput {
             authorization.stdin,
         )
         .map_err(|_| SuppliedSessionInputError::ConflictingCredentialSources)?;
-        let secret = match (authorization, cookie_file, login_file) {
-            (Some(source), None, None) => SuppliedSessionSecretSource::Authorization(source),
-            (None, Some(path), None) => SuppliedSessionSecretSource::Cookies(path),
-            (None, None, Some(path)) => SuppliedSessionSecretSource::FormLogin(path),
-            (None, None, None) => return Err(SuppliedSessionInputError::MissingCredentialSource),
+        let secret = match (authorization, cookie_file, login_file, oauth_code_file) {
+            (Some(source), None, None, None) => SuppliedSessionSecretSource::Authorization(source),
+            (None, Some(path), None, None) => SuppliedSessionSecretSource::Cookies(path),
+            (None, None, Some(path), None) => SuppliedSessionSecretSource::FormLogin(path),
+            (None, None, None, Some(path)) => SuppliedSessionSecretSource::OAuthCode(path),
+            (None, None, None, None) => {
+                return Err(SuppliedSessionInputError::MissingCredentialSource)
+            },
             _ => return Err(SuppliedSessionInputError::ConflictingCredentialSources),
         };
         if let SuppliedSessionSecretSource::Authorization(AuthorizationInputSource::File(path))
         | SuppliedSessionSecretSource::Cookies(path)
-        | SuppliedSessionSecretSource::FormLogin(path) = &secret
+        | SuppliedSessionSecretSource::FormLogin(path)
+        | SuppliedSessionSecretSource::OAuthCode(path) = &secret
         {
             validate_local_file_path(path).map_err(SuppliedSessionInputError::CredentialSource)?;
         }
@@ -952,6 +988,20 @@ impl PreparedSuppliedSessionInput {
                     SuppliedSessionFormCredential::parse_tsv(&self.policy, bytes.into_owned())
                         .map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)?;
                 SuppliedSessionRuntimeInput::from(credential)
+            },
+            SuppliedSessionSecretSource::OAuthCode(path) => {
+                let bytes = read_bounded_regular_file(path,
+                    termivar_scanner::supplied_session_review::HARD_MAX_SUPPLIED_SESSION_OAUTH_CODE_SECRET_BYTES)
+                    .map_err(SuppliedSessionInputError::CredentialSource)?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                    .ok_or(SuppliedSessionInputError::CredentialClockUnavailable)?;
+                let grant = termivar_scanner::supplied_session_review::SuppliedSessionOAuthGrant::parse_tsv(
+                    &self.policy, bytes.into_owned(), now,
+                ).map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)?;
+                SuppliedSessionRuntimeInput::from(grant)
             },
         };
         Ok((self.policy, runtime_input))

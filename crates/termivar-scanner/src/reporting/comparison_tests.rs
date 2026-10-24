@@ -4897,6 +4897,89 @@ fn secret_exposure_observations_require_exact_pairs_and_one_to_one_items() {
 }
 
 #[test]
+fn secret_exposure_reader_accepts_literal_current_bearer_class_and_preserves_historical_alias() {
+    // Independently written saved-wire fixtures, not captured executable output.
+    // The historical consumer spelling remains readable; the live producer's
+    // documented spelling must describe the same one redacted observation.
+    let historical = report_with_secret_exposure(
+        vec![secret_exposure_item(
+            75,
+            "bearer_authorization_assignment",
+            "evidence-0015",
+        )],
+        secret_exposure_audit(
+            1,
+            1,
+            96,
+            vec![secret_exposure_observation(
+                "bearer_authorization_assignment",
+                3,
+                "evidence-0015",
+            )],
+            3,
+        ),
+    );
+    let mut current = historical.clone();
+    current["secret_exposure_review"]["observations"][0]["detector_class"] =
+        json!("authorization_bearer_assignment");
+    let current_bytes = bytes(&current);
+    let historical_bytes = bytes(&historical);
+    assert!(import_assessment_summary(&historical_bytes).is_ok());
+    assert!(import_assessment_summary(&current_bytes).is_ok());
+    for comparison in [
+        compare(&historical, &current),
+        compare(&current, &historical),
+    ] {
+        assert_eq!(
+            comparison["secret_exposure_comparison"]["coverage"]["status"],
+            "unchanged"
+        );
+        assert_eq!(comparison["unchanged"].as_array().unwrap().len(), 1);
+        for group in ["only_in_before", "only_in_after", "changed"] {
+            assert!(comparison[group].as_array().unwrap().is_empty());
+        }
+    }
+    for invalid in [
+        "bearer_assignment",
+        "Authorization_bearer_assignment",
+        "arbitrary_detector",
+    ] {
+        let mut mutation = current.clone();
+        mutation["secret_exposure_review"]["observations"][0]["detector_class"] = json!(invalid);
+        assert!(import_assessment_summary(&bytes(&mutation)).is_err());
+    }
+    let mut mismatched_capability = current.clone();
+    mismatched_capability["secret_exposure_review"]["observations"][0]["capability_id"] =
+        json!("exposure.response-stripe-live-secret@1");
+    assert!(import_assessment_summary(&bytes(&mismatched_capability)).is_err());
+    let mut duplicate_alias = current.clone();
+    duplicate_alias["secret_exposure_review"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(historical["secret_exposure_review"]["observations"][0].clone());
+    duplicate_alias["secret_exposure_review"]["observation_count"] = json!(2);
+    duplicate_alias["secret_exposure_review"]["match_occurrence_count"] = json!(6);
+    let duplicate_item =
+        secret_exposure_item(76, "bearer_authorization_assignment", "evidence-0015");
+    duplicate_alias["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate_item);
+    duplicate_alias["item_count"] = json!(2);
+    assert!(import_assessment_summary(&bytes(&duplicate_alias)).is_err());
+    assert_eq!(
+        bytes(&current),
+        current_bytes,
+        "reader changed supplied current bytes"
+    );
+    assert_eq!(
+        bytes(&historical),
+        historical_bytes,
+        "reader changed historical bytes"
+    );
+}
+
+#[test]
 fn secret_exposure_coverage_ignores_local_evidence_renumbering() {
     let before = report_with_secret_exposure(
         vec![secret_exposure_item(
@@ -5798,6 +5881,335 @@ fn supplied_session_audit() -> Value {
         "exploit_execution":"not_performed",
         "impact_validation":"not_performed"
     })
+}
+
+// Original literal V5 wire fixture. No runtime/matcher produces these expected
+// facts; the historical health/resource rows above are shared only as data.
+fn supplied_session_oauth_code_audit() -> Value {
+    let mut audit = supplied_session_audit();
+    audit["schema"] = json!("security.supplied-session-audit/v5");
+    audit["credential_acquisition"] = json!("imported_oauth_code_pkce");
+    audit["dispatched_request_count"] = json!(4);
+    audit["response_bytes"] = json!(149);
+    audit["oauth_code"] = json!({
+        "profile":"external-public-code-s256-bearer/v1",
+        "transport_profile":"verified-https/v1",
+        "idp_reference":format!("oauth-code-policy-sha256:{}", "a".repeat(64)),
+        "transaction_context_assurance":"operator_declared_external_transaction",
+        "pkce_assurance":"imported_s256_context_not_remote_enforcement",
+        "token_interpretation":"opaque_bearer_not_oidc_identity",
+        "authorization_initiated":false,
+        "browser_callback_received":false,
+        "state_nonce_verified":false,
+        "oidc_identity_validation_performed":false,
+        "token_signature_validation_performed":false,
+        "request_attempt_count":1,
+        "request_admitted_count":1,
+        "response_completed_count":1,
+        "credential_commit_count":1,
+        "verifier_in_admitted_request":true,
+        "status":200,
+        "body_state":"complete",
+        "response_bytes":90,
+        "configured_token_response_byte_limit":8192,
+        "token_response_validated":true,
+        "response_scope_matched":true,
+        "declared_token_lifetime_seconds":60,
+        "refresh_token_returned":false,
+        "evidence_reference":format!("supplied-session-oauth-code-evidence-sha256:{}", "b".repeat(64)),
+        "outcome":"credential_committed"
+    });
+    audit
+}
+
+fn supplied_session_oauth_code_failure_audit() -> Value {
+    let mut audit = supplied_session_oauth_code_audit();
+    audit["outcome"] = json!("oauth_code_exchange_unavailable");
+    audit["coverage"] = json!("none");
+    audit["checkpoints"] = json!([]);
+    audit["dispatched_request_count"] = json!(1);
+    audit["response_bytes"] = json!(41);
+    audit["dispatched_resource_count"] = json!(0);
+    audit["committed_resource_count"] = json!(0);
+    audit["resources"][0]["evidence_reference"] = Value::Null;
+    audit["resources"][0]["status"] = Value::Null;
+    audit["resources"][0]["response_bytes"] = json!(0);
+    audit["resources"][0]["outcome"] = json!("not_dispatched");
+    let code = &mut audit["oauth_code"];
+    code["credential_commit_count"] = json!(0);
+    code["token_response_validated"] = json!(false);
+    code["response_scope_matched"] = Value::Null;
+    code["declared_token_lifetime_seconds"] = Value::Null;
+    code["refresh_token_returned"] = Value::Null;
+    code["evidence_reference"] = Value::Null;
+    code["status"] = json!(400);
+    code["response_bytes"] = json!(41);
+    code["outcome"] = json!("response_rejected");
+    audit
+}
+
+#[test]
+fn supplied_session_oauth_code_saved_reader_qualifies_positive_and_empty_coverage_offline() {
+    for audit in [
+        supplied_session_oauth_code_audit(),
+        supplied_session_oauth_code_failure_audit(),
+    ] {
+        let mut document = report(Vec::new());
+        document["supplied_session"] = audit.clone();
+        assert!(import_assessment_summary(&bytes(&document)).is_ok());
+        let compared = compare(&document, &document);
+        let nested = &compared["supplied_session_comparison"];
+        assert_eq!(nested["status"], "compared_within_same_declared_context");
+        assert_eq!(
+            nested["context"]["before"]["credential_acquisition"],
+            "imported_oauth_code_pkce"
+        );
+        assert_eq!(
+            nested["health_and_coverage"]["before"]["oauth_code"],
+            audit["oauth_code"]
+        );
+        assert_eq!(nested["health_and_coverage"]["status"], "unchanged");
+        for group_name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+            assert!(group(&compared, group_name).is_empty());
+        }
+    }
+}
+
+#[test]
+fn supplied_session_oauth_code_saved_reader_rejects_forged_claims_and_accounting() {
+    let mut document = report(Vec::new());
+    document["supplied_session"] = supplied_session_oauth_code_audit();
+    // Literal negative mutations, not expected values derived by the reader.
+    for (pointer, replacement) in [
+        (
+            "/supplied_session/oauth_code/authorization_initiated",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/browser_callback_received",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/state_nonce_verified",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/oidc_identity_validation_performed",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/token_signature_validation_performed",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/token_interpretation",
+            json!("authenticated_subject"),
+        ),
+        (
+            "/supplied_session/oauth_code/pkce_assurance",
+            json!("server_enforced"),
+        ),
+        (
+            "/supplied_session/oauth_code/transaction_context_assurance",
+            json!("authenticated"),
+        ),
+        (
+            "/supplied_session/oauth_code/transport_profile",
+            json!("accept_any_certificate"),
+        ),
+        (
+            "/supplied_session/oauth_code/request_attempt_count",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/request_attempt_count",
+            json!(2),
+        ),
+        (
+            "/supplied_session/oauth_code/request_admitted_count",
+            json!(0),
+        ),
+        (
+            "/supplied_session/oauth_code/response_completed_count",
+            json!(0),
+        ),
+        (
+            "/supplied_session/oauth_code/credential_commit_count",
+            json!(0),
+        ),
+        (
+            "/supplied_session/oauth_code/verifier_in_admitted_request",
+            json!(false),
+        ),
+        ("/supplied_session/oauth_code/status", json!(302)),
+        (
+            "/supplied_session/oauth_code/body_state",
+            json!("incomplete"),
+        ),
+        ("/supplied_session/oauth_code/response_bytes", json!(0)),
+        ("/supplied_session/oauth_code/response_bytes", json!(150)),
+        (
+            "/supplied_session/oauth_code/configured_token_response_byte_limit",
+            json!(32769),
+        ),
+        (
+            "/supplied_session/oauth_code/token_response_validated",
+            json!(false),
+        ),
+        (
+            "/supplied_session/oauth_code/response_scope_matched",
+            json!(false),
+        ),
+        (
+            "/supplied_session/oauth_code/declared_token_lifetime_seconds",
+            json!(true),
+        ),
+        (
+            "/supplied_session/oauth_code/declared_token_lifetime_seconds",
+            json!(0),
+        ),
+        (
+            "/supplied_session/oauth_code/refresh_token_returned",
+            Value::Null,
+        ),
+        (
+            "/supplied_session/oauth_code/evidence_reference",
+            Value::Null,
+        ),
+        (
+            "/supplied_session/oauth_code/outcome",
+            json!("response_rejected"),
+        ),
+        (
+            "/supplied_session/credential_acquisition",
+            json!("bounded_form_login"),
+        ),
+        (
+            "/supplied_session/credential_mechanism",
+            json!("cookie_jar"),
+        ),
+        ("/supplied_session/dispatched_request_count", json!(3)),
+        ("/supplied_session/response_bytes", json!(148)),
+        (
+            "/supplied_session/response_byte_limit_exceeded",
+            json!(true),
+        ),
+    ] {
+        let mut changed = document.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "accepted mutation {pointer}"
+        );
+    }
+    let keys: Vec<_> = document["supplied_session"]["oauth_code"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    for key in keys {
+        let mut missing = document.clone();
+        missing["supplied_session"]["oauth_code"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&key);
+        assert!(
+            import_assessment_summary(&bytes(&missing)).is_err(),
+            "accepted absent {key}"
+        );
+    }
+    let mut unexpected = document.clone();
+    unexpected["supplied_session"]["oauth_code"]["access_token"] =
+        json!("ORIGINAL-SYNTHETIC-UNSAFE-FIELD");
+    assert!(import_assessment_summary(&bytes(&unexpected)).is_err());
+}
+
+#[test]
+fn supplied_session_oauth_code_saved_reader_keeps_unknowns_and_refuses_false_empty_success() {
+    let mut document = report(Vec::new());
+    document["supplied_session"] = supplied_session_oauth_code_failure_audit();
+    for (pointer, replacement) in [
+        (
+            "/supplied_session/oauth_code/response_scope_matched",
+            json!(false),
+        ),
+        (
+            "/supplied_session/oauth_code/refresh_token_returned",
+            json!(false),
+        ),
+        (
+            "/supplied_session/oauth_code/credential_commit_count",
+            json!(1),
+        ),
+        ("/supplied_session/outcome", json!("complete")),
+        ("/supplied_session/coverage", json!("complete")),
+    ] {
+        let mut changed = document.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        assert!(
+            import_assessment_summary(&bytes(&changed)).is_err(),
+            "accepted false empty success {pointer}"
+        );
+    }
+    for (code_outcome, outer_outcome) in [
+        ("cancelled", "cancelled"),
+        ("runtime_limit", "runtime_limit"),
+    ] {
+        let mut not_admitted = document.clone();
+        let audit = &mut not_admitted["supplied_session"];
+        audit["outcome"] = json!(outer_outcome);
+        audit["dispatched_request_count"] = json!(0);
+        audit["response_bytes"] = json!(0);
+        let code = &mut audit["oauth_code"];
+        for field in [
+            "request_attempt_count",
+            "request_admitted_count",
+            "response_completed_count",
+            "response_bytes",
+        ] {
+            code[field] = json!(0);
+        }
+        code["verifier_in_admitted_request"] = json!(false);
+        code["status"] = Value::Null;
+        code["body_state"] = json!("unavailable");
+        code["outcome"] = json!(code_outcome);
+        assert!(import_assessment_summary(&bytes(&not_admitted)).is_ok());
+    }
+}
+
+#[test]
+fn supplied_session_oauth_code_saved_reader_separates_policy_context_and_coverage() {
+    let mut before = report(Vec::new());
+    before["supplied_session"] = supplied_session_oauth_code_audit();
+    let mut changed_policy = before.clone();
+    changed_policy["supplied_session"]["policy_reference"] =
+        json!(format!("supplied-session-policy-sha256:{}", "c".repeat(64)));
+    changed_policy["supplied_session"]["oauth_code"]["idp_reference"] =
+        json!(format!("oauth-code-policy-sha256:{}", "d".repeat(64)));
+    let compared = compare(&before, &changed_policy);
+    assert_eq!(
+        compared["supplied_session_comparison"]["status"],
+        "not_compared"
+    );
+    assert_eq!(
+        compared["supplied_session_comparison"]["context"]["status"],
+        "session_policy_changed"
+    );
+    let mut lost = before.clone();
+    lost["supplied_session"] = supplied_session_oauth_code_failure_audit();
+    let compared = compare(&before, &lost);
+    assert_eq!(
+        compared["supplied_session_comparison"]["health_and_coverage"]["status"],
+        "changed"
+    );
+    assert!(group(&compared, "only_in_before").is_empty());
+    let mut historical = before.clone();
+    historical["supplied_session"] = supplied_session_audit();
+    assert_eq!(
+        compare(&historical, &before)["supplied_session_comparison"]["status"],
+        "not_compared"
+    );
 }
 
 fn supplied_session_form_login_audit() -> Value {

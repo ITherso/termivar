@@ -17,6 +17,36 @@ use crate::{
     HttpEvidencePolicy, KnowledgeBase, RuntimeBudget,
 };
 
+#[cfg(feature = "supplied-session-review")]
+struct OAuthCodeMintSeal;
+
+/// Move-only IdP child authority. Only this assessment owner can construct it;
+/// neither a saved audit nor a token/grant string can mint an endpoint permit.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct OAuthCodeMintToken {
+    application: Url,
+    policy_reference: String,
+    idp_reference: String,
+    principal_alias: String,
+    _seal: OAuthCodeMintSeal,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl OAuthCodeMintToken {
+    pub(crate) fn is_valid_for(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+    ) -> bool {
+        policy.application_url() == &self.application
+            && policy.policy_reference() == self.policy_reference
+            && policy.principal_alias() == self.principal_alias
+            && policy.oauth_code_policy().is_some_and(|idp| {
+                idp.is_valid_for_application(&self.application)
+                    && idp.binding_reference() == self.idp_reference
+            })
+    }
+}
+
 #[cfg(all(feature = "websocket-review", feature = "supplied-session-review"))]
 use super::supplied_session_runtime::SuppliedSessionWebSocketPermit;
 #[cfg(feature = "websocket-review")]
@@ -349,6 +379,35 @@ impl SharedWebRuntimeAuthority {
 
     pub(crate) const fn requests(&self) -> &HttpRequestBroker {
         &self.requests
+    }
+
+    /// Separately narrows the explicitly selected V5 IdP operation while
+    /// retaining the same parent accounting. No target-origin grant is widened.
+    #[cfg(feature = "supplied-session-review")]
+    pub(super) fn mint_oauth_code_broker(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+    ) -> Result<crate::http_evidence::OAuthCodeRequestBroker, ()> {
+        use crate::supplied_session_review::SuppliedSessionPolicyVersion;
+        if policy.version() != SuppliedSessionPolicyVersion::V5
+            || policy.application_url() != &self.selected_target
+        {
+            return Err(());
+        }
+        let idp = policy.oauth_code_policy().ok_or(())?;
+        if !idp.is_valid_for_application(&self.selected_target) {
+            return Err(());
+        }
+        let mint = OAuthCodeMintToken {
+            application: self.selected_target.clone(),
+            policy_reference: policy.policy_reference().to_owned(),
+            idp_reference: idp.binding_reference().to_owned(),
+            principal_alias: policy.principal_alias().to_owned(),
+            _seal: OAuthCodeMintSeal,
+        };
+        self.requests
+            .isolated_oauth_code(policy, mint)
+            .map_err(|_| ())
     }
 
     pub(crate) const fn request_accounting(&self) -> &RequestAccountingBroker {

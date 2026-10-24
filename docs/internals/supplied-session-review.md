@@ -62,6 +62,173 @@ The new policy is initially rejected by the WordPress and WebSocket session
 consumers before secret/output acquisition; v1–v3 behavior is unchanged. It
 remains non-default, outside `release-bundle` and unpublished.
 
+## Policy V5: import one external public-code transaction
+
+V5 is a deliberately narrower acquisition step, **not an interactive OAuth/OIDC
+login client**. The operator has already obtained an authorization code using
+a public client and S256. Termivar reads that explicitly supplied transaction
+once, redeems it at one policy-authorized token endpoint, then uses the existing
+Bearer startup/resource/checkpoint sequence. The IdP child has a distinct exact
+endpoint permit and connection pool, but shares the assessment's parent request,
+byte, cancellation and deadline accounting. A target permit does not authorize
+an IdP endpoint, and token claims cannot create either permit.
+
+An illustrative operator invocation, after independently preparing the policy
+and private transaction file, is:
+
+```bash
+termivar scan https://app.example.test/app/ \
+  --profile web-review \
+  --session-policy ./oauth-session-policy.toml \
+  --session-oauth-code-file ./oauth-transaction.secret.tsv \
+  --report-dir ./assessment-oauth-session
+```
+
+This is not a claim that the example host was contacted. The actual process
+tests use owned numeric-loopback fixtures. The following complete non-secret
+policy illustrates the HTTPS profile:
+
+```toml
+schema = "security.supplied-session-policy/v5"
+principal_alias = "operator-declared-reader"
+credential_mechanism = "authorization_header"
+credential_acquisition = "imported_oauth_code_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 6
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+
+[oauth_code]
+profile = "external-public-code-s256-bearer/v1"
+transport_profile = "verified-https/v1"
+issuer = "https://idp.example.test/realm"
+token_endpoint = "https://idp.example.test/realm/token"
+client_id = "explicit-public-client"
+redirect_uri = "https://app.example.test/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+```
+
+Only a public-client `authorization_code` exchange is supported. There is no
+client-secret, ID-token, refresh, device, implicit or password-grant path. The
+issuer/token origin must match and the token endpoint must be under the declared
+issuer path by segments; this is operator-supplied configuration, not discovery
+or issuer authentication. The redirect URI is an equality binding, never a
+callback that Termivar opens or follows. URLs are strict canonical, query-free,
+fragment-free ASCII HTTPS references. The separately selected
+`owned-numeric-loopback-http/v1` profile permits only numeric-loopback HTTP test
+origins, not hostname `localhost`, real cleartext credentials, or accept-any TLS.
+
+The private UTF-8 TSV contains exactly eight unique rows, with these literal
+field names: `authorization_code`, `code_verifier`, `code_challenge`, `issuer`,
+`client_id`, `redirect_uri`, `scope`, `received_unix_seconds`. Values are not
+trimmed; LF and CRLF delimit rows. Do not place the actual code, verifier, token,
+or session cookie in a command, URL, issue or report. Use a fresh protected
+regular file. The 16 KiB input bound, existing no-follow/regular-file acquisition
+and trusted-parent/quiescent-file assumptions apply; this is not an immutable
+filesystem snapshot or ancestor-containment guarantee.
+
+The imported issuer/client/redirect/scope must equal the policy. The local S256
+challenge must equal SHA-256 of the imported 43–128 byte verifier. Its asserted
+receipt time must be at most 60 seconds old, allowing at most five seconds of
+future skew; freshness is checked again immediately before dispatch. These are
+checks on supplied assertions: they do not prove a trusted clock, secure
+front-channel/state/nonce handling, that Termivar initiated authorization, or
+that the provider enforced PKCE. The code is attempted once per assessment,
+including after an ambiguous transport failure. Cross-run replay is left to the
+provider; no persistent secret-derived equality cache is created.
+
+The body contains only `grant_type`, `client_id`, `redirect_uri`, `code` and
+`code_verifier`. There is no cookie, Authorization header, ambient proxy,
+redirect, retry, token endpoint guessing or implicit provider metadata fetch.
+Complete status-200 uncoded JSON is required. The child token-body limit is at
+most 32 KiB and must also fit the smaller common per-body and total limits.
+Duplicate JSON keys, unsupported token types/ID tokens, malformed or truncated
+responses cannot establish a credential. Bounded unknown extension values are
+inert, not network or execution instructions.
+
+This V1 acquisition profile deliberately requires an explicit exact `scope`
+echo and an integer `expires_in` of 1–3,600 seconds. RFC 6749 allows the scope
+field to be omitted when unchanged; such a response is unsupported by this
+narrower profile, not necessarily an invalid OAuth server. `openid` and
+`offline_access` scopes are unsupported. Only a Bearer access token fitting the
+existing 8 KiB Authorization bound is admitted; a refresh token is discarded,
+with its presence recorded only after successful parsing. Bearer syntax alone
+does not prove that every possible hidden sender constraint is absent. The
+token is opaque: it is not decoded, signature-verified, promoted to an identity,
+or used to select a URL. Its declared lifetime narrows the use deadline; it is
+not an observed server expiration decision.
+
+For `N` resources, V5 requires the exact allowance `2 + 2 * N`: one token POST,
+one startup health GET, and a resource/health GET pair per resource. At most
+three resources fit within the unchanged nine-request session ceiling (eight
+requests at three resources). Smaller parent bounds win; the IdP has no fresh
+allowance. Failed/partial transport bytes stay charged, including the existing
+last-delivered-chunk overrun semantics. Request admission, completed response,
+parsed credential and committed credential are distinct audit counters.
+
+Only the private context-bound, read-back committed acquisition receipt can
+authorize subsequent Bearer work. Token acquisition alone does not establish
+target session health. The existing explicit JSON health predicate remains
+mandatory; a valid token for the wrong canary principal can still fail it.
+Cancellation, exhaustion, an unusable exchange or unhealthy startup never
+silently falls back to anonymous authenticated coverage. Ordinary anonymous
+assessment processing remains separately anonymous and unchanged.
+
+`security.supplied-session-audit/v5` saves value-free acquisition facts beside
+the existing checkpoint/resource audit. It explicitly marks external context
+as operator-declared and authorization initiation, browser callback, state/nonce,
+OIDC identity and token-signature validation as not performed. Unevaluated scope,
+refresh and lifetime facts are null rather than assertions of absence. It saves
+neither raw transaction/token/response bytes nor their public unkeyed digests.
+Guarded application buffers do not promise zero sensitive copies in HTTP/Python
+libraries, the OS or allocator history. JSON retains the full audit, HTML and
+Markdown explain its conditional meaning, and item-oriented CSV is not a full
+acquisition transcript. Strict feature-independent readers preserve historical
+v1–v4 documents; Compare treats IdP/policy/principal changes as context changes,
+not vulnerability introduction or remediation. Verify checks bundle integrity
+and the saved contract, not provider or identity truth.
+
+V5 is initially refused by WordPress and WebSocket session consumers before
+secret acquisition; their earlier explicitly supported combinations do not
+change. It stays non-default, outside the seven-member curated bundle and
+published alpha.2. Full interactive authorization, OIDC, provider metadata/JWKS,
+renewal and external-service qualification remain separate work.
+
+The owned Keycloak helper uses a pinned isolated provider and **admin-prepared
+SSO fixture**, then a real public-code/S256/form-post authorization transaction.
+It is not qualification of ordinary interactive login, MFA or consent. A separate
+resource-client introspection oracle distinguishes the two canaries. Controller
+and resource-server traffic is not charged or described as scanner traffic.
+Only this test controller explicitly returns the provider's retained `Secure`
+SSO cookies over HTTP to its exact owned numeric-loopback relay origin, port
+and authorization path. Other destinations remain refused. This fixture-only
+exception does not relax the product cookie policy or qualify browser behavior.
+`--validate-only` checks fixture contracts and never establishes IdP execution:
+
+```bash
+python scripts/oauth_code_lab_acceptance.py --validate-only
+python scripts/oauth_code_lab_acceptance.py \
+  --binary ./target/oauth-lab/release/termivar \
+  --output-dir ./new-private-safe-evidence \
+  --source-ref <exact-source-sha> --expect-version 0.10.0-alpha.3
+```
+
+The executable must already be built with `supplied-session-review`; actual lab
+execution requires Linux Docker. Only its bounded safe JSON evidence is an
+upload candidate, never temporary transaction files, provider logs or reports.
+The helper removes its owned fixture before all six Verify/self-Compare pairs
+and the declared-principal controlled Compare. Static tests and native synthetic
+CLI tests are distinct from a completed real-provider lab.
+
+Primary protocol references: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749),
+[RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) and
+[RFC 9700](https://www.rfc-editor.org/rfc/rfc9700). These are development
+references, never scan-time fetch destinations.
+
 ## Build and invoke
 
 Build an isolated candidate with the feature selected explicitly:
@@ -104,7 +271,7 @@ termivar scan https://app.example.test/app/ \
 ```
 
 The policy and credential acquisition mechanism must agree, and exactly one
-credential source is required. V1/V2/V3/V4 source mismatches and V3/V4 combined with
+credential source is required. V1/V2/V3/V4/V5 source mismatches and V3/V4/V5 combined with
 `--wordpress-supplied-session` are rejected after policy validation but before
 output reservation or secret-file acquisition. There is no raw credential
 argument, cookie environment source, browser import, or cookie stdin source.

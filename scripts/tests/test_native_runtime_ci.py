@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -113,6 +114,16 @@ AUTHORIZATION_PRIVACY = """      - name: Exercise value-free resource authorizat
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features authorization-review,secret-exposure-review authorization_privacy -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting authorization_saved_reader_ -- --nocapture"""
 MATRIX = "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]"
+OAUTH_CODE = """      - name: Exercise imported OAuth-code session and feature-off reader
+        shell: bash
+        env:
+          TERMIVAR_NATIVE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,secret-exposure-review --test supplied_session_oauth_code_cli --test capabilities_cli -- --nocapture
+          python -c 'import hashlib,json,os,pathlib,platform; e=os.environ; p=pathlib.Path("target/release/termivar"+(".exe" if os.name=="nt" else "")); assert p.is_file() and not p.is_symlink(); n=p.stat().st_size; assert 0<n<=2**27; print(json.dumps(dict(schema="native-oauth-executable/v1",source=e["TERMIVAR_NATIVE_SOURCE"],run_id=e["GITHUB_RUN_ID"],run_attempt=e["GITHUB_RUN_ATTEMPT"],host=platform.system(),arch=platform.machine(),features="supplied-session-review,secret-exposure-review",profile="release",bytes=n,sha256=hashlib.file_digest(p.open("rb"),"sha256").hexdigest(),assurance="self_reported_hash_not_attestation"),sort_keys=True))'
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_code::tests:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_code_saved_reader_ -- --nocapture"""
 BUDGET = "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}"
 CHECKOUT = """      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -228,6 +239,7 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
             expected = [self.original[name] for name in payloads]
             if phase == "core":
                 expected.insert(0, GUARD)
+                expected.insert(8, OAUTH_CODE)
             if phase == "reviews":
                 expected.insert(2, OPENAPI_PRIVACY)
                 expected.insert(3, REST_PRIVACY)
@@ -241,6 +253,60 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
         self.assertEqual(all_names.count(step_name(OPENAPI_PRIVACY)), 1)
         self.assertEqual(all_names.count(step_name(REST_PRIVACY)), 1)
         self.assertEqual(all_names.count(step_name(AUTHORIZATION_PRIVACY)), 1)
+        self.assertEqual(all_names.count(step_name(OAUTH_CODE)), 1)
+
+    def test_oauth_code_extension_cannot_be_omitted_or_weakened(self):
+        for changed in (
+            "", OAUTH_CODE + "\n" + OAUTH_CODE,
+            OAUTH_CODE.replace("        shell: bash\n", ""),
+            OAUTH_CODE.replace("set -euo pipefail", "true"),
+            OAUTH_CODE.replace("--release --locked", "--locked"),
+            OAUTH_CODE.replace("supplied-session-review,secret-exposure-review", "supplied-session-review"),
+            OAUTH_CODE.replace("--test supplied_session_oauth_code_cli", "--test supplied_session_cli"),
+            OAUTH_CODE.replace(" --test capabilities_cli", ""),
+            OAUTH_CODE.replace('          TERMIVAR_NATIVE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}\n', ""),
+            "\n".join(line for line in OAUTH_CODE.splitlines() if "          python -c " not in line),
+            OAUTH_CODE.replace('target/release/termivar', 'target/debug/termivar'),
+            OAUTH_CODE.replace("oauth_code::tests::", "nonexistent_filter::"),
+            OAUTH_CODE.replace("--features reporting supplied_session_oauth_code_saved_reader_", "--features supplied-session-review supplied_session_oauth_code_saved_reader_"),
+            OAUTH_CODE + "\n        if: false",
+            OAUTH_CODE + "\n        continue-on-error: true",
+        ):
+            with self.subTest(mutation=changed), self.assertRaises(AssertionError):
+                self.assert_contract(self.workflow.replace(OAUTH_CODE, changed, 1))
+
+    def test_oauth_code_native_identity_record_is_closed_and_uses_original_fixture_bytes(self):
+        # Actual Python producer execution over original synthetic file bytes,
+        # not an executable/native-capability or source-attestation claim.
+        line, = [line for line in OAUTH_CODE.splitlines() if line.startswith("          python -c '")]
+        code = line.removeprefix("          python -c '").removesuffix("'")
+        original = b"original synthetic native identity fixture\n"
+        environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ}
+        environment.update(TERMIVAR_NATIVE_SOURCE="a" * 40, GITHUB_RUN_ID="12345", GITHUB_RUN_ATTEMPT="2")
+        with tempfile.TemporaryDirectory(prefix="native-oauth-identity-", dir=ROOT) as directory:
+            binary = Path(directory) / "target" / "release" / ("termivar.exe" if os.name == "nt" else "termivar")
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(original)
+            process = subprocess.run([sys.executable, "-c", code], cwd=directory, env=environment,
+                                     capture_output=True, timeout=10, check=False)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(process.stderr, b"")
+        document = json.loads(process.stdout)
+        self.assertEqual(set(document), {"schema", "source", "run_id", "run_attempt", "host", "arch", "features",
+                                         "profile", "bytes", "sha256", "assurance"})
+        self.assertEqual(document["schema"], "native-oauth-executable/v1")
+        self.assertEqual(document["source"], "a" * 40)
+        self.assertEqual(document["run_id"], "12345")
+        self.assertEqual(document["run_attempt"], "2")
+        self.assertEqual(document["features"], "supplied-session-review,secret-exposure-review")
+        self.assertEqual(document["profile"], "release")
+        self.assertEqual(document["assurance"], "self_reported_hash_not_attestation")
+        self.assertEqual(document["bytes"], len(original))
+        self.assertEqual(document["sha256"], hashlib.sha256(original).hexdigest())
+        self.assertIsInstance(document["host"], str)
+        self.assertIsInstance(document["arch"], str)
+        self.assertNotIn(directory.encode(), process.stdout)
+        self.assertNotIn(original.rstrip(), process.stdout)
 
     def test_authorization_privacy_extension_cannot_be_omitted_or_weakened(self):
         for changed in (

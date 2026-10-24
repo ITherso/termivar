@@ -2809,8 +2809,8 @@ fn owned_profile_whole_file_access_is_exact(syntax: &syn::File) -> bool {
     };
     visitor.visit_file(syntax);
     visitor.field_accesses == 3
-        && visitor.field_initializers == 1
-        && visitor.exact_field_initializers == 1
+        && visitor.field_initializers == 2
+        && visitor.exact_field_initializers == 2
         && visitor.field_patterns == 0
         && visitor.field_assignments == 1
         && visitor.exact_retention_assignments == 1
@@ -7561,8 +7561,9 @@ mod tests {
 
     #[test]
     fn owned_https_profile_types_are_exactly_sealed() {
-        let client_source = include_str!("../../../crates/termivar-oast/src/client.rs");
-        let client = production_prefix(client_source);
+        let client_source =
+            include_str!("../../../crates/termivar-oast/src/client.rs").replace("\r\n", "\n");
+        let client = production_prefix(&client_source);
         assert!(
             owned_https_profile_port_surface_violations(client)
                 .unwrap()

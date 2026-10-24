@@ -138,11 +138,12 @@ use super::{
 use super::{
     SuppliedSessionAuditOutcome, SuppliedSessionBodyState, SuppliedSessionHealthCheckpointPhase,
     SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
-    SuppliedSessionLoginSubmitOutcome, SuppliedSessionResourceOutcome,
-    WebAssessmentSuppliedSessionAudit, MAX_SUPPLIED_SESSION_CHECKPOINTS,
-    MAX_SUPPLIED_SESSION_REQUESTS, MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+    SuppliedSessionLoginSubmitOutcome, SuppliedSessionOAuthCodeOutcome,
+    SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
+    MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
+    MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
+    SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
@@ -1791,6 +1792,7 @@ const fn valid_v1_supplied_session_outcome(outcome: SuppliedSessionAuditOutcome)
             | SuppliedSessionAuditOutcome::LoginFormUnavailable
             | SuppliedSessionAuditOutcome::LoginSubmitUnavailable
             | SuppliedSessionAuditOutcome::LoginCookieUnavailable
+            | SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable
     )
 }
 
@@ -2179,6 +2181,13 @@ fn validate_supplied_session_audit(
     let Some(audit) = audit else {
         return Ok(());
     };
+    let oauth_code = audit.oauth_code();
+    let oauth_schema = audit.schema() == SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA;
+    if oauth_schema != oauth_code.is_some() {
+        return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
+    }
+    let oauth_request_count =
+        oauth_code.map_or(0, |code| usize::from(code.request_admitted_count()));
     let renewal = audit.renewal();
     let renewal_schema = audit.schema() == SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA;
     if renewal_schema != renewal.is_some() {
@@ -2227,6 +2236,8 @@ fn validate_supplied_session_audit(
                     bytes.checked_add(renewal_health.map_or(0, |health| health.response_bytes()))
                 })
         });
+    let child_response_bytes = child_response_bytes
+        .and_then(|bytes| bytes.checked_add(oauth_code.map_or(0, |code| code.response_bytes())));
     let login_request_count = audit.login().map_or(0_u8, |login| {
         u8::from(login.page_dispatched()).saturating_add(u8::from(login.submit_dispatched()))
     });
@@ -2236,6 +2247,58 @@ fn validate_supplied_session_audit(
         audit.cookie_policy(),
         audit.cookie_lifecycle(),
     ) {
+        (
+            SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+            SuppliedSessionCredentialMechanism::AuthorizationHeader,
+            None,
+            None,
+        ) => {
+            audit.credential_acquisition()
+                == SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce
+                && audit.login().is_none()
+                && renewal.is_none()
+                && (1..=3).contains(&selected_resource_count)
+                && oauth_code.is_some_and(|code| {
+                    code.is_consistent()
+                        && code.configured_token_response_byte_limit()
+                            <= audit.response_byte_limit()
+                        && audit.checkpoints().len() <= selected_resource_count + 1
+                        && if code.credential_commit_count() == 1 {
+                            matches!(
+                                audit.outcome(),
+                                SuppliedSessionAuditOutcome::Complete
+                                    | SuppliedSessionAuditOutcome::StartupUnhealthy
+                                    | SuppliedSessionAuditOutcome::SessionLost
+                                    | SuppliedSessionAuditOutcome::ResourceUnavailable
+                                    | SuppliedSessionAuditOutcome::RuntimeLimit
+                                    | SuppliedSessionAuditOutcome::Cancelled
+                            )
+                        } else {
+                            audit.checkpoints().is_empty()
+                            && audit.resources().iter().all(|resource| {
+                                resource.outcome() == SuppliedSessionResourceOutcome::NotDispatched
+                            })
+                            && audit.coverage() == super::SuppliedSessionCoverage::None
+                            && match code.outcome() {
+                                SuppliedSessionOAuthCodeOutcome::Cancelled => {
+                                    audit.outcome() == SuppliedSessionAuditOutcome::Cancelled
+                                },
+                                SuppliedSessionOAuthCodeOutcome::RuntimeLimit => {
+                                    audit.outcome() == SuppliedSessionAuditOutcome::RuntimeLimit
+                                },
+                                SuppliedSessionOAuthCodeOutcome::GrantUnavailable
+                                | SuppliedSessionOAuthCodeOutcome::TransportFailed
+                                | SuppliedSessionOAuthCodeOutcome::Throttled
+                                | SuppliedSessionOAuthCodeOutcome::ResponseRejected
+                                | SuppliedSessionOAuthCodeOutcome::CommitFailed => {
+                                    audit.outcome()
+                                        == SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable
+                                },
+                                _ => false,
+                            }
+                        }
+                })
+        },
         (
             SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
             SuppliedSessionCredentialMechanism::CookieJar,
@@ -2444,6 +2507,7 @@ fn validate_supplied_session_audit(
                 .checked_add(dispatched_resource_count)
                 .and_then(|count| count.checked_add(usize::from(login_request_count)))
                 .and_then(|count| count.checked_add(renewal_request_count))
+                .and_then(|count| count.checked_add(oauth_request_count))
                 .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?
         || child_response_bytes != Some(audit.response_bytes())
         || !valid_supplied_session_response_limit(

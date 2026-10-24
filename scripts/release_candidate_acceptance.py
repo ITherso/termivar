@@ -412,6 +412,7 @@ SUPPLIED_SESSION_OPTIONS = (
     "--session-auth-stdin",
     "--session-cookie-file",
     "--session-login-file",
+    "--session-oauth-code-file",
 )
 SUPPLIED_SESSION_PREREQUISITES = (
     "--profile web-review",
@@ -420,6 +421,7 @@ SUPPLIED_SESSION_PREREQUISITES = (
     "V2: --session-cookie-file FILE",
     "V3: --session-login-file FILE",
     "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
+    "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
     "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
@@ -452,9 +454,23 @@ SUPPLIED_SESSION_LIMITATION = (
     "expiry applicability is intersected with operator application authority; Domain never "
     "expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. "
     "Application-defined GET handling and the explicitly authorized login POST can have "
-    "server-side effects. No browser-profile import, form discovery, credential guessing, "
-    "OAuth, MFA bypass, exploit, or impact validation occurs. WordPress supplied-session "
-    "composition remains limited to V1/V2; V3/V4 are rejected before their secret files are read."
+    "server-side effects. V5 alone accepts --session-oauth-code-file under an explicit imported "
+    "public-code S256 policy. It makes at most one separately authorized IdP token POST through "
+    "a fresh no-proxy, no-cookie, no-retry, no-redirect child of the existing broker before startup "
+    "health, sharing the same parent and nine-request session allowance. Its exact schedule is "
+    "2 + 2 * resource_count with at most three resources; complete uncoded JSON is bounded to "
+    "32 KiB and all smaller parent/body limits. An imported transaction and S256 context are "
+    "operator assertions, not proof this client initiated authorization, secured state/nonce, "
+    "or observed remote PKCE enforcement. The access token remains opaque Bearer material: "
+    "no OIDC identity or token signature validation, browser callback, discovery, refresh or "
+    "installed-version authority is established. Explicit token-scope echo is required by this "
+    "profile; a token response alone never establishes target session health. Credential use "
+    "requires the exact committed private acquisition receipt; failed or ambiguous exchange "
+    "is not retried. HTTPS with standard certificate validation is required; "
+    "owned-numeric-loopback-http/v1 is an explicit development-only exception. No browser-profile "
+    "import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass, "
+    "exploit, or impact validation occurs. WordPress supplied-session composition remains "
+    "limited to V1/V2; V3/V4/V5 are rejected before their secret files are read."
 )
 WORDPRESS_OPTIONS = (
     "--wordpress-review",

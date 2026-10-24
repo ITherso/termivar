@@ -127,6 +127,8 @@ pub(crate) use assessment_review::AssessmentReviewObserverSet;
 pub(crate) use authority::authenticated_transport_is_allowed;
 #[cfg(feature = "oast-native-provider")]
 pub(crate) use authority::NativeOastProviderMintToken;
+#[cfg(feature = "supplied-session-review")]
+pub(crate) use authority::OAuthCodeMintToken;
 pub(crate) use authority::SharedWebRuntimeAuthority;
 #[cfg(feature = "tls-negotiation-review")]
 pub use tls_negotiation_review::{
@@ -228,12 +230,14 @@ pub use supplied_session_runtime::{
     SuppliedSessionCookiePolicyAudit, SuppliedSessionCoverage,
     SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleAudit,
     SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
-    SuppliedSessionLoginSubmitOutcome, SuppliedSessionPredicateOutcome,
+    SuppliedSessionLoginSubmitOutcome, SuppliedSessionOAuthCodeAudit,
+    SuppliedSessionOAuthCodeOutcome, SuppliedSessionPredicateOutcome,
     SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
     WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
     WebAssessmentSuppliedSessionResourceAudit, SUPPLIED_SESSION_AUDIT_SCHEMA,
     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
 };
 #[cfg(feature = "tls-observation")]
 pub use tls_observation::{

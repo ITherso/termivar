@@ -101,7 +101,10 @@ use crate::{
     DecisionActionOrigin, DecisionExecutionFailureKind, DecisionExecutionLimits,
     DecisionExecutionRequest, DecisionExecutionStage, DecisionExecutorError, RuntimeLimitExceeded,
 };
-#[cfg(feature = "jwt-target-acceptance-review")]
+#[cfg(any(
+    feature = "jwt-target-acceptance-review",
+    feature = "supplied-session-review"
+))]
 use zeroize::Zeroizing;
 
 use super::{elapsed_ms, CollectedHttpResponse, HttpEvidenceError, HttpEvidencePolicy, HttpProbe};
@@ -974,6 +977,205 @@ pub(crate) enum SuppliedSessionRequestError {
     InvalidDescriptor,
 }
 
+/// Exact, non-secret binding for the one V5 credential-acquisition POST.
+#[cfg(feature = "supplied-session-review")]
+#[derive(Clone)]
+pub(crate) struct OAuthCodeRequestDescriptor {
+    application: url::Url,
+    target: url::Url,
+    policy_reference: String,
+    idp_reference: String,
+    principal_alias: String,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl OAuthCodeRequestDescriptor {
+    pub(crate) fn from_policy(policy: &SuppliedSessionPolicy) -> Option<Self> {
+        if policy.version() != crate::supplied_session_review::SuppliedSessionPolicyVersion::V5 {
+            return None;
+        }
+        let idp = policy.oauth_code_policy()?;
+        let descriptor = Self {
+            application: policy.application_url().clone(),
+            target: idp.token_endpoint().clone(),
+            policy_reference: policy.policy_reference().to_owned(),
+            idp_reference: idp.binding_reference().to_owned(),
+            principal_alias: policy.principal_alias().to_owned(),
+        };
+        descriptor.validate_against(policy).then_some(descriptor)
+    }
+
+    pub(crate) fn validate_against(&self, policy: &SuppliedSessionPolicy) -> bool {
+        policy.version() == crate::supplied_session_review::SuppliedSessionPolicyVersion::V5
+            && policy.application_url() == &self.application
+            && policy.policy_reference() == self.policy_reference
+            && policy.principal_alias() == self.principal_alias
+            && policy.oauth_code_policy().is_some_and(|idp| {
+                idp.is_valid_for_application(&self.application)
+                    && idp.token_endpoint() == &self.target
+                    && idp.binding_reference() == self.idp_reference
+            })
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OAuthCodeRequestError {
+    Http,
+    RuntimeLimit,
+    InvalidDescriptor,
+    GrantExpired,
+    AlreadyAttempted,
+}
+
+/// Private response ownership: no raw URL/header/body or digest enters a
+/// general observer. The body becomes guarded before any token JSON parsing.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct OAuthCodeTransportResponse {
+    pub(crate) status: u16,
+    pub(crate) complete: bool,
+    pub(crate) representation_supported: bool,
+    pub(crate) body: Zeroizing<Vec<u8>>,
+}
+
+/// Non-cloneable, once-attempted IdP child of the assessment's shared broker.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct OAuthCodeRequestBroker {
+    broker: HttpRequestBroker,
+    mint: crate::web_runtime::OAuthCodeMintToken,
+    attempted: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl OAuthCodeRequestBroker {
+    pub(crate) async fn collect(
+        &self,
+        descriptor: &OAuthCodeRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+        grant: &crate::supplied_session_review::SuppliedSessionOAuthGrant,
+        limits: DecisionExecutionLimits,
+    ) -> Result<OAuthCodeTransportResponse, OAuthCodeRequestError> {
+        if !self.mint.is_valid_for(policy)
+            || !descriptor.validate_against(policy)
+            || !grant.matches_policy(policy)
+            || self.broker.validate_target(&descriptor.target).is_err()
+        {
+            return Err(OAuthCodeRequestError::InvalidDescriptor);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+            .ok_or(OAuthCodeRequestError::GrantExpired)?;
+        if !grant.is_fresh_at(now) {
+            return Err(OAuthCodeRequestError::GrantExpired);
+        }
+        // An ambiguous failed POST never authorizes another redemption.
+        if self
+            .attempted
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err(OAuthCodeRequestError::AlreadyAttempted);
+        }
+        let form = grant
+            .compose_form_body(policy)
+            .map_err(|_| OAuthCodeRequestError::InvalidDescriptor)?;
+        let request = self
+            .broker
+            .client
+            .post(descriptor.target.clone())
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(ACCEPT, "application/json")
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .body(form.as_bytes().to_vec())
+            .build()
+            .map_err(|_| OAuthCodeRequestError::Http)?;
+        let mut response = self
+            .broker
+            .collect_built_request(
+                &self.broker.client,
+                crate::supplied_session_review::SUPPLIED_SESSION_OAUTH_CODE_ACTION_ID,
+                DecisionExecutionStage::Active,
+                None,
+                limits,
+                request,
+            )
+            .await
+            .map_err(|error| match error {
+                HttpRequestBrokerError::Http(_) => OAuthCodeRequestError::Http,
+                HttpRequestBrokerError::RuntimeLimit(_) => OAuthCodeRequestError::RuntimeLimit,
+            })?;
+        let complete = response.final_url() == &descriptor.target
+            && response.body_complete()
+            && oauth_content_length_matches(&response);
+        let representation_supported = oauth_json_representation(&response);
+        let body = Zeroizing::new(std::mem::take(&mut response.body));
+        Ok(OAuthCodeTransportResponse {
+            status: response.status(),
+            complete,
+            representation_supported,
+            body,
+        })
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn oauth_content_length_matches(response: &CollectedHttpResponse) -> bool {
+    let mut values = response
+        .headers
+        .get_all(reqwest::header::CONTENT_LENGTH)
+        .iter();
+    let Some(value) = values.next() else {
+        return true;
+    };
+    if values.next().is_some() || value.as_bytes().len() > 20 {
+        return false;
+    }
+    value.to_str().ok().is_some_and(|raw| {
+        !raw.is_empty()
+            && raw.bytes().all(|byte| byte.is_ascii_digit())
+            && raw
+                .parse::<u64>()
+                .ok()
+                .is_some_and(|length| u64::try_from(response.body.len()).ok() == Some(length))
+    })
+}
+
+#[cfg(feature = "supplied-session-review")]
+fn oauth_json_representation(response: &CollectedHttpResponse) -> bool {
+    if response
+        .headers
+        .contains_key(reqwest::header::CONTENT_ENCODING)
+    {
+        return false;
+    }
+    let mut values = response.headers.get_all(CONTENT_TYPE).iter();
+    let Some(value) = values.next() else {
+        return false;
+    };
+    if values.next().is_some() || value.as_bytes().len() > 128 {
+        return false;
+    }
+    value.to_str().ok().is_some_and(|raw| {
+        let mut parts = raw.split(';');
+        let media_supported = parts
+            .next()
+            .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+        media_supported
+            && match (parts.next(), parts.next()) {
+                (None, None) => true,
+                (Some(parameter), None) => parameter.trim().eq_ignore_ascii_case("charset=utf-8"),
+                _ => false,
+            }
+    })
+}
+
 /// Closed error surface for descriptor-bound JWT target-acceptance collection.
 #[cfg(feature = "jwt-target-acceptance-review")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1388,6 +1590,66 @@ impl HttpRequestBroker {
                 .map_err(HttpEvidenceError::Client)?,
         );
         Ok(broker)
+    }
+
+    /// Builds only the selected private IdP child. The target pool/policy and
+    /// its TLS observer remain unchanged; this new purpose has its own exact
+    /// endpoint permit and shares the parent's one accounting broker.
+    #[cfg(feature = "supplied-session-review")]
+    pub(crate) fn isolated_oauth_code(
+        &self,
+        policy: &SuppliedSessionPolicy,
+        mint: crate::web_runtime::OAuthCodeMintToken,
+    ) -> Result<OAuthCodeRequestBroker, SuppliedSessionRequestError> {
+        if !mint.is_valid_for(policy) || self.validate_target(policy.application_url()).is_err() {
+            return Err(SuppliedSessionRequestError::InvalidDescriptor);
+        }
+        let idp = policy
+            .oauth_code_policy()
+            .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
+        let accounting = self
+            .accounting
+            .clone()
+            .ok_or(SuppliedSessionRequestError::InvalidDescriptor)?;
+        let idp_policy = HttpEvidencePolicy::new(
+            [idp.token_endpoint().clone()],
+            self.policy
+                .request_timeout()
+                .min(std::time::Duration::from_millis(policy.max_wall_time_ms())),
+            self.policy
+                .max_body_bytes()
+                .min(idp.max_token_response_bytes()),
+        )?;
+        let client = Client::builder()
+            .redirect(RedirectPolicy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .no_deflate()
+            .build()
+            .map_err(|_| SuppliedSessionRequestError::Http)?;
+        // Clone handles, not clients/pools. No cookie jar, inherited headers,
+        // ambient proxy, alternate trust roots or target credentials exist here.
+        let broker = Self {
+            client: client.clone(),
+            #[cfg(feature = "wordpress-review")]
+            anonymous_no_proxy_client: client,
+            #[cfg(feature = "supplied-session-review")]
+            supplied_session_no_proxy_client: None,
+            policy: idp_policy,
+            accounting: Some(accounting),
+            #[cfg(feature = "tls-observation")]
+            tls_observation: None,
+            #[cfg(feature = "xml-external-entity-owned-https-test-profile")]
+            owned_xml_https_test_profile: None,
+        };
+        Ok(OAuthCodeRequestBroker {
+            broker,
+            mint,
+            attempted: std::sync::atomic::AtomicBool::new(false),
+        })
     }
 
     pub(super) async fn collect(

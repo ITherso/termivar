@@ -18,6 +18,14 @@ use super::{render_serializable_json, write_markdown_code_span, RenderBuffer, Re
 mod html;
 mod import;
 
+/// The same closed feature-independent V5 contract is checked before publication.
+#[cfg(feature = "supplied-session-review")]
+pub(super) fn validate_supplied_session_oauth_code(
+    value: &Value,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    import::validate_supplied_session_oauth_code(value)
+}
+
 /// Applies the same closed, feature-independent V4 wire validation before publication.
 pub(super) fn validate_supplied_session_renewal(
     value: &Value,
