@@ -68,8 +68,10 @@ be selected instead. The controlled fallback fixture preserves its request trace
 but this is not a promise of identical document selection or generic coverage
 between every option-off and privacy-selected run.
 
-Selected REST, resource authorization or WordPress discovery still conflict with
-secret-exposure review. Selecting both OpenAPI and SSRF-OAST also conflicts;
+Explicit REST and resource-authorization reviews can compose with selected S04
+through their own value-free committed-evidence contracts; their separately
+planned responses are not passive detector inputs. WordPress discovery still
+conflicts with secret-exposure review. Selecting both OpenAPI and SSRF-OAST also conflicts;
 merely compiling SSRF-OAST does not. Preflight rejects those combinations before
 secret acquisition, target traffic or output publication. See
 [passive response secret-exposure review](passive-secret-exposure-review.md) for

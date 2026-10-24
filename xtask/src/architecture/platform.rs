@@ -2788,6 +2788,15 @@ fn resource_authorization_review_source_contract_violations(
         decision,
     } = sources;
     let mut violations = Vec::new();
+    // Real runner/knowledge fixtures remain test-owned. A strict final module
+    // boundary must not allow tests to satisfy or conceal production markers.
+    let runtime = match exact_inline_tests_production("resource authorization review", runtime) {
+        Ok(production) => production,
+        Err(errors) => return errors,
+    };
+    violations.extend(resource_authorization_privacy_contract_violations(
+        runtime, assessment,
+    ));
     let compact_runtime = squash_ascii_whitespace(runtime);
     let compact_assessment = squash_ascii_whitespace(assessment);
     let compact_report = squash_ascii_whitespace(report);
@@ -3237,6 +3246,118 @@ fn resource_authorization_review_source_contract_violations(
     violations
 }
 
+/// Private composition invariants, independent of the unchanged public audit.
+/// `runtime` is the production prefix validated by the caller's exact final
+/// inline-test-module boundary, never the embedded fixture implementation.
+fn resource_authorization_privacy_contract_violations(
+    runtime: &str,
+    assessment: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let compact = squash_ascii_whitespace(runtime);
+    require_markers(
+        &mut violations,
+        &compact,
+        &[
+            "enumAuthorizationResponsePrivacy{Historical,#[cfg(feature=\"secret-exposure-review\")]ValueFree,}",
+            "pub(super)structResourceAuthorizationReviewConfig{policy:AuthorizationReviewPolicy,principals:AuthorizationPrincipalExecutionHandoff,privacy:AuthorizationResponsePrivacy,}",
+            "self.privacy=AuthorizationResponsePrivacy::ValueFree;",
+            "constMAX_VALUE_FREE_AUTHORIZATION_PHASE_RECORDS:usize=20;",
+        ],
+        "resource authorization privacy must remain private, opt-in and bounded",
+    );
+    let finalizer = named_function_source(runtime, "finalize")
+        .map(squash_ascii_whitespace)
+        .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &finalizer,
+        &[
+            "standard:&super::StandardWebDecisionRunReport",
+            "expected_value_free:bool",
+            "ifself.executor.privacy.is_value_free()!=expected_value_free",
+            "lettransport=standard.transport();",
+            "ifself.executor.privacy.is_value_free(){letparent_interrupted=forced_outcome==Some(AuthorizationReviewOutcome::Cancelled)||(forced_outcome==Some(AuthorizationReviewOutcome::BudgetExhausted)&&forced_runtime_limit.as_ref()==standard.limit_exceeded()&&standard.limit_exceeded().is_some_and(|limit|{limit.dimension()==crate::RuntimeBudgetDimension::WallTime}));validate_value_free_authorization_commits(standard,knowledge,&self.policy,&self.subject,&state,parent_interrupted,)?;}",
+            "AuthorizationDifferentialResult::compare(&self.policy,self.proof,",
+        ],
+        "resource authorization privacy must recheck canonical selection and committed parent truth before the unchanged private comparator",
+    );
+    let assessment = squash_ascii_whitespace(assessment);
+    require_markers(
+        &mut violations,
+        &assessment,
+        &[
+            "letconfig=ResourceAuthorizationReviewConfig::new(policy,principals);#[cfg(feature=\"secret-exposure-review\")]letconfig=ifself.secret_exposure_review{config.with_value_free_response_privacy()}else{config};config",
+            "letexpected_value_free=self.secret_exposure_collector.is_some();",
+            "letforced_outcome=ifself.authority.cancellation().is_cancelled(){Some(AuthorizationReviewOutcome::Cancelled)}elseifstandard.limit_exceeded().is_some(){Some(AuthorizationReviewOutcome::BudgetExhausted)}else{None};",
+            "matchbinding.finalize(self.authority.knowledge(),&standard,expected_value_free,forced_outcome,forced_runtime_limit,)",
+        ],
+        "resource authorization privacy binding and finalization must use the same canonical assessment selection",
+    );
+    let capture_source = named_function_source(runtime, "capture_response").unwrap_or_default();
+    let capture = squash_ascii_whitespace(capture_source);
+    let historical_response =
+        "values.push(format!(\"response={}\",encode_digest(response_digest)));";
+    let historical_receipt = "values.push(format!(\"receipt={}\",encode_digest(receipt_digest)));";
+    let historical_guard = named_braced_item_source(capture_source, "if !privacy.is_value_free()")
+        .map(squash_ascii_whitespace)
+        .unwrap_or_default();
+    if !historical_guard.contains(historical_response)
+        || !historical_guard.contains(historical_receipt)
+        || capture.matches(historical_response).count() != 1
+        || capture.matches(historical_receipt).count() != 1
+    {
+        violations.push(
+            "resource authorization general response/receipt digest evidence must remain exclusively behind the historical privacy guard"
+                .to_owned(),
+        );
+    }
+    let commit = named_function_source(runtime, "validate_value_free_authorization_commits")
+        .map(squash_ascii_whitespace)
+        .unwrap_or_default();
+    require_markers(
+        &mut violations,
+        &commit,
+        &[
+            ".turns().iter()",
+            ".chain(standard.unverified_evidence())",
+            "parent_interrupted:bool",
+            "receipts.len()>2",
+            "letstaged=state.staged_value_free_batches.len();",
+            "staged>2",
+            "ifparent_interrupted{staged<receipts.len()||staged>receipts.len().saturating_add(1)}else{receipts.len()!=staged}",
+            "!parent_interrupted&&receipts.is_empty()&&state.terminal.is_some()",
+            "state.runtime_limit.is_some()!=(state.terminal==Some(AuthorizationReviewOutcome::BudgetExhausted))",
+            "receipt.stage()!=stage",
+            "receipt.executor_id()!=RESOURCE_AUTHORIZATION_EXECUTOR_ID",
+            "case.action_id()!=RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID",
+            "case.subject()!=subject",
+            "case.applies_hypothesis_transition()",
+            "case.payload_strategy().is_some()",
+            "receipt.evidence().len()!=receipt.writes().len()",
+            "receipt.evidence().len()>MAX_VALUE_FREE_AUTHORIZATION_PHASE_RECORDS",
+            "!matches!(write,KnowledgeWrite::Inserted|KnowledgeWrite::Unchanged)",
+            "!committed_ids.insert(item.id().clone())",
+            "knowledge.evidence(item.id()).as_ref()!=Some(item)",
+            "CommittedAssessmentDefenseLedger::default().ingest_receipt(receipt,knowledge,true)",
+            "root.value()!=&EvidenceValue::TextList(value_free_transport_values(role,&leg.view,metadata,))",
+            "classification.value()!=&EvidenceValue::TextList(expected_classification)",
+            "derivation.parents()!=[root.id().clone()]",
+            "derivation.algorithm().name()!=\"web.authorization-review.value-free-leg\"",
+            "derivation.algorithm().version()!=1",
+            "metadata.response_bytes>transport.response_bytes()",
+            "metadata.defense!=AuthorizationResponseDefense::Clear",
+            "!parent_interrupted&&index+1==receipts.len()&&is_terminal!=state.terminal.is_some()",
+            "terminal_outcome_for_state(leg.view.state())",
+            "state.terminal!=Some(observed)",
+            "no_response.value()!=&EvidenceValue::Boolean(is_terminal&&phase_roles==0)",
+            "ifcommitted_roles.len()!=state.captured.len()&&!parent_interrupted",
+        ],
+        "resource authorization value-free proof must reconcile exact committed role/transport/write/lineage and terminal truth",
+    );
+    violations
+}
+
 fn named_function_source<'a>(source: &'a str, name: &str) -> Option<&'a str> {
     named_braced_item_source(source, &format!("fn {name}"))
 }
@@ -3529,6 +3650,12 @@ fn rest_review_source_contract_violations(
     report: &str,
 ) -> Vec<String> {
     let mut violations = Vec::new();
+    // Test-owned committed-receipt fixtures cannot satisfy production markers
+    // or be mistaken for a second runtime/transport owner.
+    let runtime = match exact_inline_tests_production("REST review", runtime) {
+        Ok(production) => production,
+        Err(errors) => return errors,
+    };
     let compact_runtime = squash_ascii_whitespace(runtime);
     let compact_actions = squash_ascii_whitespace(actions);
     let compact_web_runtime = squash_ascii_whitespace(web_runtime);
@@ -3573,6 +3700,12 @@ fn rest_review_source_contract_violations(
             ".compare_exact_replay(&candidate.view,&replay.view)",
             "letprojected=comparison.all_equivalent();",
             "AssessmentItemTarget::rest_operation(",
+            "letcommitted=ifself.executor.privacy.is_value_free(){validate_value_free_rest_commits(standard,knowledge,&self.subject,selection.as_ref(),&state,)?",
+            "super::secret_exposure::rest_response_privacy_parent_ids(",
+            "super::secret_exposure::is_active_review_body_privacy_lineage(",
+            "receipt.evidence().len()!=receipt.writes().len()",
+            "knowledge.evidence(item.id()).as_ref()!=Some(item)",
+            "if!item.origin().is_direct(){returnErr(RestRuntimeInvariantError::Catalog);}",
         ],
         "REST read-only review lost its one-operation, two-GET, parent-native informational contract",
     );
@@ -3608,6 +3741,7 @@ fn rest_review_source_contract_violations(
         &[
             "pub(incrate::web_runtime)fnwith_rest_review(",
             "rest_runtime::RestReviewBinding::new(",
+            "openapi.response_privacy_is_value_free()",
             "NativeWebReviewActionKind::RestReadOnlyReplay",
             "binding.install_into_parent_registry(&mutexecutors)",
             "letmutexecutors=DecisionExecutorRegistry::new();",
@@ -3648,7 +3782,7 @@ fn rest_review_source_contract_violations(
         &mut violations,
         &compact_report,
         &[
-            "validate_rest_audit(rest_review.as_ref(),&items)?;",
+            "validate_rest_audit(rest_review.as_ref(),&items,response_privacy)?;",
             "pubconstfnrest_review_audit(&self)->Option<&WebAssessmentRestAudit>",
         ],
         "REST audit must remain in the one composed assessment report",
@@ -10946,8 +11080,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 659_710;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x5cfd_7994_0d00_2afe_fded_298f_56b0_46fa;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 660_089;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x8c12_4fb6_f9c9_827b_654c_ff55_e462_518c;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -12932,6 +13066,7 @@ const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "eligible_operation_count",
     "rest_review_audit",
     "validate",
+    "validate_for_response_privacy",
     "version",
     "build_variant",
     "version_evidence_resolution",
@@ -13654,6 +13789,7 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
                     | Some("feature=\"openapi-review\"")
                     | Some("feature=\"rest-review\"")
                     | Some("feature=\"secret-exposure-review\"")
+                    | Some("not(feature=\"secret-exposure-review\")")
                     | Some("feature=\"tls-negotiation-review\"")
                     | Some("feature=\"tls-observation\"")
                     | Some("feature=\"jwt-policy-review\"")
@@ -15823,7 +15959,14 @@ mod tests {
             "fn second_registry() { let _ = DecisionExecutorRegistry::new(); }",
             "fn second_runner(registry: DecisionExecutorRegistry) { let _ = DecisionRunnerAdapter::new(registry); }",
         ] {
-            let mutation = format!("{runtime}\n{forbidden}");
+            let mutation = runtime.replacen(
+                "#[cfg(test)]",
+                &format!("{forbidden}\n#[cfg(test)]"),
+                1,
+            );
+            assert_ne!(mutation, runtime);
+            assert!(exact_inline_tests_production("resource authorization review", &mutation)
+                .is_ok());
             assert!(
                 !resource_authorization_review_source_contract_violations(
                     ResourceAuthorizationSources {
@@ -15932,8 +16075,10 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("default 3")));
 
-        let child_owned_runner = format!(
-            "{runtime}\nfn forbidden() {{ let _ = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new()); }}"
+        let child_owned_runner = runtime.replacen(
+            "#[cfg(test)]",
+            "fn forbidden() { let _ = DecisionRunnerAdapter::new(DecisionExecutorRegistry::new()); }\n#[cfg(test)]",
+            1,
         );
         assert!(resource_authorization_review_source_contract_violations(
             ResourceAuthorizationSources {
@@ -16222,6 +16367,182 @@ mod tests {
     }
 
     #[test]
+    fn resource_authorization_privacy_requires_root_binding_and_exact_committed_terminal_proof() {
+        let runtime = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs"
+        );
+        let assessment =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
+        let production =
+            exact_inline_tests_production("resource authorization review", runtime).unwrap();
+        let valid = resource_authorization_privacy_contract_violations(production, assessment);
+        assert!(valid.is_empty(), "{valid:#?}");
+
+        // These mutations remove independent authority/receipt predicates, not
+        // replacement fixture results or dynamically generated expected values.
+        for (from, to) in [
+            ("privacy: AuthorizationResponsePrivacy,", "privacy: bool,"),
+            (
+                "self.privacy = AuthorizationResponsePrivacy::ValueFree;",
+                "self.privacy = AuthorizationResponsePrivacy::Historical;",
+            ),
+            (
+                "MAX_VALUE_FREE_AUTHORIZATION_PHASE_RECORDS: usize = 20",
+                "MAX_VALUE_FREE_AUTHORIZATION_PHASE_RECORDS: usize = 21",
+            ),
+            (
+                "self.executor.privacy.is_value_free() != expected_value_free",
+                "false",
+            ),
+            ("if self.executor.privacy.is_value_free() {", "if true {"),
+            (
+                "forced_outcome == Some(AuthorizationReviewOutcome::Cancelled)",
+                "true",
+            ),
+            (
+                "forced_outcome == Some(AuthorizationReviewOutcome::BudgetExhausted)",
+                "forced_outcome.is_some()",
+            ),
+            (
+                "forced_runtime_limit.as_ref() == standard.limit_exceeded()",
+                "true",
+            ),
+            (
+                "limit.dimension() == crate::RuntimeBudgetDimension::WallTime",
+                "limit.dimension() == crate::RuntimeBudgetDimension::ResponseBytes",
+            ),
+            ("if !privacy.is_value_free()", "if privacy.is_value_free()"),
+            (
+                ".chain(standard.unverified_evidence())",
+                ".chain(std::iter::empty())",
+            ),
+            ("receipts.len() > 2", "receipts.len() > 3"),
+            (
+                "staged > receipts.len().saturating_add(1)",
+                "staged > receipts.len().saturating_add(2)",
+            ),
+            ("receipts.len() != staged", "false"),
+            ("receipt.stage() != stage", "false"),
+            ("case.subject() != subject", "false"),
+            ("case.payload_strategy().is_some()", "false"),
+            (
+                "receipt.evidence().len() != receipt.writes().len()",
+                "false",
+            ),
+            (
+                "KnowledgeWrite::Inserted | KnowledgeWrite::Unchanged",
+                "KnowledgeWrite::Inserted | KnowledgeWrite::Updated",
+            ),
+            ("!committed_ids.insert(item.id().clone())", "false"),
+            (
+                "knowledge.evidence(item.id()).as_ref() != Some(item)",
+                "false",
+            ),
+            (
+                ".ingest_receipt(receipt, knowledge, true)",
+                ".ingest_receipt(receipt, knowledge, false)",
+            ),
+            ("derivation.parents() != [root.id().clone()]", "false"),
+            (
+                "metadata.response_bytes > transport.response_bytes()",
+                "false",
+            ),
+            (
+                "metadata.defense != AuthorizationResponseDefense::Clear",
+                "false",
+            ),
+            ("is_terminal != state.terminal.is_some()", "false"),
+            ("state.terminal != Some(observed)", "false"),
+            ("is_terminal && phase_roles == 0", "is_terminal"),
+            (
+                "committed_roles.len() != state.captured.len() && !parent_interrupted",
+                "false",
+            ),
+        ] {
+            assert!(
+                production.contains(from),
+                "unmatched literal mutation: {from}"
+            );
+            let mutated = production.replacen(from, to, 1);
+            let violations =
+                resource_authorization_privacy_contract_violations(&mutated, assessment);
+            assert!(!violations.is_empty(), "privacy bypass passed: {from}");
+        }
+
+        let unguarded_digest = production.replacen(
+            "    values.extend([",
+            "    values.push(format!(\"response={}\", encode_digest(response_digest)));\n    values.extend([",
+            1,
+        );
+        assert_ne!(unguarded_digest, production);
+        assert!(
+            resource_authorization_privacy_contract_violations(&unguarded_digest, assessment)
+                .iter()
+                .any(|violation| violation.contains("historical privacy guard"))
+        );
+
+        for (from, to) in [
+            ("config.with_value_free_response_privacy()", "config"),
+            ("let expected_value_free = self.secret_exposure_collector.is_some();", "let expected_value_free = false;"),
+            ("self.authority.cancellation().is_cancelled() {\n                        Some(AuthorizationReviewOutcome::Cancelled)", "true {\n                        Some(AuthorizationReviewOutcome::Cancelled)"),
+        ] {
+            assert!(assessment.contains(from), "unmatched root mutation: {from}");
+            let mutated = assessment.replacen(from, to, 1);
+            assert!(!resource_authorization_privacy_contract_violations(production, &mutated)
+                .is_empty(), "canonical root bypass passed: {from}");
+        }
+    }
+
+    #[test]
+    fn resource_authorization_privacy_cannot_be_satisfied_by_inline_test_fixtures() {
+        let runtime = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/resource_authorization_runtime.rs"
+        );
+        let assessment =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
+        let production =
+            exact_inline_tests_production("resource authorization review", runtime).unwrap();
+        assert!(!production.contains("KnowledgeBase::new()"));
+        assert!(runtime.contains("KnowledgeBase::new()"));
+
+        for malformed in [
+            format!("{runtime}\nfn outside_final_test_module() {{}}"),
+            format!("{runtime}\n#[cfg(test)] mod tests {{}}"),
+            runtime.replacen(
+                "#[cfg(test)]",
+                "#[cfg(any(test, feature = \"authorization-review\"))]",
+                1,
+            ),
+        ] {
+            assert!(
+                exact_inline_tests_production("resource authorization review", &malformed)
+                    .unwrap_err()
+                    .iter()
+                    .any(|violation| violation.contains("exact cfg(test) inline tests module"))
+            );
+        }
+
+        // Moving a required check into the test-owned tail cannot satisfy the
+        // production check even when the full source still contains the literal.
+        let removed = production.replacen(
+            "if self.executor.privacy.is_value_free() != expected_value_free",
+            "if false",
+            1,
+        );
+        assert_ne!(removed, production);
+        let displaced = format!(
+            "{removed}\n#[cfg(test)] mod tests {{ const FIXTURE: &str = \"ifself.executor.privacy.is_value_free()!=expected_value_free\"; }}"
+        );
+        let prefix =
+            exact_inline_tests_production("resource authorization review", &displaced).unwrap();
+        assert!(
+            resource_authorization_privacy_contract_violations(prefix, assessment)
+                .iter()
+                .any(|violation| violation.contains("canonical selection"))
+        );
+    }
+
+    #[test]
     fn openapi_review_architecture_is_one_bounded_informational_native_child() {
         let runtime =
             include_str!("../../../crates/termivar-scanner/src/web_runtime/openapi_runtime.rs");
@@ -16428,7 +16749,9 @@ mod tests {
             "const FORMER_BRAND: &str = \"Venom\";",
             "const ABANDONED_PARTIAL_REBRAND: &str = \"Liminvar\";",
         ] {
-            let mutation = format!("{runtime}\n{forbidden}");
+            let mutation =
+                runtime.replacen("#[cfg(test)]", &format!("{forbidden}\n#[cfg(test)]"), 1);
+            assert_ne!(mutation, runtime);
             assert!(
                 !rest_review_source_contract_violations(
                     &mutation,
@@ -16455,8 +16778,10 @@ mod tests {
         .iter()
         .any(|violation| violation.contains("two-GET")));
 
-        let second_dispatch = format!(
-            "{runtime}\nfn duplicate_dispatch(binding: &RestDecisionExecutor) {{ let _ = binding.requests.collect_for_runtime(); }}"
+        let second_dispatch = runtime.replacen(
+            "#[cfg(test)]",
+            "fn duplicate_dispatch(binding: &RestDecisionExecutor) { let _ = binding.requests.collect_for_runtime(); }\n#[cfg(test)]",
+            1,
         );
         assert!(rest_review_source_contract_violations(
             &second_dispatch,
@@ -16468,6 +16793,76 @@ mod tests {
         )
         .iter()
         .any(|violation| violation.contains("exactly one shared-broker dispatch")));
+
+        for (from, to) in [
+            (
+                "validate_value_free_rest_commits(",
+                "unchecked_value_free_rest_commits(",
+            ),
+            (
+                "receipt.evidence().len() != receipt.writes().len()",
+                "false",
+            ),
+            (
+                "knowledge.evidence(item.id()).as_ref() != Some(item)",
+                "false",
+            ),
+            ("if !item.origin().is_direct()", "if false"),
+            (
+                "super::secret_exposure::rest_response_privacy_parent_ids(",
+                "unchecked_parents(",
+            ),
+            (
+                "super::secret_exposure::is_active_review_body_privacy_lineage(",
+                "unchecked_lineage(",
+            ),
+        ] {
+            let mutation = runtime.replacen(from, to, 1);
+            assert_ne!(mutation, runtime, "{from}");
+            assert!(rest_review_source_contract_violations(
+                &mutation,
+                actions,
+                broker,
+                web_runtime,
+                assessment,
+                report,
+            )
+            .iter()
+            .any(|violation| violation.contains("parent-native informational contract")));
+        }
+        let lost_privacy_binding =
+            web_runtime.replacen("openapi.response_privacy_is_value_free()", "false", 1);
+        assert_ne!(lost_privacy_binding, web_runtime);
+        assert!(rest_review_source_contract_violations(
+            runtime,
+            actions,
+            broker,
+            &lost_privacy_binding,
+            assessment,
+            report,
+        )
+        .iter()
+        .any(|violation| violation.contains("parent StandardWebDecisionRuntime")));
+
+        for escaped in [
+            format!("{runtime}\nfn escaped_production() {{}}"),
+            runtime.replacen(
+                "#[cfg(test)]",
+                "#[cfg(any(test, feature = \"scanning\"))]",
+                1,
+            ),
+        ] {
+            assert!(rest_review_source_contract_violations(
+                &escaped,
+                actions,
+                broker,
+                web_runtime,
+                assessment,
+                report,
+            )
+            .iter()
+            .any(|violation| violation.contains("cfg(test)")));
+        }
 
         let detached = format!("{assessment}\nfn bad() {{ execute_rest_review_detached(); }}");
         assert!(rest_review_source_contract_violations(
@@ -21628,6 +22023,47 @@ mod tests {
             assert!(reporting_production_body_inventory_violations(&mutation)
                 .iter()
                 .any(|violation| violation.contains("production AST/body inventory changed")));
+        }
+    }
+
+    #[test]
+    fn reporting_rest_privacy_contract_does_not_admit_unknown_methods_or_unguarded_identity() {
+        let source = include_str!("../../../crates/termivar-scanner/src/reporting.rs");
+        let reviewed_call = "audit.validate_for_response_privacy(&self.items, response_privacy)?;";
+        assert_eq!(source.matches(reviewed_call).count(), 1);
+        let unknown_method = source.replacen(
+            reviewed_call,
+            "audit.accept_unchecked_response_privacy(&self.items)?;",
+            1,
+        );
+        assert!(reporting_source_violations(&unknown_method)
+            .unwrap()
+            .iter()
+            .any(
+                |violation| violation.contains("accept_unchecked_response_privacy")
+                    && violation.contains("outside the exact allowlist")
+            ));
+        for (from, to) in [
+            (
+                "let response_privacy = self.secret_exposure_review.is_some();",
+                "let response_privacy = true;",
+            ),
+            (
+                "let response_privacy = false;",
+                "let response_privacy = true;",
+            ),
+            (
+                "|| (response_privacy && self.selected_operation_identity.is_some())",
+                "|| false",
+            ),
+            (
+                "|| (self.selected_operation_identity.is_some() == response_privacy)",
+                "|| false",
+            ),
+        ] {
+            let mutation = source.replacen(from, to, 1);
+            assert_ne!(mutation, source, "{from}");
+            assert!(!reporting_production_body_inventory_violations(&mutation).is_empty());
         }
     }
 

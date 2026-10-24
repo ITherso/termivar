@@ -1283,11 +1283,15 @@ impl StandardWebDecisionRuntimeBuilder {
         });
         #[cfg(feature = "rest-review")]
         let rest_review = self.rest_review.then(|| {
-            let selection = openapi_review
+            let openapi = openapi_review
                 .as_ref()
-                .expect("REST preflight requires the same-run OpenAPI binding")
-                .rest_selection_slot();
-            rest_runtime::RestReviewBinding::new(selection, requests.clone(), subject.clone())
+                .expect("REST preflight requires the same-run OpenAPI binding");
+            rest_runtime::RestReviewBinding::new(
+                openapi.rest_selection_slot(),
+                requests.clone(),
+                subject.clone(),
+                openapi.response_privacy_is_value_free(),
+            )
         });
         let native_executor_profile = match self.native_web_review {
             Some(config) => {

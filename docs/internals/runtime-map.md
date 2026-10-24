@@ -75,8 +75,8 @@ most two requests and one logical active verification. Only replayed OpenAPI
 `api.openapi-contract-observed@1` item. YAML and Swagger 2.0 create no runtime
 item, and described operations are not executed.
 
-Explicit `--secret-exposure-review` may compose with OpenAPI without selecting
-REST or the OpenAPI-plus-SSRF-OAST combination. The
+Explicit `--secret-exposure-review` may compose with OpenAPI and its optional
+REST child, but not the selected OpenAPI-plus-SSRF-OAST combination. The
 separately planned GET candidate/replay are not passive detector inputs. Full
 semantic replay equality stays private; exact committed value-free lineage
 replaces public response/catalogue digests, the existing audit keeps
@@ -99,6 +99,15 @@ and value-sensitive `Resources` may produce
 `KnowledgeOnly`. No parameter or request body is materialized, no credential,
 cookie, redirect, retry, or write method is used, and the selected operation is
 not chained into SQL, SSTI, XSS, authorization, SSRF, or upload review.
+
+Explicit secret-exposure composition retains full value-sensitive REST replay
+equality privately. Its separately planned GETs are not passive detector inputs.
+Exact committed receipt/write/lineage checks replace public body/view digests
+and catalogue-derived operation/target identities; the selected REST audit
+omits `selected_operation_identity` and uses a coarse subject item, not
+cross-run resource equality. Historical option-off contracts remain strict.
+This adds no REST request or budget and does not change the two-request/
+one-active allowance or operation selector.
 
 ## Passive response secret-exposure review
 
@@ -687,7 +696,7 @@ replayed-introspection results are `Informational` / `KnowledgeOnly` only. See
 The non-default `rest-review` scanner/CLI feature requires the same invocation
 to enable `openapi-review` under explicit `web-review`; otherwise CLI preflight
 rejects it without network I/O. The OpenAPI child must first commit candidate
-and replay with the same semantic document digest. From that catalog, REST V1
+and replay with the same private semantic document identity. From that catalog, REST V1
 selects at most one anonymous, bodyless, exact-origin `GET` with no required
 path, query, header, or cookie inputs, no request body, and no auth or templated
 server requirement. Candidate and replay cost exactly two requests and one
@@ -699,7 +708,7 @@ created. See [REST read-only review](rest-readonly-review.md).
 
 The non-default `secret-exposure-review` scanner/CLI feature requires explicit
 `--secret-exposure-review --profile web-review`. V1 rejects combinations with
-REST, resource authorization, or WordPress discovery, and the selected
+WordPress discovery and the selected
 OpenAPI-plus-SSRF-OAST combination, before target or output work because those
 separate response paths do not yet share its value-free body-digest boundary.
 One shared observer stages
@@ -717,6 +726,24 @@ digest. Its separately planned GETs are not detector inputs; its existing
 two-request/one-active allowance is unchanged. Compiled availability alone does
 not select either review, and unchanged coarse items do not prove catalogue
 equality across runs.
+Explicit REST composition retains the same private value-sensitive
+`Status`/`Fields`/`Resources` comparison, suppresses public body/view digests
+and catalogue-derived operation/target identities, omits the existing audit's
+`selected_operation_identity` and uses a coarse subject item. Those separately
+planned GETs are not detector inputs; exact committed lineage and the existing
+two-request/one-active allowance remain mandatory. The composition adds no
+REST request or budget, and unchanged coarse items do not prove resource
+equality across runs.
+Explicit resource authorization composition preserves all four principal-isolated
+JSON GET legs and private full `Status`/`Fields`/`Resources` comparison. Selected
+general leg evidence omits response SHA-256 and body-derived receipt SHA-256;
+exact committed role/transport lineage, parent writes and stored facts must
+reconcile before projection. Finalization rechecks canonical assessment privacy
+selection against the private binding. Its existing public authorization audit
+retains counts, classified booleans and operator-policy identity; unchanged
+policy/resource-derived items do not prove cross-run body equality. The four
+credentialed legs are not anonymous detector inputs and retain the same parent
+four-request/one-active allowance with no S04-owned request or budget.
 Admission fails closed for redirects,
 explicit request headers, credentials, content coding, inconsistent lengths,
 unsupported media types, invalid UTF-8, truncation, failure, or configured
@@ -998,7 +1025,7 @@ The following matrix separates build availability from actual execution:
 | `defense` | scanner default | host library and explicit `web-review` observation/shadow; enforcement requires `--enforce-defense` | `web-review` only | implemented and tested Preview; cannot add or intensify actions |
 | normalization-resilience review | scanner and CLI opt-in (`normalization-resilience`) plus explicit runtime flag | one eligible `web-review` parent may produce one transformed candidate/replay child under the shared broker | no | Preview; max one transform/depth one, three child requests/one active verification, `NeedsReview` / `KnowledgeOnly` only |
 | GraphQL surface review | scanner and CLI opt-in (`graphql-review`) plus explicit runtime flag | one exact-origin endpoint may receive an anonymous `__typename` control, bounded schema-root candidate, and distinct replay through the shared broker | no | Preview; max one endpoint, three requests/one active verification, `Informational` / `KnowledgeOnly` only |
-| REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining |
+| REST read-only review | scanner and CLI opt-in (`rest-review`) plus explicit same-run `openapi-review` | one replay-stable OpenAPI catalog may select one anonymous, bodyless, exact-origin zero-input GET for candidate plus replay; selected secret-exposure composition retains full private replay equality and committed lineage while withholding public body/view and operation/target identities | no | Preview; max one operation, two requests/one active verification, `Informational` / `KnowledgeOnly` only; no chaining; the selected coarse subject item is not cross-run resource equality, and REST GETs are not passive detector inputs |
 | Passive response secret-exposure review | scanner and CLI opt-in (`secret-exposure-review`) plus explicit `--profile web-review --secret-exposure-review` | one shared observer evaluates eligible complete ordinary anonymous GET bodies inside the response transaction; only validated committed records reach the audit, and it adds no request, active verification, provider call, or subject | no | Preview, development-only; 128 KiB/response and 4 MiB/assessment admitted detector-work ceilings, 1,024 outcome/64 occurrence/32 retained-observation ceilings, fixed value-free catalogue, `Informational` / `KnowledgeOnly` only, supplied-session bodies excluded, and outside `release-bundle` |
 | Existing-connection TLS observation | scanner and CLI opt-in (`tls-observation`) plus explicit `--profile web-review --tls-observation` | existing assessment clients expose TLS information for successful responses already selected by their owning paths; one shared collector immediately reduces bounded leaf DER facts and adds no request, connection, handshake, action or retry | no | Preview, development-only; 64 KiB/leaf, 16 retained unique leaves, 256 bounded SAN entries/leaf, leaf-only Reqwest backend visibility, no active protocol/cipher enumeration, no revocation/OCSP/CT/AIA retrieval, no finding, and outside `release-bundle` |
 | Active TLS negotiation matrix (S15A) | scanner and CLI opt-in (`tls-negotiation-review`) plus explicit `--profile web-review --tls-negotiation-review` and one credential-free DNS HTTPS target | one single-use assessment child resolves once, selects one deterministic address and attempts default-provider TLS 1.3 then TLS 1.2 against the exact target host/SNI/port; it shares parent accounting/cancellation/deadline and sends no HTTP/application bytes or credentials | no | Experimental, development-only; one in-flight connection, two network cells, 5 s/cell and 10 s total ceilings, 128 KiB ingress/64 KiB egress per cell and 256 KiB/128 KiB aggregate ceilings. TLS 1.1, TLS 1.0 and legacy cipher rows are client-backend-not-tested. A failed cell is not server non-support, the matrix is not complete enumeration, and the feature is outside every aggregate and `release-bundle` |

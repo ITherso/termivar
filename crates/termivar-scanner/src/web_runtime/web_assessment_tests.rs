@@ -1111,21 +1111,25 @@ lifetime_ms = 5000
 
 #[cfg(all(feature = "secret-exposure-review", feature = "rest-review"))]
 #[test]
-fn secret_exposure_rejects_rest_at_builder_preflight() {
+fn secret_exposure_accepts_rest_with_same_run_private_openapi_selection() {
     let result = WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
         .enable_secret_exposure_review()
+        .enable_openapi_review()
         .enable_rest_review()
         .build();
-
+    assert!(result.is_ok());
     assert!(matches!(
-        result,
-        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
+        WebAssessmentRuntime::builder(Url::parse("https://example.test/").unwrap())
+            .enable_secret_exposure_review()
+            .enable_rest_review()
+            .build(),
+        Err(WebAssessmentRuntimeError::RestReviewRequiresOpenApiReview)
     ));
 }
 
 #[cfg(all(feature = "secret-exposure-review", feature = "authorization-review"))]
 #[test]
-fn secret_exposure_rejects_resource_authorization_at_builder_preflight() {
+fn secret_exposure_accepts_resource_authorization_with_value_free_committed_legs() {
     let origin = Url::parse("https://example.test/").unwrap();
     let result = WebAssessmentRuntime::builder(origin.clone())
         .enable_secret_exposure_review()
@@ -1135,10 +1139,7 @@ fn secret_exposure_rejects_resource_authorization_at_builder_preflight() {
         )
         .build();
 
-    assert!(matches!(
-        result,
-        Err(WebAssessmentRuntimeError::SecretExposureResponseSourceConflict)
-    ));
+    assert!(result.is_ok());
 }
 
 #[cfg(feature = "wordpress-review")]
@@ -3306,6 +3307,16 @@ async fn run_authorization_fixture_with_options(
     limits: WebAssessmentLimits,
     defense_enforcement: bool,
 ) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_authorization_fixture_with_privacy_options(mode, limits, defense_enforcement, false).await
+}
+
+#[cfg(feature = "authorization-review")]
+async fn run_authorization_fixture_with_privacy_options(
+    mode: AuthorizationFixtureMode,
+    limits: WebAssessmentLimits,
+    defense_enforcement: bool,
+    privacy_selected: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
     let primary_requests = Arc::new(AtomicUsize::new(0));
     let primary_count = Arc::clone(&primary_requests);
     let peer_requests = Arc::new(AtomicUsize::new(0));
@@ -3436,9 +3447,687 @@ async fn run_authorization_fixture_with_options(
     if defense_enforcement {
         builder = builder.enable_defense_enforcement();
     }
+    #[cfg(feature = "secret-exposure-review")]
+    if privacy_selected {
+        builder = builder.enable_secret_exposure_review();
+    }
+    #[cfg(not(feature = "secret-exposure-review"))]
+    assert!(!privacy_selected);
     let mut runtime = builder.build().unwrap();
     let report = runtime.analyze().await.unwrap();
     (report, server.requests().await)
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_preserves_four_role_private_comparison_and_plan() {
+    use crate::authorization_review::AuthorizationReviewOutcome;
+
+    // Independent literal outcomes: changing only a scalar must not be hidden
+    // by equal status, field shapes, counts, or a value-free public projection.
+    for (mode, expected, expected_items) in [
+        (
+            AuthorizationFixtureMode::Equivalent,
+            AuthorizationReviewOutcome::StableCrossPrincipalEquivalence,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::FieldShapeOnly,
+            AuthorizationReviewOutcome::CrossFieldsEquivalentOnly,
+            0,
+        ),
+        (
+            AuthorizationFixtureMode::PrimaryUnstable,
+            AuthorizationReviewOutcome::PrimaryUnstable,
+            0,
+        ),
+    ] {
+        let (before, before_requests) = run_authorization_fixture(mode).await;
+        let (after, after_requests) = run_authorization_fixture_with_privacy_options(
+            mode,
+            WebAssessmentLimits::default(),
+            false,
+            true,
+        )
+        .await;
+        assert_report_reconciles(&after);
+        assert_eq!(after.completion(), before.completion());
+        assert_eq!(after.usage().total_requests(), 5);
+        assert_eq!(
+            after.usage().total_requests(),
+            before.usage().total_requests()
+        );
+        assert_eq!(after.usage().active_verifications(), 1);
+        let trace = |rows: &[RecordedRequest]| {
+            rows.iter()
+                .map(|row| {
+                    (
+                        row.method.clone(),
+                        row.target.clone(),
+                        row.body().to_vec(),
+                        row.headers.get("authorization").cloned(),
+                        row.headers.get("accept").cloned(),
+                        row.headers.contains_key("cookie"),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(trace(&after_requests), trace(&before_requests));
+        let audit = after.authorization_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(audit.request_count(), 4);
+        let before_audit = before.authorization_review_audit().unwrap();
+        // Each helper owns a different ephemeral origin; those policy IDs must
+        // stay scope-distinct, not be compared as response-derived identities.
+        assert_ne!(audit.policy_id(), before_audit.policy_id());
+        assert_eq!(audit.outcome(), before_audit.outcome());
+        assert_eq!(audit.primary_stable(), before_audit.primary_stable());
+        assert_eq!(audit.peer_stable(), before_audit.peer_stable());
+        assert_eq!(
+            audit.cross_resources_equivalent(),
+            before_audit.cross_resources_equivalent()
+        );
+        assert_eq!(audit.item_projected(), before_audit.item_projected());
+        assert_eq!(
+            after
+                .assessment_items()
+                .iter()
+                .filter(|item| {
+                    item.capability_id() == RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID
+                })
+                .count(),
+            expected_items,
+        );
+        // Credentialed JSON legs are NOT anonymous passive detector inputs.
+        assert_eq!(
+            after
+                .secret_exposure_review_audit()
+                .unwrap()
+                .response_count(),
+            1
+        );
+        assert_no_secret(
+            &format!("{after:?}"),
+            &[
+                AUTHORIZATION_PRIMARY_SECRET,
+                AUTHORIZATION_PEER_SECRET,
+                AUTHORIZATION_QUERY_SECRET,
+                AUTHORIZATION_RESOURCE_HANDLE_SECRET,
+            ],
+        );
+    }
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_preserves_literal_negative_and_terminal_outcomes() {
+    use crate::authorization_review::AuthorizationReviewOutcome as Outcome;
+
+    // These closed expected outcomes/counts are the existing four-leg contract,
+    // not values derived from the new committed-evidence validator.
+    for (mode, expected, expected_requests) in [
+        (AuthorizationFixtureMode::PeerDenied, Outcome::PeerDenied, 4),
+        (
+            AuthorizationFixtureMode::PeerNotFound,
+            Outcome::PeerDenied,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PrimaryInvalid,
+            Outcome::PrimaryBaselineInvalid,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PrimaryUnstable,
+            Outcome::PrimaryUnstable,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::PeerUnstable,
+            Outcome::PeerUnstable,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::FieldShapeOnly,
+            Outcome::CrossFieldsEquivalentOnly,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::ReplayMismatch,
+            Outcome::PeerUnstable,
+            4,
+        ),
+        (
+            AuthorizationFixtureMode::HtmlChallenge,
+            Outcome::DefensiveInterference,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::Redirect,
+            Outcome::RedirectObserved,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::MalformedJson,
+            Outcome::MalformedJson,
+            1,
+        ),
+        (
+            AuthorizationFixtureMode::RateLimited,
+            Outcome::RateLimited,
+            2,
+        ),
+        (
+            AuthorizationFixtureMode::ReplayRateLimited,
+            Outcome::RateLimited,
+            3,
+        ),
+        (
+            AuthorizationFixtureMode::TransportClose,
+            Outcome::Incomplete,
+            1,
+        ),
+    ] {
+        let (report, requests) = run_authorization_fixture_with_privacy_options(
+            mode,
+            WebAssessmentLimits::default(),
+            false,
+            true,
+        )
+        .await;
+        assert_report_reconciles(&report);
+        let audit = report.authorization_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(usize::from(audit.request_count()), expected_requests);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|row| row.path() == "/api/account")
+                .count(),
+            expected_requests
+        );
+        assert!(!audit.item_projected());
+        assert!(report
+            .assessment_items()
+            .iter()
+            .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+    }
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_uses_existing_request_and_body_limits() {
+    use crate::authorization_review::AuthorizationReviewOutcome as Outcome;
+
+    for (mode, limits, expected, auth_requests, total, active) in [
+        (
+            AuthorizationFixtureMode::OversizedJson,
+            WebAssessmentLimits::default()
+                .with_max_response_body_bytes(64)
+                .unwrap(),
+            Outcome::Truncated,
+            1,
+            2,
+            0,
+        ),
+        (
+            AuthorizationFixtureMode::Equivalent,
+            WebAssessmentLimits::default()
+                .with_max_total_requests(3)
+                .unwrap(),
+            Outcome::BudgetExhausted,
+            2,
+            3,
+            0,
+        ),
+        (
+            AuthorizationFixtureMode::Equivalent,
+            WebAssessmentLimits::default()
+                .with_max_total_requests(4)
+                .unwrap(),
+            Outcome::BudgetExhausted,
+            3,
+            4,
+            1,
+        ),
+    ] {
+        let (report, requests) =
+            run_authorization_fixture_with_privacy_options(mode, limits, false, true).await;
+        assert_report_reconciles(&report);
+        let audit = report.authorization_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(audit.request_count(), auth_requests);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|row| row.path() == "/api/account")
+                .count(),
+            usize::from(auth_requests)
+        );
+        assert_eq!(report.usage().total_requests(), total);
+        assert_eq!(report.usage().active_verifications(), active);
+        assert!(!audit.item_projected());
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete));
+        if expected == Outcome::BudgetExhausted {
+            assert!(report
+                .completion()
+                .reasons()
+                .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+        }
+    }
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_preserves_committed_receipt_at_shared_byte_limit() {
+    // The independent fixture literals are 12 entry bytes and 91 protected
+    // response bytes. A delivered chunk may cross the remaining 20-byte cap;
+    // the committed partial phase must remain accounted, never a comparison.
+    assert_eq!(b"fixture root".len(), 12);
+    assert_eq!(
+        br#"{"data":{"account":{"id":"42","name":"safe fixture","padding":"","updated_at":"volatile"}}}"#
+            .len(),
+        91,
+    );
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_response_bytes(32)
+        .unwrap();
+    let (report, requests) = run_authorization_fixture_with_privacy_options(
+        AuthorizationFixtureMode::Equivalent,
+        limits,
+        false,
+        true,
+    )
+    .await;
+    assert_report_reconciles(&report);
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::BudgetExhausted
+    );
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+    assert_eq!(report.usage().total_requests(), 2);
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert!((32..=103).contains(&report.usage().response_bytes()));
+    for reason in [
+        WebAssessmentIncompleteReason::ResponseBytesLimit,
+        WebAssessmentIncompleteReason::AuthorizationReviewIncomplete,
+    ] {
+        assert!(report.completion().reasons().contains(&reason));
+    }
+    assert!(!report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    let protected = requests
+        .iter()
+        .filter(|request| request.path() == "/api/account")
+        .collect::<Vec<_>>();
+    assert_eq!(protected.len(), 1);
+    assert_eq!(protected[0].method, "GET");
+    assert_eq!(
+        protected[0].headers.get("authorization"),
+        Some(&format!("Bearer {AUTHORIZATION_PRIMARY_SECRET}")),
+    );
+    let authorization_receipts = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID)
+        .collect::<Vec<_>>();
+    assert_eq!(authorization_receipts.len(), 1);
+    assert_eq!(
+        authorization_receipts[0].outcome(),
+        TransportDispatchOutcome::ResponseBudgetReached,
+    );
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_stalled_leg_honors_parent_cancellation() {
+    for stop_at in 1..=4 {
+        let started = Arc::new(Notify::new());
+        let observed = Arc::clone(&started);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server = serve(move |request| {
+            if request.path() == "/api/account" {
+                if attempts.fetch_add(1, Ordering::SeqCst) + 1 == stop_at {
+                    observed.notify_one();
+                    FixtureReply::Stall
+                } else {
+                    FixtureReply::Response(FixtureResponse::new(
+                        "200 OK",
+                        Some("application/json"),
+                        r#"{"data":{"account":{"id":"42"}}}"#,
+                    ))
+                }
+            } else {
+                FixtureReply::Response(FixtureResponse::html("fixture root"))
+            }
+        })
+        .await;
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let canceller = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(5), started.notified())
+                .await
+                .unwrap();
+            cancel.cancel();
+        });
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .cancellation_token(cancellation)
+            .with_resource_authorization_review(
+                authorization_policy(&server.origin),
+                authorization_principals(),
+            )
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(5), runtime.analyze())
+            .await
+            .unwrap()
+            .unwrap();
+        canceller.await.unwrap();
+        assert_report_reconciles(&report);
+        let audit = report.authorization_review_audit().unwrap();
+        assert_eq!(
+            audit.outcome(),
+            crate::authorization_review::AuthorizationReviewOutcome::Cancelled
+        );
+        assert_eq!(usize::from(audit.request_count()), stop_at);
+        assert!(!audit.item_projected());
+        assert_eq!(server.hit_count("/api/account").await, stop_at);
+        assert_eq!(
+            report.usage().active_verifications(),
+            u16::from(stop_at >= 3)
+        );
+        for reason in [
+            WebAssessmentIncompleteReason::HostCancellation,
+            WebAssessmentIncompleteReason::AuthorizationReviewIncomplete,
+        ] {
+            assert!(report.completion().reasons().contains(&reason));
+        }
+    }
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_stalled_legs_honor_parent_wall_deadline() {
+    use crate::authorization_review::AuthorizationReviewOutcome;
+
+    // These are transport/parent-budget oracles, not comparator expectations.
+    // Run every off/on role even when one result is a closed runtime error so
+    // the first failure cannot conceal the remainder of the interruption path.
+    let expected_roles = ["primary", "peer", "primary", "peer"];
+    let primary = format!("Bearer {AUTHORIZATION_PRIMARY_SECRET}");
+    let peer = format!("Bearer {AUTHORIZATION_PEER_SECRET}");
+    let mut failures = Vec::new();
+    for privacy_selected in [false, true] {
+        for stop_at in 1..=4 {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let server = serve(move |request| {
+                if request.path() == "/api/account" {
+                    if attempts.fetch_add(1, Ordering::SeqCst) + 1 == stop_at {
+                        FixtureReply::Stall
+                    } else {
+                        FixtureReply::Response(FixtureResponse::new(
+                            "200 OK",
+                            Some("application/json"),
+                            r#"{"data":{"account":{"id":"42"}}}"#,
+                        ))
+                    }
+                } else {
+                    FixtureReply::Response(FixtureResponse::html("fixture root"))
+                }
+            })
+            .await;
+            let limits = WebAssessmentLimits::default()
+                .with_max_wall_time(Duration::from_millis(500))
+                .unwrap();
+            let mut builder = WebAssessmentRuntime::builder(server.url("/"))
+                .limits(limits)
+                .with_resource_authorization_review(
+                    authorization_policy(&server.origin),
+                    authorization_principals(),
+                );
+            if privacy_selected {
+                builder = builder.enable_secret_exposure_review();
+            }
+            let mut runtime = builder.build().unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(5), runtime.analyze()).await;
+            let requests = server.requests().await;
+            let protected = requests
+                .iter()
+                .filter(|request| request.path() == "/api/account")
+                .collect::<Vec<_>>();
+            let actual_roles = protected
+                .iter()
+                .map(|request| match request.headers.get("authorization") {
+                    Some(value) if value == &primary => "primary",
+                    Some(value) if value == &peer => "peer",
+                    _ => "unexpected",
+                })
+                .collect::<Vec<_>>();
+            if actual_roles != expected_roles[..stop_at]
+                || requests.len() != stop_at + 1
+                || !protected
+                    .iter()
+                    .all(|request| request.method == "GET" && request.body().is_empty())
+            {
+                failures.push((privacy_selected, stop_at, "wire_prefix"));
+            }
+            let report = match result {
+                Ok(Ok(report)) => report,
+                Ok(Err(WebAssessmentRuntimeError::ProjectionInvariant { .. })) => {
+                    eprintln!(
+                        "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=projection_invariant"
+                    );
+                    failures.push((privacy_selected, stop_at, "projection_invariant"));
+                    continue;
+                },
+                Ok(Err(_)) => {
+                    eprintln!(
+                        "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=runtime_error"
+                    );
+                    failures.push((privacy_selected, stop_at, "runtime_error"));
+                    continue;
+                },
+                Err(_) => {
+                    eprintln!(
+                        "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=outer_timeout"
+                    );
+                    failures.push((privacy_selected, stop_at, "outer_timeout"));
+                    continue;
+                },
+            };
+            assert_report_reconciles(&report);
+            let Some(audit) = report.authorization_review_audit() else {
+                failures.push((privacy_selected, stop_at, "missing_audit"));
+                continue;
+            };
+            let authorization_receipts = report
+                .transport()
+                .receipts()
+                .iter()
+                .filter(|receipt| receipt.action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID)
+                .collect::<Vec<_>>();
+            for (name, valid) in [
+                (
+                    "outcome",
+                    audit.outcome() == AuthorizationReviewOutcome::BudgetExhausted,
+                ),
+                (
+                    "request_count",
+                    usize::from(audit.request_count()) == stop_at,
+                ),
+                (
+                    "parent_count",
+                    report.usage().total_requests() == u32::try_from(stop_at + 1).unwrap(),
+                ),
+                (
+                    "active_count",
+                    report.usage().active_verifications() == u16::from(stop_at >= 3),
+                ),
+                (
+                    "no_item",
+                    !audit.item_projected()
+                        && report.assessment_items().iter().all(|item| {
+                            item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID
+                        }),
+                ),
+                (
+                    "wall_reason",
+                    report
+                        .completion()
+                        .reasons()
+                        .contains(&WebAssessmentIncompleteReason::WallTimeLimit),
+                ),
+                (
+                    "authorization_reason",
+                    report
+                        .completion()
+                        .reasons()
+                        .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete),
+                ),
+                (
+                    "not_host_cancelled",
+                    !report
+                        .completion()
+                        .reasons()
+                        .contains(&WebAssessmentIncompleteReason::HostCancellation),
+                ),
+                (
+                    "interrupted_transport",
+                    authorization_receipts.len() == stop_at
+                        && authorization_receipts.last().is_some_and(|receipt| {
+                            receipt.outcome() == TransportDispatchOutcome::Cancelled
+                        }),
+                ),
+            ] {
+                if !valid {
+                    failures.push((privacy_selected, stop_at, name));
+                }
+            }
+            eprintln!(
+                "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=report outcome={:?} requests={} active={} item={}",
+                audit.outcome(),
+                audit.request_count(),
+                report.usage().active_verifications(),
+                audit.item_projected(),
+            );
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "closed deadline mismatches: {failures:?}"
+    );
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn resource_authorization_privacy_commits_only_value_free_role_lineage() {
+    use termivar_core::EvidenceValue;
+    const PRIVATE_RESPONSE: &str = "PRIVATE-AUTHORIZATION-RESPONSE-71C4D9";
+    let server = serve(|request| {
+        if request.path() == "/api/account" {
+            FixtureReply::Response(FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                format!(r#"{{"data":{{"account":{{"id":"{PRIVATE_RESPONSE}"}}}}}}"#),
+            ))
+        } else {
+            FixtureReply::Response(FixtureResponse::html("fixture root"))
+        }
+    })
+    .await;
+    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+        .with_resource_authorization_review(
+            authorization_policy(&server.origin),
+            authorization_principals(),
+        )
+        .enable_secret_exposure_review()
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    assert_report_reconciles(&report);
+    assert_eq!(
+        report.authorization_review_audit().unwrap().request_count(),
+        4
+    );
+    let subject = EntityId::new(format!("endpoint:{}", server.url("/"))).unwrap();
+    let evidence = runtime.authority.knowledge().evidence_for_subject(&subject);
+    let rows = evidence
+        .iter()
+        .filter(|row| row.source().component() == "http.authorization-resource-review")
+        .collect::<Vec<_>>();
+    let roots = rows
+        .iter()
+        .filter(|row| row.predicate().name() == "leg-transport")
+        .collect::<Vec<_>>();
+    let legs = rows
+        .iter()
+        .filter(|row| row.predicate().name() == "leg")
+        .collect::<Vec<_>>();
+    assert_eq!(roots.len(), 4);
+    assert_eq!(legs.len(), 4);
+    for root in &roots {
+        assert!(root.origin().is_direct());
+        let EvidenceValue::TextList(values) = root.value() else {
+            panic!("typed transport facts required")
+        };
+        assert_eq!(values.len(), 8);
+        assert_eq!(values[1], "method=GET");
+        assert_eq!(values[2], "status=200");
+        assert_eq!(values[4], "complete=true");
+        assert_eq!(values[5], "truncated=false");
+    }
+    for leg in legs {
+        let EvidenceValue::TextList(values) = leg.value() else {
+            panic!("typed leg facts required")
+        };
+        assert_eq!(values.len(), 7);
+        assert!(!values
+            .iter()
+            .any(|value| value.starts_with("response=") || value.starts_with("receipt=")));
+        let derivation = leg.origin().derivation().unwrap();
+        assert_eq!(
+            derivation.algorithm().name(),
+            "web.authorization-review.value-free-leg"
+        );
+        assert_eq!(derivation.algorithm().version(), 1);
+        assert_eq!(derivation.parents().len(), 1);
+        assert!(roots
+            .iter()
+            .any(|root| root.id() == &derivation.parents()[0]));
+    }
+    // The private comparator still has full values; the general facts do not.
+    assert_eq!(
+        report.authorization_review_audit().unwrap().outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::StableCrossPrincipalEquivalence
+    );
+    assert_no_secret(
+        &format!("{rows:?}{report:?}"),
+        &[
+            PRIVATE_RESPONSE,
+            AUTHORIZATION_PRIMARY_SECRET,
+            AUTHORIZATION_PEER_SECRET,
+        ],
+    );
+    assert_eq!(
+        report
+            .secret_exposure_review_audit()
+            .unwrap()
+            .response_count(),
+        1
+    );
 }
 
 #[cfg(feature = "authorization-review")]
@@ -4908,6 +5597,7 @@ const REST_REVIEW_SCALAR_SECRET: &str = "REST-SCALAR-MUST-NOT-LEAK-44B8F1";
 #[derive(Clone, Copy)]
 enum RestFixtureMode {
     Stable,
+    SchemaPathCanary,
     ReplayMismatch,
     OpenApiReplayMismatch,
     NoEligibleOperation,
@@ -4934,6 +5624,15 @@ async fn run_rest_fixture_with_limits(
     mode: RestFixtureMode,
     limits: WebAssessmentLimits,
 ) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
+    run_rest_fixture_with_privacy(mode, limits, false).await
+}
+
+#[cfg(feature = "rest-review")]
+async fn run_rest_fixture_with_privacy(
+    mode: RestFixtureMode,
+    limits: WebAssessmentLimits,
+    value_free: bool,
+) -> (WebAssessmentRunReport, Vec<RecordedRequest>) {
     let rest_hits = Arc::new(AtomicUsize::new(0));
     let hits = Arc::clone(&rest_hits);
     let openapi_hits = Arc::new(AtomicUsize::new(0));
@@ -4944,6 +5643,7 @@ async fn run_rest_fixture_with_limits(
             "/openapi.json" => {
                 let openapi_hit = openapi.fetch_add(1, Ordering::SeqCst);
                 let document = match mode {
+                    RestFixtureMode::SchemaPathCanary => r#"{"openapi":"3.1.0","paths":{"/schema-path-canary-52af":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#,
                     RestFixtureMode::NoEligibleOperation => {
                         r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"parameters":[{"name":"required","in":"query","required":true,"schema":{"type":"string"}}],"responses":{"200":{"content":{"application/json":{}}}}}}}}"#
                     },
@@ -4956,10 +5656,10 @@ async fn run_rest_fixture_with_limits(
                 };
                 FixtureResponse::new("200 OK", Some("application/json"), document)
             },
-            "/status" => {
+            "/status" | "/schema-path-canary-52af" => {
                 let hit = hits.fetch_add(1, Ordering::SeqCst);
                 match mode {
-                    RestFixtureMode::Stable | RestFixtureMode::NoEligibleOperation => {
+                    RestFixtureMode::Stable | RestFixtureMode::SchemaPathCanary | RestFixtureMode::NoEligibleOperation => {
                         FixtureResponse::new(
                             "200 OK",
                             Some("application/json"),
@@ -5038,14 +5738,266 @@ async fn run_rest_fixture_with_limits(
         FixtureReply::Response(response)
     })
     .await;
-    let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+    let builder = WebAssessmentRuntime::builder(server.url("/"))
         .limits(limits)
         .enable_openapi_review()
-        .enable_rest_review()
-        .build()
-        .unwrap();
+        .enable_rest_review();
+    #[cfg(feature = "secret-exposure-review")]
+    let builder = if value_free {
+        builder.enable_secret_exposure_review()
+    } else {
+        builder
+    };
+    #[cfg(not(feature = "secret-exposure-review"))]
+    assert!(!value_free);
+    let mut runtime = builder.build().unwrap();
     let report = runtime.analyze().await.unwrap();
     (report, server.requests().await)
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_normal_runtime_keeps_private_replay_without_public_content_identity() {
+    for (mode, resource) in [
+        (RestFixtureMode::Stable, "/status"),
+        (
+            RestFixtureMode::SchemaPathCanary,
+            "/schema-path-canary-52af",
+        ),
+    ] {
+        let (report, requests) =
+            run_rest_fixture_with_privacy(mode, WebAssessmentLimits::default(), true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(report.usage().total_requests(), 5);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == resource)
+                .count(),
+            2
+        );
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), RestRuntimeOutcome::SurfaceObserved);
+        assert_eq!(audit.request_count(), 2);
+        assert_eq!(audit.active_verification_count(), 1);
+        assert!(audit.selected_operation_identity().is_none());
+        assert!(audit.replay_stable());
+        let item = report
+            .assessment_items()
+            .iter()
+            .find(|item| item.capability_id() == "api.rest-readonly-surface-observed@1")
+            .unwrap();
+        assert_eq!(item.presentation_target_kind(), "assessment_subject");
+        assert!(report
+            .openapi_review_audit()
+            .unwrap()
+            .semantic_digest()
+            .is_none());
+        #[cfg(feature = "reporting")]
+        {
+            let product =
+                ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+                    .unwrap();
+            for format in [
+                ReportFormat::Json,
+                ReportFormat::Html,
+                ReportFormat::Markdown,
+                ReportFormat::Csv,
+            ] {
+                let rendered = ReportGenerator::generate_assessment(&product, format).unwrap();
+                for forbidden in [
+                    REST_REVIEW_SCALAR_SECRET,
+                    "/schema-path-canary-52af",
+                    "openapi-operation-sha256:",
+                    "rest-operation-sha256:",
+                    "openapi-catalog-sha256:",
+                ] {
+                    assert!(!rendered.contains(forbidden));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_preserves_literal_terminal_and_ineligible_outcomes() {
+    for (mode, expected, rest_requests) in [
+        (
+            RestFixtureMode::ReplayMismatch,
+            RestRuntimeOutcome::ReplayMismatch,
+            2,
+        ),
+        (
+            RestFixtureMode::NoEligibleOperation,
+            RestRuntimeOutcome::NotEligible,
+            0,
+        ),
+        (
+            RestFixtureMode::OpenApiReplayMismatch,
+            RestRuntimeOutcome::NotEligible,
+            0,
+        ),
+        (RestFixtureMode::Redirect, RestRuntimeOutcome::Redirect, 1),
+        (
+            RestFixtureMode::AuthenticationRequired,
+            RestRuntimeOutcome::AuthenticationRequired,
+            1,
+        ),
+        (RestFixtureMode::Forbidden, RestRuntimeOutcome::Forbidden, 1),
+        (RestFixtureMode::NotFound, RestRuntimeOutcome::NotFound, 1),
+        (
+            RestFixtureMode::RateLimited,
+            RestRuntimeOutcome::RateLimited,
+            1,
+        ),
+        (
+            RestFixtureMode::DefenseChallenge,
+            RestRuntimeOutcome::DefensiveInterference,
+            1,
+        ),
+        (
+            RestFixtureMode::ServerError,
+            RestRuntimeOutcome::ServerError,
+            1,
+        ),
+        (
+            RestFixtureMode::Html,
+            RestRuntimeOutcome::CompleteNonJson,
+            1,
+        ),
+        (
+            RestFixtureMode::MalformedJson,
+            RestRuntimeOutcome::Incomplete,
+            1,
+        ),
+        (
+            RestFixtureMode::StructuralLimit,
+            RestRuntimeOutcome::Incomplete,
+            1,
+        ),
+    ] {
+        let (report, requests) =
+            run_rest_fixture_with_privacy(mode, WebAssessmentLimits::default(), true).await;
+        assert_report_reconciles(&report);
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), expected);
+        assert_eq!(usize::from(audit.request_count()), rest_requests);
+        assert_eq!(
+            usize::from(audit.active_verification_count()),
+            usize::from(rest_requests == 2)
+        );
+        assert!(audit.selected_operation_identity().is_none());
+        assert!(!audit.item_projected());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/status")
+                .count(),
+            rest_requests
+        );
+        assert!(!report
+            .assessment_items()
+            .iter()
+            .any(|item| item.capability_id() == "api.rest-readonly-surface-observed@1"));
+    }
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_uses_the_same_request_and_byte_allowance() {
+    for request_limit in [3, 4] {
+        let limits = WebAssessmentLimits::default()
+            .with_max_total_requests(request_limit)
+            .unwrap();
+        let (report, requests) =
+            run_rest_fixture_with_privacy(RestFixtureMode::Stable, limits, true).await;
+        assert_report_reconciles(&report);
+        assert_eq!(report.usage().total_requests(), request_limit);
+        let audit = report.rest_review_audit().unwrap();
+        assert_eq!(audit.outcome(), RestRuntimeOutcome::BudgetExhausted);
+        assert_eq!(u32::from(audit.request_count()), request_limit - 3);
+        assert!(!audit.item_projected());
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.path() == "/status")
+                .count() as u64,
+            u64::from(request_limit - 3)
+        );
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    }
+    let limits = WebAssessmentLimits::default()
+        .with_max_response_body_bytes(512)
+        .unwrap();
+    let (report, requests) =
+        run_rest_fixture_with_privacy(RestFixtureMode::Truncated, limits, true).await;
+    assert_report_reconciles(&report);
+    assert_eq!(
+        report.rest_review_audit().unwrap().outcome(),
+        RestRuntimeOutcome::Truncated
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.path() == "/status")
+            .count(),
+        1
+    );
+    assert!(!report.rest_review_audit().unwrap().item_projected());
+    assert!(report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::RestReviewIncomplete));
+}
+
+#[cfg(all(feature = "rest-review", feature = "secret-exposure-review"))]
+#[tokio::test]
+async fn rest_value_free_cancellation_keeps_candidate_and_replay_separate() {
+    for stall_at in [0, 1] {
+        let started = Arc::new(Notify::new());
+        let observed = Arc::clone(&started);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let server = serve(move |request| match request.path() {
+            "/openapi.json" => FixtureReply::Response(FixtureResponse::new("200 OK", Some("application/json"), r#"{"openapi":"3.1.0","paths":{"/status":{"get":{"responses":{"200":{"content":{"application/json":{}}}}}}}}"#)),
+            "/status" if counter.fetch_add(1, Ordering::SeqCst) == stall_at => {
+                observed.notify_one();
+                FixtureReply::Stall
+            },
+            "/status" => FixtureReply::Response(FixtureResponse::new("200 OK", Some("application/json"), r#"{"ok":true}"#)),
+            _ => FixtureReply::Response(FixtureResponse::html("fixture root")),
+        }).await;
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let canceller = tokio::spawn(async move {
+            started.notified().await;
+            cancel.cancel();
+        });
+        let mut runtime = WebAssessmentRuntime::builder(server.url("/"))
+            .cancellation_token(cancellation)
+            .enable_openapi_review()
+            .enable_rest_review()
+            .enable_secret_exposure_review()
+            .build()
+            .unwrap();
+        let report = runtime.analyze().await.unwrap();
+        canceller.await.unwrap();
+        assert_report_reconciles(&report);
+        assert_eq!(
+            report.rest_review_audit().unwrap().outcome(),
+            RestRuntimeOutcome::Cancelled
+        );
+        assert_eq!(server.hit_count("/status").await, stall_at + 1);
+        assert!(!report.rest_review_audit().unwrap().item_projected());
+        assert!(report
+            .completion()
+            .reasons()
+            .contains(&WebAssessmentIncompleteReason::HostCancellation));
+    }
 }
 
 #[cfg(feature = "rest-review")]

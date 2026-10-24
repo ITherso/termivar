@@ -326,6 +326,19 @@ const VALUE_FREE_OPENAPI_SMOKE_GATE: &str = r#"      - name: Exercise value-free
           set -euo pipefail
           cargo test --release --locked -p termivar-cli --no-default-features --features openapi-review,secret-exposure-review,ssrf-oast-review --test openapi_secret_exposure_cli -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting openapi_saved_reader_ -- --nocapture"#;
+const VALUE_FREE_REST_SMOKE_GATE: &str = r#"      - name: Exercise value-free REST privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features rest-review,secret-exposure-review,ssrf-oast-review --test rest_secret_exposure_cli -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting rest_saved_reader_ -- --nocapture"#;
+const VALUE_FREE_AUTHORIZATION_SMOKE_GATE: &str = r#"      - name: Exercise value-free resource authorization privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features authorization-review,secret-exposure-review --test authorization_review_cli privacy_composition:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features authorization-review,secret-exposure-review authorization_privacy -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting authorization_saved_reader_ -- --nocapture"#;
 const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture"#;
 const TLS_NEGOTIATION_OWNED_HTTPS_SMOKE_GATE: &str = r#"      - name: Exercise active TLS negotiation through the owned HTTPS profile
@@ -1133,6 +1146,26 @@ fn capabilities_workflow_policy_violations(files: &[(String, String)]) -> Vec<St
     ) {
         violations.push(format!(
             "{TESTS_WORKFLOW}: Windows runtime smoke must execute the exact all-feature debug assessment regression without stack overrides or suppression"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-reviews",
+        "Exercise value-free REST privacy composition and feature-off reader",
+        VALUE_FREE_REST_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime reviews must execute the exact unsuppressed value-free REST CLI and feature-independent saved-reader regressions"
+        ));
+    }
+    if !job_has_exact_step(
+        &normalized,
+        "platform-runtime-reviews",
+        "Exercise value-free resource authorization privacy composition and feature-off reader",
+        VALUE_FREE_AUTHORIZATION_SMOKE_GATE,
+    ) {
+        violations.push(format!(
+            "{TESTS_WORKFLOW}: four-platform runtime reviews must execute the exact unsuppressed value-free resource authorization CLI and feature-independent saved-reader regressions"
         ));
     }
     if !job_has_exact_step(
@@ -4683,6 +4716,89 @@ mod tests {
             assert_eq!(violations.len(), 1, "{violations:?}");
             assert!(
                 violations[0].contains("value-free OpenAPI"),
+                "{violations:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_free_rest_runtime_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert!(capabilities_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            valid.clone()
+        )])
+        .is_empty());
+        assert_eq!(valid.matches(VALUE_FREE_REST_SMOKE_GATE).count(), 1);
+        for changed in [
+            String::new(),
+            VALUE_FREE_REST_SMOKE_GATE.replace("        shell: bash\n", ""),
+            VALUE_FREE_REST_SMOKE_GATE.replace("shell: bash", "shell: pwsh"),
+            VALUE_FREE_REST_SMOKE_GATE.replace("--release --locked", "--locked"),
+            VALUE_FREE_REST_SMOKE_GATE.replace(
+                "rest-review,secret-exposure-review,ssrf-oast-review",
+                "rest-review",
+            ),
+            VALUE_FREE_REST_SMOKE_GATE.replace(
+                "--test rest_secret_exposure_cli",
+                "--test secret_exposure_cli",
+            ),
+            VALUE_FREE_REST_SMOKE_GATE.replace(
+                "--features reporting rest_saved_reader_",
+                "--features rest-review rest_saved_reader_",
+            ),
+            format!("{VALUE_FREE_REST_SMOKE_GATE}\n        if: false"),
+            format!("{VALUE_FREE_REST_SMOKE_GATE}\n        continue-on-error: true"),
+        ] {
+            let mutated = valid.replacen(VALUE_FREE_REST_SMOKE_GATE, &changed, 1);
+            assert_ne!(mutated, valid);
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutated)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(violations[0].contains("value-free REST"), "{violations:?}");
+        }
+    }
+
+    #[test]
+    fn value_free_authorization_runtime_smoke_rejects_omission_substitution_and_suppression() {
+        let valid = include_str!("../../../.github/workflows/tests.yml").replace("\r\n", "\n");
+        assert!(capabilities_workflow_policy_violations(&[(
+            TESTS_WORKFLOW.to_owned(),
+            valid.clone()
+        )])
+        .is_empty());
+        assert_eq!(
+            valid.matches(VALUE_FREE_AUTHORIZATION_SMOKE_GATE).count(),
+            1
+        );
+        for changed in [
+            String::new(),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace("        shell: bash\n", ""),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace("shell: bash", "shell: pwsh"),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace("set -euo pipefail", "true"),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace("--release --locked", "--locked"),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace(
+                "authorization-review,secret-exposure-review",
+                "authorization-review",
+            ),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE
+                .replace("privacy_composition::", "nonexistent_filter"),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE
+                .replace("authorization_privacy --", "nonexistent_filter --"),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace(
+                "--features reporting authorization_saved_reader_",
+                "--features authorization-review authorization_saved_reader_",
+            ),
+            format!("{VALUE_FREE_AUTHORIZATION_SMOKE_GATE}\n        if: false"),
+            format!("{VALUE_FREE_AUTHORIZATION_SMOKE_GATE}\n        continue-on-error: true"),
+        ] {
+            let mutated = valid.replacen(VALUE_FREE_AUTHORIZATION_SMOKE_GATE, &changed, 1);
+            assert_ne!(mutated, valid);
+            let violations =
+                capabilities_workflow_policy_violations(&[(TESTS_WORKFLOW.to_owned(), mutated)]);
+            assert_eq!(violations.len(), 1, "{violations:?}");
+            assert!(
+                violations[0].contains("value-free resource authorization"),
                 "{violations:?}"
             );
         }

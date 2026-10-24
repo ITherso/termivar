@@ -483,6 +483,10 @@ impl OpenApiRuntimeBinding {
     pub(super) fn rest_selection_slot(&self) -> StableRestSelectionSlot {
         self.executor.rest_selection.clone()
     }
+    #[cfg(feature = "rest-review")]
+    pub(super) fn response_privacy_is_value_free(&self) -> bool {
+        self.executor.privacy.is_value_free()
+    }
     pub(super) fn install_into_parent_registry(
         &self,
         registry: &mut DecisionExecutorRegistry,

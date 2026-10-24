@@ -270,6 +270,38 @@ malformed JSON, unsupported media, truncation, cancellation, or transport and
 budget incompleteness cannot produce a positive projection. Normalization
 resilience is never applied to credentials or authorization headers.
 
+## Optional passive secret-exposure privacy composition
+
+When `secret-exposure-review` is also compiled and explicitly selected, the
+same four principal-isolated JSON GET legs run with their existing shared
+parent limits. The credentialed legs do not enter the anonymous secret
+detector or add its response/match counts. S04 adds no request or active
+verification, and does not transfer either credential to ordinary assessment
+work. Supplied-session response bodies remain outside that detector.
+
+The complete value-sensitive `Status`, `Fields` and `Resources` comparison
+remains private. Under this selection, general leg evidence omits its response
+SHA-256 and body-derived receipt SHA-256 and uses bounded typed role/transport
+facts with exact committed lineage. The parent runner's actual receipts,
+writes and stored rows must reconcile; a staged reduction cannot project an
+item. Finalization separately checks the canonical assessment privacy
+selection against the private binding, rather than trusting that binding alone.
+
+The existing public authorization audit and policy/resource-derived item
+identity do not change schema. They retain counts and classified booleans,
+not a cross-run response-body equality guarantee. Private comparator
+fingerprints and receipt correlation are not general evidence publication;
+this boundary does not assert that all internal transport or knowledge buffers
+are URL-free. Without S04, historical evidence and comparison remain unchanged.
+
+For an already running owned fixture, the existing CLI can add
+`--secret-exposure-review` to the explicit policy/two-source command above.
+That is an operator example, not a captured execution result. Synthetic process
+acceptance uses literal all-role equality, same-shape/different-value and
+unstable-replay oracles, with fixture shutdown before bundle Verify and
+self/controlled Compare. The outcome remains review-only, not authenticated
+principal identity, verified authorization failure or remediation.
+
 ## Projection and audit
 
 `StableCrossPrincipalEquivalence` may project at most one

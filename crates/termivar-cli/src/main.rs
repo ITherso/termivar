@@ -1613,14 +1613,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
     #[cfg(feature = "secret-exposure-review")]
     #[allow(unused_mut)]
     let secret_exposure_unprotected_response_source_selected = {
-        let mut selected = rest_review;
+        let mut selected = false;
         #[cfg(feature = "ssrf-oast-review")]
         {
             selected |= openapi_review && ssrf_oast_review;
-        }
-        #[cfg(feature = "authorization-review")]
-        {
-            selected |= authorization_review_policy.is_some();
         }
         #[cfg(feature = "wordpress-review")]
         {

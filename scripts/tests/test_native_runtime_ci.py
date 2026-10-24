@@ -99,6 +99,19 @@ OPENAPI_PRIVACY = """      - name: Exercise value-free OpenAPI privacy compositi
           set -euo pipefail
           cargo test --release --locked -p termivar-cli --no-default-features --features openapi-review,secret-exposure-review,ssrf-oast-review --test openapi_secret_exposure_cli -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting openapi_saved_reader_ -- --nocapture"""
+REST_PRIVACY = """      - name: Exercise value-free REST privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features rest-review,secret-exposure-review,ssrf-oast-review --test rest_secret_exposure_cli -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting rest_saved_reader_ -- --nocapture"""
+AUTHORIZATION_PRIVACY = """      - name: Exercise value-free resource authorization privacy composition and feature-off reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --release --locked -p termivar-cli --no-default-features --features authorization-review,secret-exposure-review --test authorization_review_cli privacy_composition:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features authorization-review,secret-exposure-review authorization_privacy -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting authorization_saved_reader_ -- --nocapture"""
 MATRIX = "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]"
 BUDGET = "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}"
 CHECKOUT = """      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -217,6 +230,8 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
                 expected.insert(0, GUARD)
             if phase == "reviews":
                 expected.insert(2, OPENAPI_PRIVACY)
+                expected.insert(3, REST_PRIVACY)
+                expected.insert(4, AUTHORIZATION_PRIVACY)
             self.assertEqual(blocks[4:], expected)
         self.assertEqual(jobs["platform-runtime-smoke"], AGGREGATE)
         # This also catches duplicate payloads relocated outside the native workers.
@@ -224,6 +239,43 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
         for payload in self.original:
             self.assertEqual(all_names.count(payload), 1)
         self.assertEqual(all_names.count(step_name(OPENAPI_PRIVACY)), 1)
+        self.assertEqual(all_names.count(step_name(REST_PRIVACY)), 1)
+        self.assertEqual(all_names.count(step_name(AUTHORIZATION_PRIVACY)), 1)
+
+    def test_authorization_privacy_extension_cannot_be_omitted_or_weakened(self):
+        for changed in (
+            "", AUTHORIZATION_PRIVACY + "\n" + AUTHORIZATION_PRIVACY,
+            AUTHORIZATION_PRIVACY.replace("        shell: bash\n", ""),
+            AUTHORIZATION_PRIVACY.replace("shell: bash", "shell: pwsh"),
+            AUTHORIZATION_PRIVACY.replace("set -euo pipefail", "true"),
+            AUTHORIZATION_PRIVACY.replace("--release --locked", "--locked"),
+            AUTHORIZATION_PRIVACY.replace("authorization-review,secret-exposure-review", "authorization-review"),
+            AUTHORIZATION_PRIVACY.replace("privacy_composition::", "nonexistent_filter"),
+            AUTHORIZATION_PRIVACY.replace("authorization_privacy --", "nonexistent_filter --"),
+            AUTHORIZATION_PRIVACY.replace("--features reporting authorization_saved_reader_", "--features authorization-review authorization_saved_reader_"),
+            AUTHORIZATION_PRIVACY + "\n        if: false",
+            AUTHORIZATION_PRIVACY + "\n        continue-on-error: true",
+        ):
+            with self.subTest(mutation=changed):
+                with self.assertRaises(AssertionError):
+                    self.assert_contract(self.workflow.replace(AUTHORIZATION_PRIVACY, changed, 1))
+
+    def test_rest_privacy_extension_cannot_be_omitted_or_weakened(self):
+        for changed in (
+            "", REST_PRIVACY + "\n" + REST_PRIVACY,
+            REST_PRIVACY.replace("        shell: bash\n", ""),
+            REST_PRIVACY.replace("shell: bash", "shell: pwsh"),
+            REST_PRIVACY.replace("--release --locked", "--locked"),
+            REST_PRIVACY.replace(
+                "rest-review,secret-exposure-review,ssrf-oast-review", "rest-review"),
+            REST_PRIVACY.replace("--test rest_secret_exposure_cli", "--test secret_exposure_cli"),
+            REST_PRIVACY.replace("--features reporting rest_saved_reader_", "--features rest-review rest_saved_reader_"),
+            REST_PRIVACY + "\n        if: false",
+            REST_PRIVACY + "\n        continue-on-error: true",
+        ):
+            with self.subTest(mutation=changed):
+                with self.assertRaises(AssertionError):
+                    self.assert_contract(self.workflow.replace(REST_PRIVACY, changed, 1))
 
     def test_openapi_privacy_extension_cannot_be_omitted_or_weakened(self):
         for changed in (

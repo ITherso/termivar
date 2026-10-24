@@ -789,6 +789,7 @@ pub(super) fn validate(
     name: &str,
     value: &Value,
     items: &BTreeMap<String, ImportedItem>,
+    response_privacy: bool,
 ) -> Result<Option<ImportedWordPressAudit>, ComparisonError> {
     let fields = object(value)?;
     match name {
@@ -797,7 +798,7 @@ pub(super) fn validate(
             Ok(None)
         },
         "rest_review" => {
-            rest(fields, count(items, REST_CAPABILITY))?;
+            rest(fields, count(items, REST_CAPABILITY), response_privacy)?;
             Ok(None)
         },
         "authorization_review" => {
@@ -14484,7 +14485,11 @@ fn openapi(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), 
     )
 }
 
-fn rest(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), ComparisonError> {
+fn rest(
+    fields: &serde_json::Map<String, Value>,
+    count: usize,
+    response_privacy: bool,
+) -> Result<(), ComparisonError> {
     keys(
         fields,
         &[
@@ -14535,6 +14540,7 @@ fn rest(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), Com
     let active = number(fields, "active_verification_count", 1)?;
     let eligible = number(fields, "eligible_operation_count", u64::from(u32::MAX))?;
     if fields.contains_key("selected_operation_identity") {
+        check(!response_privacy)?;
         check(digest(
             text(fields, "selected_operation_identity", MAX_IDENTIFIER_BYTES)?,
             "openapi-operation-sha256:",
@@ -14565,7 +14571,7 @@ fn rest(fields: &serde_json::Map<String, Value>, count: usize) -> Result<(), Com
                 || (requests == 2
                     && active == 1
                     && eligible > 0
-                    && fields.contains_key("selected_operation_identity"))),
+                    && (fields.contains_key("selected_operation_identity") != response_privacy))),
     )
 }
 
@@ -15922,7 +15928,12 @@ mod tests {
     #[test]
     fn unsupported_audit_inventory_name_fails_closed() {
         assert_eq!(
-            validate("future_audit", &serde_json::json!({}), &BTreeMap::new()),
+            validate(
+                "future_audit",
+                &serde_json::json!({}),
+                &BTreeMap::new(),
+                false
+            ),
             Err(ComparisonError::InvalidDocument),
         );
     }

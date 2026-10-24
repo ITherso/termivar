@@ -62,6 +62,42 @@ surface observed.” Its maximum disposition is `Informational` and its authorit
 is `KnowledgeOnly`. It is reachability evidence for one safely selected read
 surface, not a vulnerability, authorization, or sensitive-data claim.
 
+## Explicit value-free privacy composition
+
+When also compiled with `secret-exposure-review`, the same assessment may
+explicitly select it without changing the REST operation selector:
+
+```console
+termivar scan http://127.0.0.1:<fixture-port>/ \
+  --profile web-review --openapi-review --rest-review --secret-exposure-review \
+  --report-dir assessment-rest-value-free
+```
+
+This example requires an already running owned fixture and its actual port.
+The existing anonymous candidate/replay GETs are separately planned review
+work, not inputs to the passive detector. They retain their two-request and
+one-active parent allowance; the privacy composition adds no request or budget.
+Full value-sensitive `Status`, `Fields` and `Resources` replay equality still
+runs privately. A same-shape response with different scalar values is not a
+stable replay merely because its counts agree.
+
+In this selected mode, received responses use exact committed value-free
+lineage instead of public body/view response digests. The catalogue-derived
+operation and target identities are withheld: the existing audit omits
+`selected_operation_identity`, and a qualifying informational item uses the
+coarse `assessment_subject` target. The actual request URL remains private
+transport/provenance data. This is not cross-run resource equality or a claim
+that every private knowledge/Debug buffer is URL-free.
+
+Strict central and feature-independent saved readers accept the omitted
+operation identity only under a valid selected privacy audit. A historical
+positive audit without privacy selection still requires its identity. No
+schema or comparison authority is enlarged. Option-off digest, identity,
+selection and request behavior remain unchanged. The ordinary S04 body-derived
+discovery suppression still applies, so controlled fallback-fixture trace
+equality is not a promise that every application has identical off/on
+discovery. See [Passive response secret-exposure review](passive-secret-exposure-review.md).
+
 ## Deliberate exclusions
 
 V1 materializes no parameter value, generates no request body, sends no
