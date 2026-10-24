@@ -3277,7 +3277,7 @@ fn resource_authorization_privacy_contract_violations(
             "expected_value_free:bool",
             "ifself.executor.privacy.is_value_free()!=expected_value_free",
             "lettransport=standard.transport();",
-            "ifself.executor.privacy.is_value_free(){validate_value_free_authorization_commits(standard,knowledge,&self.policy,&self.subject,&state,forced_outcome==Some(AuthorizationReviewOutcome::Cancelled),)?;}",
+            "ifself.executor.privacy.is_value_free(){letparent_interrupted=forced_outcome==Some(AuthorizationReviewOutcome::Cancelled)||(forced_outcome==Some(AuthorizationReviewOutcome::BudgetExhausted)&&forced_runtime_limit.as_ref()==standard.limit_exceeded()&&standard.limit_exceeded().is_some_and(|limit|{limit.dimension()==crate::RuntimeBudgetDimension::WallTime}));validate_value_free_authorization_commits(standard,knowledge,&self.policy,&self.subject,&state,parent_interrupted,)?;}",
             "AuthorizationDifferentialResult::compare(&self.policy,self.proof,",
         ],
         "resource authorization privacy must recheck canonical selection and committed parent truth before the unchanged private comparator",
@@ -3321,12 +3321,12 @@ fn resource_authorization_privacy_contract_violations(
         &[
             ".turns().iter()",
             ".chain(standard.unverified_evidence())",
-            "host_cancelled:bool",
+            "parent_interrupted:bool",
             "receipts.len()>2",
             "letstaged=state.staged_value_free_batches.len();",
             "staged>2",
-            "ifhost_cancelled{staged<receipts.len()||staged>receipts.len().saturating_add(1)}else{receipts.len()!=staged}",
-            "!host_cancelled&&receipts.is_empty()&&state.terminal.is_some()",
+            "ifparent_interrupted{staged<receipts.len()||staged>receipts.len().saturating_add(1)}else{receipts.len()!=staged}",
+            "!parent_interrupted&&receipts.is_empty()&&state.terminal.is_some()",
             "state.runtime_limit.is_some()!=(state.terminal==Some(AuthorizationReviewOutcome::BudgetExhausted))",
             "receipt.stage()!=stage",
             "receipt.executor_id()!=RESOURCE_AUTHORIZATION_EXECUTOR_ID",
@@ -3347,11 +3347,11 @@ fn resource_authorization_privacy_contract_violations(
             "derivation.algorithm().version()!=1",
             "metadata.response_bytes>transport.response_bytes()",
             "metadata.defense!=AuthorizationResponseDefense::Clear",
-            "!host_cancelled&&index+1==receipts.len()&&is_terminal!=state.terminal.is_some()",
+            "!parent_interrupted&&index+1==receipts.len()&&is_terminal!=state.terminal.is_some()",
             "terminal_outcome_for_state(leg.view.state())",
             "state.terminal!=Some(observed)",
             "no_response.value()!=&EvidenceValue::Boolean(is_terminal&&phase_roles==0)",
-            "ifcommitted_roles.len()!=state.captured.len()&&!host_cancelled",
+            "ifcommitted_roles.len()!=state.captured.len()&&!parent_interrupted",
         ],
         "resource authorization value-free proof must reconcile exact committed role/transport/write/lineage and terminal truth",
     );
@@ -16394,9 +16394,22 @@ mod tests {
                 "self.executor.privacy.is_value_free() != expected_value_free",
                 "false",
             ),
+            ("if self.executor.privacy.is_value_free() {", "if true {"),
             (
                 "forced_outcome == Some(AuthorizationReviewOutcome::Cancelled)",
                 "true",
+            ),
+            (
+                "forced_outcome == Some(AuthorizationReviewOutcome::BudgetExhausted)",
+                "forced_outcome.is_some()",
+            ),
+            (
+                "forced_runtime_limit.as_ref() == standard.limit_exceeded()",
+                "true",
+            ),
+            (
+                "limit.dimension() == crate::RuntimeBudgetDimension::WallTime",
+                "limit.dimension() == crate::RuntimeBudgetDimension::ResponseBytes",
             ),
             ("if !privacy.is_value_free()", "if privacy.is_value_free()"),
             (
@@ -16442,7 +16455,7 @@ mod tests {
             ("state.terminal != Some(observed)", "false"),
             ("is_terminal && phase_roles == 0", "is_terminal"),
             (
-                "committed_roles.len() != state.captured.len() && !host_cancelled",
+                "committed_roles.len() != state.captured.len() && !parent_interrupted",
                 "false",
             ),
         ] {

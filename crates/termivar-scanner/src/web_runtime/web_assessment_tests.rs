@@ -3860,6 +3860,179 @@ async fn resource_authorization_privacy_stalled_leg_honors_parent_cancellation()
 
 #[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
 #[tokio::test]
+async fn resource_authorization_privacy_stalled_legs_honor_parent_wall_deadline() {
+    use crate::authorization_review::AuthorizationReviewOutcome;
+
+    // These are transport/parent-budget oracles, not comparator expectations.
+    // Run every off/on role even when one result is a closed runtime error so
+    // the first failure cannot conceal the remainder of the interruption path.
+    let expected_roles = ["primary", "peer", "primary", "peer"];
+    let primary = format!("Bearer {AUTHORIZATION_PRIMARY_SECRET}");
+    let peer = format!("Bearer {AUTHORIZATION_PEER_SECRET}");
+    let mut failures = Vec::new();
+    for privacy_selected in [false, true] {
+        for stop_at in 1..=4 {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let server = serve(move |request| {
+                if request.path() == "/api/account" {
+                    if attempts.fetch_add(1, Ordering::SeqCst) + 1 == stop_at {
+                        FixtureReply::Stall
+                    } else {
+                        FixtureReply::Response(FixtureResponse::new(
+                            "200 OK",
+                            Some("application/json"),
+                            r#"{"data":{"account":{"id":"42"}}}"#,
+                        ))
+                    }
+                } else {
+                    FixtureReply::Response(FixtureResponse::html("fixture root"))
+                }
+            })
+            .await;
+            let limits = WebAssessmentLimits::default()
+                .with_max_wall_time(Duration::from_millis(500))
+                .unwrap();
+            let mut builder = WebAssessmentRuntime::builder(server.url("/"))
+                .limits(limits)
+                .with_resource_authorization_review(
+                    authorization_policy(&server.origin),
+                    authorization_principals(),
+                );
+            if privacy_selected {
+                builder = builder.enable_secret_exposure_review();
+            }
+            let mut runtime = builder.build().unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(5), runtime.analyze()).await;
+            let requests = server.requests().await;
+            let protected = requests
+                .iter()
+                .filter(|request| request.path() == "/api/account")
+                .collect::<Vec<_>>();
+            let actual_roles = protected
+                .iter()
+                .map(|request| match request.headers.get("authorization") {
+                    Some(value) if value == &primary => "primary",
+                    Some(value) if value == &peer => "peer",
+                    _ => "unexpected",
+                })
+                .collect::<Vec<_>>();
+            if actual_roles != expected_roles[..stop_at]
+                || requests.len() != stop_at + 1
+                || !protected
+                    .iter()
+                    .all(|request| request.method == "GET" && request.body().is_empty())
+            {
+                failures.push((privacy_selected, stop_at, "wire_prefix"));
+            }
+            let report = match result {
+                Ok(Ok(report)) => report,
+                Ok(Err(WebAssessmentRuntimeError::ProjectionInvariant { .. })) => {
+                    eprintln!(
+                        "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=projection_invariant"
+                    );
+                    failures.push((privacy_selected, stop_at, "projection_invariant"));
+                    continue;
+                },
+                Ok(Err(_)) => {
+                    eprintln!(
+                        "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=runtime_error"
+                    );
+                    failures.push((privacy_selected, stop_at, "runtime_error"));
+                    continue;
+                },
+                Err(_) => {
+                    eprintln!(
+                        "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=outer_timeout"
+                    );
+                    failures.push((privacy_selected, stop_at, "outer_timeout"));
+                    continue;
+                },
+            };
+            assert_report_reconciles(&report);
+            let Some(audit) = report.authorization_review_audit() else {
+                failures.push((privacy_selected, stop_at, "missing_audit"));
+                continue;
+            };
+            let authorization_receipts = report
+                .transport()
+                .receipts()
+                .iter()
+                .filter(|receipt| receipt.action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID)
+                .collect::<Vec<_>>();
+            for (name, valid) in [
+                (
+                    "outcome",
+                    audit.outcome() == AuthorizationReviewOutcome::BudgetExhausted,
+                ),
+                (
+                    "request_count",
+                    usize::from(audit.request_count()) == stop_at,
+                ),
+                (
+                    "parent_count",
+                    report.usage().total_requests() == u32::try_from(stop_at + 1).unwrap(),
+                ),
+                (
+                    "active_count",
+                    report.usage().active_verifications() == u16::from(stop_at >= 3),
+                ),
+                (
+                    "no_item",
+                    !audit.item_projected()
+                        && report.assessment_items().iter().all(|item| {
+                            item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID
+                        }),
+                ),
+                (
+                    "wall_reason",
+                    report
+                        .completion()
+                        .reasons()
+                        .contains(&WebAssessmentIncompleteReason::WallTimeLimit),
+                ),
+                (
+                    "authorization_reason",
+                    report
+                        .completion()
+                        .reasons()
+                        .contains(&WebAssessmentIncompleteReason::AuthorizationReviewIncomplete),
+                ),
+                (
+                    "not_host_cancelled",
+                    !report
+                        .completion()
+                        .reasons()
+                        .contains(&WebAssessmentIncompleteReason::HostCancellation),
+                ),
+                (
+                    "interrupted_transport",
+                    authorization_receipts.len() == stop_at
+                        && authorization_receipts.last().is_some_and(|receipt| {
+                            receipt.outcome() == TransportDispatchOutcome::Cancelled
+                        }),
+                ),
+            ] {
+                if !valid {
+                    failures.push((privacy_selected, stop_at, name));
+                }
+            }
+            eprintln!(
+                "AUTHZ_WALL_DEADLINE selected={privacy_selected} role={stop_at} result=report outcome={:?} requests={} active={} item={}",
+                audit.outcome(),
+                audit.request_count(),
+                report.usage().active_verifications(),
+                audit.item_projected(),
+            );
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "closed deadline mismatches: {failures:?}"
+    );
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
 async fn resource_authorization_privacy_commits_only_value_free_role_lineage() {
     use termivar_core::EvidenceValue;
     const PRIVATE_RESPONSE: &str = "PRIVATE-AUTHORIZATION-RESPONSE-71C4D9";

@@ -375,13 +375,19 @@ impl ResourceAuthorizationRuntimeBinding {
         let state = self.executor.take_state()?;
         #[cfg(feature = "secret-exposure-review")]
         if self.executor.privacy.is_value_free() {
+            let parent_interrupted = forced_outcome == Some(AuthorizationReviewOutcome::Cancelled)
+                || (forced_outcome == Some(AuthorizationReviewOutcome::BudgetExhausted)
+                    && forced_runtime_limit.as_ref() == standard.limit_exceeded()
+                    && standard.limit_exceeded().is_some_and(|limit| {
+                        limit.dimension() == crate::RuntimeBudgetDimension::WallTime
+                    }));
             validate_value_free_authorization_commits(
                 standard,
                 knowledge,
                 &self.policy,
                 &self.subject,
                 &state,
-                forced_outcome == Some(AuthorizationReviewOutcome::Cancelled),
+                parent_interrupted,
             )?;
         }
         let terminal = forced_outcome.or(state.terminal);
@@ -509,7 +515,7 @@ fn validate_value_free_authorization_commits(
     policy: &AuthorizationReviewPolicy,
     subject: &EntityId,
     state: &ResourceAuthorizationExecutionState,
-    host_cancelled: bool,
+    parent_interrupted: bool,
 ) -> Result<(), ResourceAuthorizationRuntimeInvariantError> {
     use crate::{KnowledgeWrite, StandardWebDecisionRuntimeTurn};
     let invalid = || ResourceAuthorizationRuntimeInvariantError::Catalog;
@@ -526,19 +532,20 @@ fn validate_value_free_authorization_commits(
                 || receipt.executor_id() == RESOURCE_AUTHORIZATION_EXECUTOR_ID
         })
         .collect::<Vec<_>>();
-    // Cancellation may drop the current executor future before its proposed
-    // batch is committed. Such a tail cannot support any comparison result;
-    // the caller returns only a parent-derived Cancelled audit. Still validate
-    // every completed receipt below, without promoting staged facts to authority.
+    // Parent cancellation or its exact wall-time limit may drop the current
+    // executor future before its proposed batch is committed. Such a tail
+    // cannot support any comparison result: the caller returns only a forced
+    // stopped audit. Other budget limits keep the strict committed-receipt path.
+    // Validate every completed receipt without promoting staged facts to authority.
     let staged = state.staged_value_free_batches.len();
     if receipts.len() > 2
         || staged > 2
-        || (if host_cancelled {
+        || (if parent_interrupted {
             staged < receipts.len() || staged > receipts.len().saturating_add(1)
         } else {
             receipts.len() != staged
         })
-        || (!host_cancelled && receipts.is_empty() && state.terminal.is_some())
+        || (!parent_interrupted && receipts.is_empty() && state.terminal.is_some())
         || (state.runtime_limit.is_some()
             != (state.terminal == Some(AuthorizationReviewOutcome::BudgetExhausted)))
     {
@@ -563,7 +570,7 @@ fn validate_value_free_authorization_commits(
             .iter()
             .all(|role| state.captured.contains_key(role))
         || (wire.len() > state.captured.len()
-            && ((!host_cancelled && state.terminal.is_none())
+            && ((!parent_interrupted && state.terminal.is_none())
                 || wire.last().is_some_and(|receipt| {
                     receipt.outcome() == TransportDispatchOutcome::Completed
                 })))
@@ -816,7 +823,7 @@ fn validate_value_free_authorization_commits(
         }
         let is_terminal = terminal.value() == &EvidenceValue::Boolean(true);
         if (is_terminal && (state.terminal.is_none() || index + 1 != receipts.len()))
-            || (!host_cancelled
+            || (!parent_interrupted
                 && index + 1 == receipts.len()
                 && is_terminal != state.terminal.is_some())
             || (!is_terminal && phase_roles != 2)
@@ -868,7 +875,7 @@ fn validate_value_free_authorization_commits(
             return Err(invalid());
         }
     }
-    if committed_roles.len() != state.captured.len() && !host_cancelled {
+    if committed_roles.len() != state.captured.len() && !parent_interrupted {
         return Err(invalid());
     }
     Ok(())
