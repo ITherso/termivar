@@ -337,6 +337,7 @@ const VALUE_FREE_AUTHORIZATION_SMOKE_GATE: &str = r#"      - name: Exercise valu
         run: |
           set -euo pipefail
           cargo test --release --locked -p termivar-cli --no-default-features --features authorization-review,secret-exposure-review --test authorization_review_cli privacy_composition:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features authorization-review,secret-exposure-review authorization_privacy -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting authorization_saved_reader_ -- --nocapture"#;
 const TLS_OBSERVATION_SMOKE_GATE: &str = r#"      - name: Exercise opt-in passive TLS observation CLI
         run: cargo test --locked -p termivar-cli --no-default-features --features tls-observation --test tls_observation_cli -- --nocapture"#;
@@ -4782,6 +4783,8 @@ mod tests {
             ),
             VALUE_FREE_AUTHORIZATION_SMOKE_GATE
                 .replace("privacy_composition::", "nonexistent_filter"),
+            VALUE_FREE_AUTHORIZATION_SMOKE_GATE
+                .replace("authorization_privacy --", "nonexistent_filter --"),
             VALUE_FREE_AUTHORIZATION_SMOKE_GATE.replace(
                 "--features reporting authorization_saved_reader_",
                 "--features authorization-review authorization_saved_reader_",

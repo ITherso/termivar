@@ -110,6 +110,7 @@ AUTHORIZATION_PRIVACY = """      - name: Exercise value-free resource authorizat
         run: |
           set -euo pipefail
           cargo test --release --locked -p termivar-cli --no-default-features --features authorization-review,secret-exposure-review --test authorization_review_cli privacy_composition:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features authorization-review,secret-exposure-review authorization_privacy -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting authorization_saved_reader_ -- --nocapture"""
 MATRIX = "        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]"
 BUDGET = "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}"
@@ -250,6 +251,7 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
             AUTHORIZATION_PRIVACY.replace("--release --locked", "--locked"),
             AUTHORIZATION_PRIVACY.replace("authorization-review,secret-exposure-review", "authorization-review"),
             AUTHORIZATION_PRIVACY.replace("privacy_composition::", "nonexistent_filter"),
+            AUTHORIZATION_PRIVACY.replace("authorization_privacy --", "nonexistent_filter --"),
             AUTHORIZATION_PRIVACY.replace("--features reporting authorization_saved_reader_", "--features authorization-review authorization_saved_reader_"),
             AUTHORIZATION_PRIVACY + "\n        if: false",
             AUTHORIZATION_PRIVACY + "\n        continue-on-error: true",

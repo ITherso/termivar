@@ -464,6 +464,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --release --locked -p termivar-cli --no-default-features --features authorization-review,secret-exposure-review --test authorization_review_cli privacy_composition:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features authorization-review,secret-exposure-review authorization_privacy -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting authorization_saved_reader_ -- --nocapture
       - name: Exercise opt-in local JWT policy review CLI
         run: cargo test --release --locked -p termivar-cli --no-default-features --features jwt-policy-review --test jwt_policy_cli -- --nocapture
