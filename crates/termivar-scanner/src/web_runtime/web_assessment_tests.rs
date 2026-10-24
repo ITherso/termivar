@@ -3722,6 +3722,76 @@ async fn resource_authorization_privacy_uses_existing_request_and_body_limits() 
 
 #[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
 #[tokio::test]
+async fn resource_authorization_privacy_preserves_committed_receipt_at_shared_byte_limit() {
+    // The independent fixture literals are 12 entry bytes and 91 protected
+    // response bytes. A delivered chunk may cross the remaining 20-byte cap;
+    // the committed partial phase must remain accounted, never a comparison.
+    assert_eq!(b"fixture root".len(), 12);
+    assert_eq!(
+        br#"{"data":{"account":{"id":"42","name":"safe fixture","padding":"","updated_at":"volatile"}}}"#
+            .len(),
+        91,
+    );
+    let limits = WebAssessmentLimits::default()
+        .with_max_total_response_bytes(32)
+        .unwrap();
+    let (report, requests) = run_authorization_fixture_with_privacy_options(
+        AuthorizationFixtureMode::Equivalent,
+        limits,
+        false,
+        true,
+    )
+    .await;
+    assert_report_reconciles(&report);
+    let audit = report.authorization_review_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::authorization_review::AuthorizationReviewOutcome::BudgetExhausted
+    );
+    assert_eq!(audit.request_count(), 1);
+    assert!(!audit.item_projected());
+    assert!(report
+        .assessment_items()
+        .iter()
+        .all(|item| item.capability_id() != RESOURCE_AUTHORIZATION_REVIEW_CAPABILITY_ID));
+    assert_eq!(report.usage().total_requests(), 2);
+    assert_eq!(report.usage().active_verifications(), 0);
+    assert!((32..=103).contains(&report.usage().response_bytes()));
+    for reason in [
+        WebAssessmentIncompleteReason::ResponseBytesLimit,
+        WebAssessmentIncompleteReason::AuthorizationReviewIncomplete,
+    ] {
+        assert!(report.completion().reasons().contains(&reason));
+    }
+    assert!(!report
+        .completion()
+        .reasons()
+        .contains(&WebAssessmentIncompleteReason::TotalRequestLimit));
+    let protected = requests
+        .iter()
+        .filter(|request| request.path() == "/api/account")
+        .collect::<Vec<_>>();
+    assert_eq!(protected.len(), 1);
+    assert_eq!(protected[0].method, "GET");
+    assert_eq!(
+        protected[0].headers.get("authorization"),
+        Some(&format!("Bearer {AUTHORIZATION_PRIMARY_SECRET}")),
+    );
+    let authorization_receipts = report
+        .transport()
+        .receipts()
+        .iter()
+        .filter(|receipt| receipt.action_id() == RESOURCE_AUTHORIZATION_REVIEW_ACTION_ID)
+        .collect::<Vec<_>>();
+    assert_eq!(authorization_receipts.len(), 1);
+    assert_eq!(
+        authorization_receipts[0].outcome(),
+        TransportDispatchOutcome::ResponseBudgetReached,
+    );
+}
+
+#[cfg(all(feature = "authorization-review", feature = "secret-exposure-review"))]
+#[tokio::test]
 async fn resource_authorization_privacy_stalled_leg_honors_parent_cancellation() {
     for stop_at in 1..=4 {
         let started = Arc::new(Notify::new());
