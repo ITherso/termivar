@@ -14,7 +14,7 @@ use std::{
     pin::Pin,
     process::{Output, Stdio},
     sync::{
-        atomic::{AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     task::{Context, Poll},
@@ -30,7 +30,7 @@ use termivar_oast::{
     ProviderTestRequestSnapshot, PublicOrigin, SessionRequest, HARD_MAX_EVENTS_PER_SESSION,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     net::{TcpListener, TcpStream},
     process::Command,
     task::{JoinHandle, JoinSet},
@@ -1252,6 +1252,57 @@ where
     Ok(bytes)
 }
 
+#[derive(Default)]
+struct ParserPipeObservation {
+    bytes: AtomicUsize,
+    eof: AtomicBool,
+}
+
+// Only the parser's existing bounded stdout/stderr readers use this wrapper.
+// Zero observed bytes does not establish that the child produced no output:
+// bytes not yet polled from a pipe are deliberately unknown.
+struct ObservedParserPipe<R> {
+    inner: R,
+    observation: Arc<ParserPipeObservation>,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for ObservedParserPipe<R> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let before = buffer.filled().len();
+        let had_capacity = buffer.remaining() > 0;
+        let result = Pin::new(&mut this.inner).poll_read(context, buffer);
+        let observed = buffer.filled().len().saturating_sub(before);
+        this.observation.bytes.fetch_add(observed, Ordering::SeqCst);
+        if had_capacity && observed == 0 && matches!(&result, Poll::Ready(Ok(()))) {
+            this.observation.eof.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+}
+
+fn note_parser_output_to(
+    stdout: &ParserPipeObservation,
+    stderr: &ParserPipeObservation,
+    error: io::Error,
+    output: &mut impl std::io::Write,
+) -> io::Error {
+    // Counts and EOF are reader observations, not a child-buffer inventory.
+    // Never reflect output bytes, error text, paths, arguments or identities.
+    let _ = output.write_fmt(format_args!(
+        "owned_https_parser_output stdout_observed_bytes={} stdout_eof={} stderr_observed_bytes={} stderr_eof={}\n",
+        stdout.bytes.load(Ordering::SeqCst),
+        stdout.eof.load(Ordering::SeqCst),
+        stderr.bytes.load(Ordering::SeqCst),
+        stderr.eof.load(Ordering::SeqCst),
+    ));
+    error
+}
+
 #[derive(Clone, Copy)]
 enum ParserExecutionPhase {
     InputWrite,
@@ -1353,6 +1404,16 @@ async fn run_expat_with_interpreter(
         .stderr
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "parser stderr"))?;
+    let stdout_observation = Arc::new(ParserPipeObservation::default());
+    let stderr_observation = Arc::new(ParserPipeObservation::default());
+    let stdout = ObservedParserPipe {
+        inner: stdout,
+        observation: Arc::clone(&stdout_observation),
+    };
+    let stderr = ObservedParserPipe {
+        inner: stderr,
+        observation: Arc::clone(&stderr_observation),
+    };
 
     let mut phase = ParserExecutionPhase::InputWrite;
     let execution = async {
@@ -1372,12 +1433,13 @@ async fn run_expat_with_interpreter(
                 Ok(None) => ParserChildState::Running,
                 Err(_) => ParserChildState::Unavailable,
             };
-            let error = note_parser_timeout_to(
-                phase,
-                child_state,
+            let error = note_parser_output_to(
+                &stdout_observation,
+                &stderr_observation,
                 io::Error::new(io::ErrorKind::TimedOut, "parser timeout"),
                 &mut std::io::stderr(),
             );
+            let error = note_parser_timeout_to(phase, child_state, error, &mut std::io::stderr());
             let _ = child.kill().await;
             let _ = child.wait().await;
             return Err(error);
@@ -1892,6 +1954,139 @@ async fn parser_input_propagates_flush_error_without_claiming_close() {
         state.events,
         ["write", "flush_pending", "flush_error", "drop"]
     );
+}
+
+#[test]
+fn parser_output_diagnostic_is_closed_and_preserves_original_error() {
+    let stdout = ParserPipeObservation::default();
+    stdout.bytes.store(7, Ordering::SeqCst);
+    stdout.eof.store(true, Ordering::SeqCst);
+    let stderr = ParserPipeObservation::default();
+    stderr.bytes.store(11, Ordering::SeqCst);
+    let mut output = Vec::new();
+    let original = note_parser_output_to(
+        &stdout,
+        &stderr,
+        io::Error::new(io::ErrorKind::TimedOut, "PRIVATE_PARSER_OUTPUT_SENTINEL"),
+        &mut output,
+    );
+    assert_eq!(
+        output,
+        b"owned_https_parser_output stdout_observed_bytes=7 stdout_eof=true stderr_observed_bytes=11 stderr_eof=false\n"
+    );
+    assert!(output.len() <= 256);
+    assert!(!output
+        .windows(b"PRIVATE".len())
+        .any(|part| part == b"PRIVATE"));
+    assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(original.to_string(), "PRIVATE_PARSER_OUTPUT_SENTINEL");
+
+    struct FailedDiagnostic;
+    impl std::io::Write for FailedDiagnostic {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    let original = note_parser_output_to(&stdout, &stderr, original, &mut FailedDiagnostic);
+    let original = note_parser_timeout_to(
+        ParserExecutionPhase::AwaitingChildAndOutputs,
+        ParserChildState::Running,
+        original,
+        &mut FailedDiagnostic,
+    );
+    assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(original.to_string(), "PRIVATE_PARSER_OUTPUT_SENTINEL");
+}
+
+#[tokio::test]
+async fn parser_output_observation_requires_real_eof_with_available_capacity() {
+    let empty = Arc::new(ParserPipeObservation::default());
+    let mut reader = ObservedParserPipe {
+        inner: b"".as_slice(),
+        observation: Arc::clone(&empty),
+    };
+    let mut storage = [];
+    let mut zero_capacity = ReadBuf::new(&mut storage);
+    std::future::poll_fn(|context| Pin::new(&mut reader).poll_read(context, &mut zero_capacity))
+        .await
+        .unwrap();
+    assert_eq!(empty.bytes.load(Ordering::SeqCst), 0);
+    assert!(!empty.eof.load(Ordering::SeqCst));
+    assert!(read_bounded_pipe(reader, 8).await.unwrap().is_empty());
+    assert_eq!(empty.bytes.load(Ordering::SeqCst), 0);
+    assert!(empty.eof.load(Ordering::SeqCst));
+
+    let complete = Arc::new(ParserPipeObservation::default());
+    let reader = ObservedParserPipe {
+        inner: b"fixed".as_slice(),
+        observation: Arc::clone(&complete),
+    };
+    assert_eq!(read_bounded_pipe(reader, 8).await.unwrap(), b"fixed");
+    assert_eq!(complete.bytes.load(Ordering::SeqCst), 5);
+    assert!(complete.eof.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn parser_output_observation_keeps_limit_plus_one_without_inventing_eof() {
+    let observed = Arc::new(ParserPipeObservation::default());
+    let reader = ObservedParserPipe {
+        inner: b"12345".as_slice(),
+        observation: Arc::clone(&observed),
+    };
+    let error = read_bounded_pipe(reader, 3).await.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(observed.bytes.load(Ordering::SeqCst), 4);
+    // The existing Take(limit+1), not the actual pipe EOF, stopped this read.
+    assert!(!observed.eof.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn parser_output_observation_retains_pending_prefix_without_claiming_eof() {
+    struct PrefixThenPending {
+        remaining: &'static [u8],
+    }
+    impl AsyncRead for PrefixThenPending {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            if this.remaining.is_empty() {
+                return Poll::Pending;
+            }
+            let count = buffer.remaining().min(this.remaining.len());
+            buffer.put_slice(&this.remaining[..count]);
+            this.remaining = &this.remaining[count..];
+            Poll::Ready(Ok(()))
+        }
+    }
+    let observed = Arc::new(ParserPipeObservation::default());
+    let reader = ObservedParserPipe {
+        inner: PrefixThenPending {
+            remaining: b"prefix",
+        },
+        observation: Arc::clone(&observed),
+    };
+    let reading = read_bounded_pipe(reader, 8);
+    tokio::pin!(reading);
+    // Ensure the literal prefix was actually polled before starting the unit
+    // watchdog, rather than inferring that it ran merely because time elapsed.
+    assert!(
+        std::future::poll_fn(|context| {
+            Poll::Ready(std::future::Future::poll(reading.as_mut(), context).is_pending())
+        })
+        .await
+    );
+    assert_eq!(observed.bytes.load(Ordering::SeqCst), 6);
+    assert!(!observed.eof.load(Ordering::SeqCst));
+    assert!(timeout(Duration::from_millis(50), reading).await.is_err());
+    assert_eq!(observed.bytes.load(Ordering::SeqCst), 6);
+    assert!(!observed.eof.load(Ordering::SeqCst));
 }
 
 #[test]
