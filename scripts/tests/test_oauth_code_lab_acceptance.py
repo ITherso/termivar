@@ -565,6 +565,104 @@ max_token_response_bytes = 8192
 
 
 class ControllerTests(unittest.TestCase):
+    def test_startup_diagnostics_use_only_closed_literal_markers_and_actual_exit_classes(self):
+        cases = (
+            (b"/bin/bash: command: Permission denied\n", 126, "permission_denied_marker"),
+            (b"/tmp/original.so: failed to map segment from shared object\n", 126, "temporary_native_mapping_marker"),
+            (b"cannot create file: Read-only file system\n", 1, "read_only_filesystem_marker"),
+            (b"Unrecognized VM option 'original-test'\n", 1, "java_options_rejected_marker"),
+            (b"Unknown option: '--original-test'\n", 2, "unsupported_cli_marker"),
+            (b"Failed to import realm\n", 1, "realm_schema_import_marker"),
+            (b"java.lang.OutOfMemoryError: original synthetic test\n", 137, "out_of_memory_marker"),
+        )
+        sentinel = b"synthetic-provider-private-value-must-never-export"
+        private = lab.PrivateValues()
+        private.add(sentinel)
+        for message, status, expected in cases:
+            with self.subTest(expected=expected):
+                child = mock.Mock()
+                child.finish.return_value = lab.Result(b"", sentinel + b"\n" + message, status, 0)
+                result = lab.startup_failure_diagnostic(child, status, private)
+                self.assertEqual(result["failure_classes"], [expected])
+                self.assertEqual(result["attached_child_exit_code"], status)
+                self.assertEqual(result["exit_class"], "exit_" + str(status) if status in (126, 127, 137) else "other_exit")
+                self.assertEqual(result["bootstrap_subphase"], "unknown")
+                self.assertEqual(result["capture_state"], "complete")
+                child.finish.assert_called_once_with(2)
+                payload = json.dumps(result).encode()
+                self.assertNotIn(sentinel, payload)
+                self.assertNotIn(hashlib.sha256(sentinel).hexdigest().encode(), payload)
+                self.assertNotIn(hashlib.sha256(message).hexdigest().encode(), payload)
+
+    def test_unknown_and_prefix_limited_startup_output_never_becomes_a_cause(self):
+        for message in (b"", b"Permission denial is a synthetic near miss", b"https://invalid.example/private?token=synthetic-secret", b"x" * (128 * 1024) + b"Permission denied"):
+            with self.subTest(bytes=len(message)):
+                child = mock.Mock()
+                child.finish.return_value = lab.Result(message, b"", 137, 0)
+                result = lab.startup_failure_diagnostic(child, 137)
+                self.assertEqual(result["failure_classes"], ["unknown"])
+                self.assertEqual(result["exit_class"], "exit_137")
+                self.assertEqual(result["classification_bytes"], min(len(message), 128 * 1024))
+                self.assertEqual(result["stdout_captured_bytes"], len(message))
+                self.assertNotIn(b"https://", json.dumps(result).encode())
+                self.assertNotIn(hashlib.sha256(message).hexdigest().encode(), json.dumps(result).encode())
+
+    def test_startup_finish_buffer_and_privacy_failures_remain_reduced_unknowns(self):
+        sentinel = "synthetic-private-exception-should-not-export"
+        child = mock.Mock(buffers=[bytearray(b"Permission denied\n"), bytearray()])
+        child.finish.side_effect = lab.LabError(sentinel)
+        result = lab.startup_failure_diagnostic(child, 127)
+        self.assertEqual(result["capture_state"], "partial")
+        self.assertEqual(result["failure_classes"], ["permission_denied_marker"])
+        self.assertEqual(result["diagnostic_errors"], ["finish_or_output_unavailable"])
+
+        class Unreadable:
+            def finish(self, timeout):
+                raise OSError(sentinel)
+
+            @property
+            def buffers(self):
+                raise OSError(sentinel)
+
+        unknown = lab.startup_failure_diagnostic(Unreadable(), 127)
+        self.assertEqual(unknown["failure_classes"], ["unknown"])
+        self.assertEqual(unknown["attached_child_exit_code"], 127)
+        self.assertEqual(unknown["diagnostic_errors"], ["finish_or_output_unavailable", "buffer_read_unavailable"])
+        guard = mock.Mock()
+        guard.check.side_effect = RuntimeError(sentinel)
+        refused = lab.startup_failure_diagnostic(child, 127, guard)
+        self.assertEqual(refused["failure_classes"], ["unknown"])
+        self.assertEqual(refused["diagnostic_errors"], ["reduced_diagnostic_privacy_check_failed"])
+        self.assertNotIn(sentinel, json.dumps([result, unknown, refused]))
+        for status in (None, True, "127", 10 ** 100, -999):
+            self.assertIsNone(lab.startup_failure_diagnostic(Unreadable(), status)["attached_child_exit_code"])
+
+    def test_diagnostic_exception_cannot_replace_normal_prepare_startup_failure(self):
+        with mock.patch.object(lab, "startup_failure_diagnostic", side_effect=RuntimeError("synthetic-private-diagnostic-exception")):
+            _, failure = self._exercise_docker_prepare_and_cleanup(literal_image_inspection("containerd"), startup_exit=126)
+        self.assertEqual(failure.code, "idp_startup_failure")
+        self.assertEqual(failure.diagnostic["diagnostic_errors"], ["startup_diagnostic_unavailable"])
+        self.assertNotIn("synthetic-private", json.dumps(failure.diagnostic))
+
+    def test_startup_failure_survives_evidence_write_and_cleanup_errors(self):
+        child = mock.Mock(buffers=[bytearray(), bytearray()])
+        child.finish.side_effect = OSError("synthetic-private-provider-error")
+        diagnostic = lab.startup_failure_diagnostic(child, 127)
+        original = lab.private_write
+
+        def failed_write(path, data):
+            if path.name == "oauth-code-lab-acceptance.json":
+                raise OSError("synthetic-private-evidence-error")
+            return original(path, data)
+
+        with mock.patch.object(FakeLab, "prepare", side_effect=lab.LabError("idp_startup_failure", diagnostic)), \
+             mock.patch.object(FakeLab, "cleanup", side_effect=OSError("synthetic-private-cleanup-error")), \
+             mock.patch.object(lab, "private_write", side_effect=failed_write), \
+             self.assertRaisesRegex(lab.LabError, "^idp_startup_failure$") as raised:
+            AcceptanceTests.execute_fake(self)
+        self.assertEqual(raised.exception.diagnostic["attached_child_exit_code"], 127)
+        self.assertNotIn("synthetic-private", json.dumps(raised.exception.diagnostic))
+
     def test_actual_docker_prepare_and_cleanup_call_paths_with_bounded_fakes(self):
         owner = self._exercise_docker_prepare_and_cleanup(literal_image_inspection())
         self.assertEqual(owner.image_inspection["status"], "validated")
@@ -580,6 +678,15 @@ class ControllerTests(unittest.TestCase):
             "digest": "sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc",
             "size": 1056,
         })
+
+    def test_exited_attached_child_retains_startup_exit_before_owned_cleanup(self):
+        _, failure = self._exercise_docker_prepare_and_cleanup(
+            literal_image_inspection("containerd"), startup_exit=127,
+            startup_output=b"/bin/bash: /opt/keycloak/bin/kc.sh: No such file or directory\n")
+        self.assertEqual(failure.code, "idp_startup_failure")
+        self.assertEqual(failure.diagnostic["attached_child_exit_code"], 127)
+        self.assertEqual(failure.diagnostic["exit_class"], "exit_127")
+        self.assertEqual(failure.diagnostic["phase"], "attached_provider_before_readiness")
 
     def test_two_literal_image_profiles_keep_same_pins_platform_and_nonroot_users(self):
         for fixture, expected in (("legacy", "legacy_config_id"), ("containerd", "containerd_manifest_descriptor")):
@@ -703,7 +810,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(owner.container_created)
         self.assertIsNone(owner.image_inspection)
 
-    def _exercise_docker_prepare_and_cleanup(self, image_document):
+    def _exercise_docker_prepare_and_cleanup(self, image_document, startup_exit=None, startup_output=b""):
         private = lab.PrivateValues()
         resource_secret = "synthetic-resource-secret-never-in-argv"
         controller_secret = "synthetic-controller-secret-never-in-argv"
@@ -715,7 +822,7 @@ class ControllerTests(unittest.TestCase):
 
         class Process:
             def poll(self):
-                return None
+                return startup_exit
 
         class Attachment:
             def __init__(self, args, payload):
@@ -724,7 +831,7 @@ class ControllerTests(unittest.TestCase):
                 self.overflow = mock.Mock(is_set=lambda: False)
 
             def finish(self, timeout):
-                return lab.Result(b"", b"", 0, 0)
+                return lab.Result(b"", startup_output, startup_exit or 0, 0)
 
         class Runner:
             def run(self, args, *, label, **kwargs):
@@ -754,10 +861,20 @@ class ControllerTests(unittest.TestCase):
         with mock.patch.object(lab.sys, "platform", "linux"), mock.patch.dict(lab.os.environ, {"DOCKER_HOST": ""}), \
              mock.patch.object(lab, "CapturedChild", Attachment), \
              mock.patch.object(lab, "request_bytes", return_value=(200, [], json.dumps(metadata).encode())):
-            owner.prepare()
+            if startup_exit is None:
+                owner.prepare()
+            else:
+                with self.assertRaises(lab.LabError) as raised:
+                    owner.prepare()
             outcome = owner.cleanup()
         self.assertEqual(outcome["status"], "complete")
         labels = [label for _, label in calls]
+        if startup_exit is not None:
+            self.assertNotIn("inspect-owned-idp", labels)
+            self.assertNotIn("inspect-owned-network", labels)
+            self.assertEqual(labels[-5:], ["cleanup-owned-identity", "stop-owned-idp", "remove-owned-idp",
+                                          "cleanup-owned-network-identity", "remove-owned-network"])
+            return owner, raised.exception
         self.assertEqual(labels, ["docker-local-context", "prepare-pinned-idp", "inspect-idp-image", "create-owned-network",
                                   "create-owned-idp", "inspect-owned-idp", "inspect-owned-network", "cleanup-owned-identity",
                                   "stop-owned-idp", "remove-owned-idp", "cleanup-owned-network-identity", "remove-owned-network"])

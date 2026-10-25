@@ -331,6 +331,67 @@ class CapturedChild:
             thread.join(timeout=2)
 
 
+def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
+                               private: PrivateValues | None = None) -> dict:
+    """Reduce private attached output to closed markers, never lines or hashes.
+
+    Markers are diagnostic signals, not a verified explanation of the exit.
+    Only the existing first 128 KiB per stream is inspected; no provider body,
+    unknown prose, URL, environment value or reversible fragment is exported.
+    """
+    status = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else None
+    summary = {"phase": "attached_provider_before_readiness", "bootstrap_subphase": "unknown",
+               "attached_child_exit_code": status,
+               "exit_class": "exit_" + str(status) if status in (126, 127, 137) else "other_exit" if status is not None else "unknown",
+               "capture_state": "unavailable", "stdout_captured_bytes": None, "stderr_captured_bytes": None,
+               "classification_bytes": 0, "classification_scope": "first_128_kib_per_stream",
+               "failure_classes": ["unknown"], "diagnostic_errors": []}
+    streams = None
+    try:
+        result = child.finish(2)
+        values = (result.stdout, result.stderr)
+        require(all(type(value) is bytes and len(value) <= MAX_OUTPUT for value in values), "diagnostic_output_shape")
+        streams = values
+        summary["capture_state"] = "complete"
+    except Exception:
+        summary["diagnostic_errors"].append("finish_or_output_unavailable")
+        try:
+            buffers = child.buffers
+            require(type(buffers) is list and len(buffers) == 2
+                    and all(type(value) in (bytes, bytearray) and len(value) <= MAX_OUTPUT for value in buffers),
+                    "diagnostic_buffer_shape")
+            streams = tuple(bytes(value) for value in buffers)
+            summary["capture_state"] = "partial"
+        except Exception:
+            summary["diagnostic_errors"].append("buffer_read_unavailable")
+    if streams is not None:
+        summary["stdout_captured_bytes"], summary["stderr_captured_bytes"] = map(len, streams)
+        prefixes = tuple(value[:MAX_HTTP_BODY].lower() for value in streams)
+        summary["classification_bytes"] = sum(map(len, prefixes))
+        signals = (
+            ("permission_denied_marker", ((b"permission denied",),)),
+            ("temporary_native_mapping_marker", ((b"/tmp/", b"failed to map segment from shared object"),)),
+            ("read_only_filesystem_marker", ((b"read-only file system",),)),
+            ("java_options_rejected_marker", ((b"unrecognized vm option",), (b"unrecognized option:",))),
+            ("unsupported_cli_marker", ((b"unknown option",), (b"unknown command",), (b"unmatched argument",))),
+            ("realm_schema_import_marker", ((b"failed to import realm",), (b"unrecognized field", b"realm"), (b"could not parse realm",))),
+            ("out_of_memory_marker", ((b"java.lang.outofmemoryerror",), (b"out of memory",))),
+        )
+        summary["failure_classes"] = [name for name, alternatives in signals
+                                      if any(all(fragment in prefix for fragment in required)
+                                             for required in alternatives for prefix in prefixes)] or ["unknown"]
+    if private is not None:
+        try:
+            private.check(json.dumps(summary, sort_keys=True).encode())
+        except Exception:
+            # Even a diagnostic/privacy failure cannot replace the original
+            # startup exception or leak an exception message/provider body.
+            return {"phase": "attached_provider_before_readiness", "bootstrap_subphase": "unknown",
+                    "attached_child_exit_code": status, "failure_classes": ["unknown"],
+                    "diagnostic_errors": ["reduced_diagnostic_privacy_check_failed"]}
+    return summary
+
+
 class Runner:
     def __init__(self, private: PrivateValues):
         self.private = private
@@ -855,7 +916,20 @@ class KeycloakLab:
         deadline = time.monotonic() + SETUP_SECONDS
         inspected = None
         while time.monotonic() < deadline:
-            require(self.attached.process.poll() is None and not self.attached.overflow.is_set(), "idp_startup_failure")
+            try:
+                status = self.attached.process.poll()
+                overflow = self.attached.overflow.is_set()
+            except Exception:
+                raise LabError("idp_startup_failure", {"phase": "attached_provider_before_readiness",
+                                                       "failure_classes": ["unknown"],
+                                                       "diagnostic_errors": ["attachment_state_unavailable"]}) from None
+            if status is not None or overflow:
+                try:
+                    diagnostic = startup_failure_diagnostic(self.attached, status, getattr(self.runner, "private", None))
+                except Exception:
+                    diagnostic = {"phase": "attached_provider_before_readiness", "failure_classes": ["unknown"],
+                                  "diagnostic_errors": ["startup_diagnostic_unavailable"]}
+                raise LabError("idp_startup_failure", diagnostic)
             inspected = strict_json(self.runner.run(["docker", "inspect", self.container], label="inspect-owned-idp", sensitive_output=True).stdout)
             row = inspected[0]
             ports = row.get("NetworkSettings", {}).get("Ports", {}).get("8080/tcp")
