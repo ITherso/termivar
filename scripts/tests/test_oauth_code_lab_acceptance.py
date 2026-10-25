@@ -565,6 +565,109 @@ max_token_response_bytes = 8192
 
 
 class ControllerTests(unittest.TestCase):
+    def test_last_owned_state_is_typed_stale_and_never_exports_inspection_secrets(self):
+        owner = "termivar-oauth-0123456789abcdef"
+        sentinel = "synthetic-private-state-error-and-environment-value"
+        row = {"Config": {"Labels": {"termivar.oauth.owner": owner}, "Env": [sentinel]},
+               "State": {"Status": "running", "Running": True, "ExitCode": 0, "OOMKilled": False,
+                         "Error": "https://invalid.example/" + sentinel}, "Name": sentinel}
+        result = lab.last_owned_container_state([row], owner)
+        self.assertEqual(result["observation_scope"], "last_inspected_before_client_exit_not_atomic_final_state")
+        self.assertEqual(result["ownership"], "validated")
+        self.assertEqual(result["fields"], {
+            "Status": {"state": "known", "value": "running"}, "Running": {"state": "known", "value": True},
+            "ExitCode": {"state": "known", "value": 0}, "OOMKilled": {"state": "known", "value": False},
+            "Error": {"field_present": True, "type": "string", "nonempty": True},
+        })
+        for payload in (json.dumps(result), json.dumps(lab.last_owned_container_state([row], "termivar-oauth-fedcba9876543210"))):
+            self.assertNotIn(sentinel, payload)
+            self.assertNotIn("https://", payload)
+            self.assertNotIn(owner, payload)
+            self.assertNotIn(hashlib.sha256(sentinel.encode()).hexdigest(), payload)
+        for value in (None, {}, [], [None], [row, row]):
+            self.assertEqual(lab.last_owned_container_state(value, owner)["ownership"], "not_established")
+        for path, invalid in (("Status", "synthetic-private-unknown-status"), ("Running", 1), ("ExitCode", True),
+                              ("ExitCode", -1), ("ExitCode", 10 ** 100), ("OOMKilled", "true"), ("Error", {"private": sentinel})):
+            mutation = copy.deepcopy(row)
+            mutation["State"][path] = invalid
+            reduced = lab.last_owned_container_state([mutation], owner)
+            field = reduced["fields"][path]
+            self.assertEqual(field["state"] if path != "Error" else field["type"]["state"], "unknown")
+            self.assertNotIn(sentinel, json.dumps(reduced))
+        missing = copy.deepcopy(row)
+        missing["State"] = {}
+        self.assertEqual(lab.last_owned_container_state([missing], owner)["fields"]["ExitCode"], {"state": "missing"})
+        del missing["Config"]["Labels"]["termivar.oauth.owner"]
+        self.assertEqual(lab.last_owned_container_state([missing], owner)["ownership"], "not_established")
+
+    def test_reviewed_source_layer_prefixes_emit_only_closed_marker_names(self):
+        cases = (
+            (b"Error response from daemon: synthetic details", "docker_daemon_error_prefix"),
+            (b"Error attaching: synthetic details", "docker_attach_error_prefix"),
+            (b"OCI runtime create failed: synthetic details", "oci_runtime_error_prefix"),
+            (b"owned-bootstrap: line 3: synthetic details", "owned_bootstrap_shell_error_prefix"),
+            (b"owned-bootstrap: -c: line 3: synthetic details", "owned_bootstrap_shell_error_prefix"),
+            (b"Error: Could not create the Java Virtual Machine.", "jvm_launcher_error_prefix"),
+            (b"ERROR: Failed to run 'start-dev' command.", "keycloak_startup_error_prefix"),
+            (b"ERROR: Failed to run 'import' command.", "keycloak_import_error_prefix"),
+        )
+        sentinel = b"synthetic-provider-private-prefix-value"
+        for message, expected in cases:
+            with self.subTest(expected=expected):
+                child = mock.Mock()
+                child.finish.return_value = lab.Result(b"", message + b" " + sentinel, 1, 0)
+                result = lab.startup_failure_diagnostic(child, 1)
+                self.assertEqual(result["source_layer_markers"], [expected])
+                self.assertEqual(result["marker_interpretation"], "closed_text_signals_not_established_cause")
+                self.assertEqual(result["bootstrap_subphase"], "unknown")
+                self.assertNotIn(sentinel, json.dumps(result).encode())
+                self.assertNotIn(hashlib.sha256(message).hexdigest().encode(), json.dumps(result).encode())
+        for message in (b"documentation mentions Error response from daemon: in a sentence", b"not-owned-bootstrap: line 3: no marker", b"ERROR: Failed to run 'unreviewed' command."):
+            child = mock.Mock()
+            child.finish.return_value = lab.Result(message, b"", 1, 0)
+            self.assertEqual(lab.startup_failure_diagnostic(child, 1)["source_layer_markers"], ["unknown"])
+        for message, expected in ((b"No space left on device", "storage_exhaustion_marker"),
+                                  (b"the input device is not a TTY", "stdin_attach_template_marker")):
+            child = mock.Mock()
+            child.finish.return_value = lab.Result(b"", message, 1, 0)
+            self.assertEqual(lab.startup_failure_diagnostic(child, 1)["failure_classes"], [expected])
+
+    def test_finished_exit_and_overflow_preserve_poll_history_without_guessing(self):
+        child = mock.Mock()
+        child.finish.return_value = lab.Result(b"", b"", 127, 0)
+        result = lab.startup_failure_diagnostic(child, None, overflow=True)
+        self.assertIsNone(result["attached_child_exit_code"])
+        self.assertEqual(result["finished_child_exit_code"], 127)
+        self.assertEqual(result["exit_class"], "unknown")
+        self.assertIs(result["overflow_flag"], True)
+        result = lab.startup_failure_diagnostic(child, 1, overflow=False)
+        self.assertEqual(result["attached_child_exit_code"], 1)
+        self.assertEqual(result["finished_child_exit_code"], 127)
+        child.finish.return_value = lab.Result(b"", b"", True, 0)
+        self.assertIsNone(lab.startup_failure_diagnostic(child, None, overflow="true")["finished_child_exit_code"])
+        self.assertIsNone(lab.startup_failure_diagnostic(child, None, overflow="true")["overflow_flag"])
+
+    def test_normal_prepare_reuses_owned_last_inspection_without_another_request(self):
+        sentinel = "synthetic-private-state-error-must-not-export"
+        _, failure = self._exercise_docker_prepare_and_cleanup(
+            literal_image_inspection("containerd"), startup_exit=1, startup_after_inspection=True,
+            inspection_state={"Status": "running", "Running": True, "ExitCode": 0, "OOMKilled": False, "Error": sentinel},
+            startup_output=b"owned-bootstrap: line 3: " + sentinel.encode())
+        diagnostic = failure.diagnostic
+        self.assertEqual(failure.code, "idp_startup_failure")
+        self.assertEqual(diagnostic["attached_child_exit_code"], 1)
+        self.assertEqual(diagnostic["finished_child_exit_code"], 1)
+        self.assertIs(diagnostic["overflow_flag"], False)
+        self.assertEqual(diagnostic["last_owned_container_inspection"]["fields"]["ExitCode"], {"state": "known", "value": 0})
+        self.assertEqual(diagnostic["last_owned_container_inspection"]["ownership"], "validated")
+        self.assertEqual(diagnostic["source_layer_markers"], ["owned_bootstrap_shell_error_prefix"])
+        self.assertNotIn(sentinel, json.dumps(diagnostic))
+        with mock.patch.object(lab, "last_owned_container_state", side_effect=OSError(sentinel)):
+            _, failed_diagnostic = self._exercise_docker_prepare_and_cleanup(literal_image_inspection(), startup_exit=1)
+        self.assertEqual(failed_diagnostic.code, "idp_startup_failure")
+        self.assertIn("last_inspection_unavailable", failed_diagnostic.diagnostic["diagnostic_errors"])
+        self.assertNotIn(sentinel, json.dumps(failed_diagnostic.diagnostic))
+
     def test_startup_diagnostics_use_only_closed_literal_markers_and_actual_exit_classes(self):
         cases = (
             (b"/bin/bash: command: Permission denied\n", 126, "permission_denied_marker"),
@@ -810,7 +913,8 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(owner.container_created)
         self.assertIsNone(owner.image_inspection)
 
-    def _exercise_docker_prepare_and_cleanup(self, image_document, startup_exit=None, startup_output=b""):
+    def _exercise_docker_prepare_and_cleanup(self, image_document, startup_exit=None, startup_output=b"",
+                                            startup_after_inspection=False, inspection_state=None):
         private = lab.PrivateValues()
         resource_secret = "synthetic-resource-secret-never-in-argv"
         controller_secret = "synthetic-controller-secret-never-in-argv"
@@ -821,7 +925,13 @@ class ControllerTests(unittest.TestCase):
         owner = None
 
         class Process:
+            def __init__(self):
+                self.polls = 0
+
             def poll(self):
+                self.polls += 1
+                if startup_after_inspection and self.polls == 1:
+                    return None
                 return startup_exit
 
         class Attachment:
@@ -847,7 +957,8 @@ class ControllerTests(unittest.TestCase):
                                        "NetworkMode": owner.network, "Binds": None, "Memory": 1073741824, "PidsLimit": 256,
                                        "Tmpfs": {"/tmp": "size=67108864,uid=1000", "/opt/keycloak/data": "size=201326592,uid=1000"},
                                        "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]}},
-                        "Mounts": [], "NetworkSettings": {"Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "2345"}]}}
+                         "Mounts": [], "NetworkSettings": {"Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "2345"}]}},
+                         "State": inspection_state,
                     }]).encode()
                 elif label in ("inspect-owned-network", "cleanup-owned-network-identity"):
                     value = json.dumps([{"Internal": True, "Driver": "bridge", "Labels": {"termivar.oauth.owner": owner.owner}}]).encode()
@@ -860,7 +971,8 @@ class ControllerTests(unittest.TestCase):
                     "token_endpoint": "http://127.0.0.1:1234/realms/termivar-owned-code/protocol/openid-connect/token"}
         with mock.patch.object(lab.sys, "platform", "linux"), mock.patch.dict(lab.os.environ, {"DOCKER_HOST": ""}), \
              mock.patch.object(lab, "CapturedChild", Attachment), \
-             mock.patch.object(lab, "request_bytes", return_value=(200, [], json.dumps(metadata).encode())):
+              mock.patch.object(lab, "request_bytes", return_value=(503 if startup_after_inspection else 200, [], json.dumps(metadata).encode())) as requests, \
+              mock.patch.object(lab.time, "sleep"):
             if startup_exit is None:
                 owner.prepare()
             else:
@@ -870,7 +982,8 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(outcome["status"], "complete")
         labels = [label for _, label in calls]
         if startup_exit is not None:
-            self.assertNotIn("inspect-owned-idp", labels)
+            self.assertEqual(labels.count("inspect-owned-idp"), int(startup_after_inspection))
+            self.assertEqual(requests.call_count, int(startup_after_inspection))
             self.assertNotIn("inspect-owned-network", labels)
             self.assertEqual(labels[-5:], ["cleanup-owned-identity", "stop-owned-idp", "remove-owned-idp",
                                           "cleanup-owned-network-identity", "remove-owned-network"])

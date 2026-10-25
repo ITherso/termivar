@@ -331,8 +331,45 @@ class CapturedChild:
             thread.join(timeout=2)
 
 
+def last_owned_container_state(inspected: object, owner: object) -> dict:
+    """Reduce only an already inspected, owner-bound container's stale state."""
+    result = {"observation_scope": "last_inspected_before_client_exit_not_atomic_final_state",
+              "ownership": "not_established", "state": "unavailable"}
+    if not (type(owner) is str and re.fullmatch(r"termivar-oauth-[0-9a-f]{16}", owner)
+            and type(inspected) is list and len(inspected) == 1 and type(inspected[0]) is dict):
+        return result
+    row = inspected[0]
+    config = row.get("Config")
+    labels = config.get("Labels") if type(config) is dict else None
+    if not (type(labels) is dict and type(labels.get("termivar.oauth.owner")) is str
+            and labels["termivar.oauth.owner"] == owner):
+        return result
+    result["ownership"] = "validated"
+    state = row.get("State")
+    if type(state) is not dict:
+        return result
+
+    def unknown(value: object) -> dict:
+        names = {type(None): "null", bool: "boolean", int: "integer", float: "number",
+                 str: "string", dict: "object", list: "array"}
+        return {"state": "missing"} if value is _MISSING else {"state": "unknown", "type": names.get(type(value), "unsupported")}
+
+    values = {}
+    for key in ("Status", "Running", "ExitCode", "OOMKilled"):
+        value = state.get(key, _MISSING)
+        valid = (type(value) is str and value in ("created", "running", "paused", "restarting", "removing", "exited", "dead")) if key == "Status" else (
+            type(value) is int and 0 <= value <= 255 if key == "ExitCode" else type(value) is bool)
+        values[key] = {"state": "known", "value": value} if valid else unknown(value)
+    error = state.get("Error", _MISSING)
+    values["Error"] = {"field_present": error is not _MISSING, "type": "string" if type(error) is str else unknown(error),
+                       "nonempty": bool(error) if type(error) is str else None}
+    result.update({"state": "available", "fields": values})
+    return result
+
+
 def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
-                               private: PrivateValues | None = None) -> dict:
+                               private: PrivateValues | None = None, *, last_inspected: object = None,
+                               owner: object = None, overflow: object = None) -> dict:
     """Reduce private attached output to closed markers, never lines or hashes.
 
     Markers are diagnostic signals, not a verified explanation of the exit.
@@ -341,14 +378,24 @@ def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
     """
     status = exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else None
     summary = {"phase": "attached_provider_before_readiness", "bootstrap_subphase": "unknown",
-               "attached_child_exit_code": status,
+               "attached_child_exit_code": status, "finished_child_exit_code": None,
+               "overflow_flag": overflow if type(overflow) is bool else None,
                "exit_class": "exit_" + str(status) if status in (126, 127, 137) else "other_exit" if status is not None else "unknown",
                "capture_state": "unavailable", "stdout_captured_bytes": None, "stderr_captured_bytes": None,
                "classification_bytes": 0, "classification_scope": "first_128_kib_per_stream",
-               "failure_classes": ["unknown"], "diagnostic_errors": []}
+               "failure_classes": ["unknown"], "source_layer_markers": ["unknown"],
+               "marker_interpretation": "closed_text_signals_not_established_cause", "diagnostic_errors": []}
+    try:
+        summary["last_owned_container_inspection"] = last_owned_container_state(last_inspected, owner)
+    except Exception:
+        summary["last_owned_container_inspection"] = {"observation_scope": "last_inspected_before_client_exit_not_atomic_final_state",
+                                                       "ownership": "not_established", "state": "unavailable"}
+        summary["diagnostic_errors"].append("last_inspection_unavailable")
     streams = None
     try:
         result = child.finish(2)
+        finished = result.returncode
+        summary["finished_child_exit_code"] = finished if type(finished) is int and -255 <= finished <= 255 else None
         values = (result.stdout, result.stderr)
         require(all(type(value) is bytes and len(value) <= MAX_OUTPUT for value in values), "diagnostic_output_shape")
         streams = values
@@ -376,10 +423,26 @@ def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
             ("unsupported_cli_marker", ((b"unknown option",), (b"unknown command",), (b"unmatched argument",))),
             ("realm_schema_import_marker", ((b"failed to import realm",), (b"unrecognized field", b"realm"), (b"could not parse realm",))),
             ("out_of_memory_marker", ((b"java.lang.outofmemoryerror",), (b"out of memory",))),
+            ("storage_exhaustion_marker", ((b"no space left on device",),)),
+            ("stdin_attach_template_marker", ((b"the input device is not a tty",), (b"error attaching:",), (b"error waiting for container:",))),
         )
         summary["failure_classes"] = [name for name, alternatives in signals
                                       if any(all(fragment in prefix for fragment in required)
                                              for required in alternatives for prefix in prefixes)] or ["unknown"]
+        lines = [line.lstrip() for prefix in prefixes for line in prefix.splitlines()]
+        layers = (
+            ("docker_daemon_error_prefix", (b"error response from daemon:", b"docker: error response from daemon:")),
+            ("docker_attach_error_prefix", (b"error attaching:", b"error waiting for container:")),
+            ("oci_runtime_error_prefix", (b"oci runtime create failed:", b"oci runtime exec failed:", b"failed to create shim task:")),
+            ("jvm_launcher_error_prefix", (b"error: could not create the java virtual machine.", b"error: could not find or load main class ", b"error occurred during initialization of vm")),
+            ("keycloak_startup_error_prefix", (b"error: failed to start server in ", b"error: failed to run 'start-dev' command.")),
+            ("keycloak_import_error_prefix", (b"error: failed to run 'import' command.",)),
+        )
+        summary["source_layer_markers"] = [name for name, starts in layers
+                                           if any(line.startswith(starts) for line in lines)]
+        if any(re.match(rb"owned-bootstrap: (?:-c: )?line [0-9]{1,4}:", line) for line in lines):
+            summary["source_layer_markers"].append("owned_bootstrap_shell_error_prefix")
+        summary["source_layer_markers"] = summary["source_layer_markers"] or ["unknown"]
     if private is not None:
         try:
             private.check(json.dumps(summary, sort_keys=True).encode())
@@ -387,7 +450,8 @@ def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
             # Even a diagnostic/privacy failure cannot replace the original
             # startup exception or leak an exception message/provider body.
             return {"phase": "attached_provider_before_readiness", "bootstrap_subphase": "unknown",
-                    "attached_child_exit_code": status, "failure_classes": ["unknown"],
+                    "attached_child_exit_code": status, "finished_child_exit_code": summary["finished_child_exit_code"],
+                    "overflow_flag": overflow if type(overflow) is bool else None, "failure_classes": ["unknown"],
                     "diagnostic_errors": ["reduced_diagnostic_privacy_check_failed"]}
     return summary
 
@@ -925,7 +989,8 @@ class KeycloakLab:
                                                        "diagnostic_errors": ["attachment_state_unavailable"]}) from None
             if status is not None or overflow:
                 try:
-                    diagnostic = startup_failure_diagnostic(self.attached, status, getattr(self.runner, "private", None))
+                    diagnostic = startup_failure_diagnostic(self.attached, status, getattr(self.runner, "private", None),
+                                                            last_inspected=inspected, owner=self.owner, overflow=overflow)
                 except Exception:
                     diagnostic = {"phase": "attached_provider_before_readiness", "failure_classes": ["unknown"],
                                   "diagnostic_errors": ["startup_diagnostic_unavailable"]}
