@@ -805,6 +805,69 @@ max_token_response_bytes = 8192
             self.assertEqual(evidence["offline"]["status"], "not_run")
             self.assertTrue(evidence["cleanup"]["direct_refresh_capture_references_cleared"])
 
+    def test_nine_transactions_use_real_private_guard_and_runtime_failure_keeps_safe_cause(self):
+        class GuardedRunner(FakeRunner):
+            def __init__(inner, fail_final=False):
+                super().__init__()
+                inner.fail_final = fail_final
+                inner.guarded_scenarios = []
+
+            def run(inner, args, *, label, **kwargs):
+                result = super().run(args, label=label, **kwargs)
+                if label.endswith("-scan"):
+                    name = label[:-5]
+                    # Literal synthetic provider material, never captured IdP
+                    # bytes. Keep the actual guard instead of mocking add().
+                    if name != "option-off":
+                        for suffix in ("access", "refresh", "response"):
+                            inner.private.add("synthetic-private-guarded-" + name + "-" + suffix)
+                    inner.guarded_scenarios.append(name)
+                    if inner.fail_final and name == "refresh-health-loss":
+                        while len(inner.private._values) < 96:
+                            inner.private.add("synthetic-private-fill-" + str(len(inner.private._values)))
+                        relay = FakeLab.instances[-1].relay
+                        lab._record_fixture_failure(relay, lab.LabError("private_registry_limit"), "relay")
+                return result
+
+        successful = GuardedRunner()
+        document, _, _ = self.execute_fake(successful)
+        self.assertEqual(successful.guarded_scenarios, list(NAMES))
+        self.assertEqual(document["status"], "passed")
+        self.assertEqual(len(successful.records), 32)
+        self.assertLessEqual(len(successful.private._values), 96)
+
+        for fail_write in (False, True):
+            with self.subTest(diagnostic_write_failed=fail_write), tempfile.TemporaryDirectory(prefix="test-owned-oauth-", dir=ROOT) as directory:
+                output = Path(directory) / "evidence"
+                failing = GuardedRunner(fail_final=True)
+                original_write = lab.private_write
+
+                def write(path, data):
+                    if fail_write and path.name == "oauth-code-lab-acceptance.json":
+                        raise OSError("synthetic-private-error-message-must-not-escape")
+                    return original_write(path, data)
+
+                with mock.patch.object(lab, "private_write", side_effect=write), \
+                     self.assertRaisesRegex(lab.LabError, "^fixture_runtime_failure$") as raised:
+                    self.execute_fake(failing, output)
+                self.assertEqual(failing.guarded_scenarios, list(NAMES))
+                diagnostic = raised.exception.diagnostic
+                self.assertEqual(diagnostic["scenario"], "refresh-health-loss")
+                self.assertEqual(diagnostic["relay"]["cause_classes"], ["private_registry_limit"])
+                self.assertEqual(diagnostic["private_registry"], {"entry_count": 96, "entry_limit": 96})
+                self.assertLess(len(json.dumps(diagnostic)), 2048)
+                failing.private.check(json.dumps(diagnostic).encode())
+                self.assertTrue(FakeLab.instances[-1].closed)
+                self.assertTrue(TargetCapture.instances[-1].stopped)
+                if not fail_write:
+                    payload = (output / "oauth-code-lab-acceptance.json").read_bytes()
+                    failing.private.check(payload)
+                    saved = json.loads(payload)
+                    self.assertEqual(saved["failure"]["code"], "fixture_runtime_failure")
+                    self.assertEqual(saved["failure"]["diagnostic"], diagnostic)
+                    self.assertEqual(saved["offline"]["status"], "not_run")
+                    self.assertTrue(saved["cleanup"]["private_work_removed"])
+
     def test_controller_replay_acceptance_is_a_failure_but_all_offline_checks_still_execute(self):
         runner = FakeRunner(replay_status=200)
         with tempfile.TemporaryDirectory(prefix="test-owned-oauth-", dir=ROOT) as directory:
@@ -980,10 +1043,11 @@ class ControllerTests(unittest.TestCase):
         relay.bind_upstream(binding)
         secret = b"synthetic-private-unregistered-provider-access"
         body = b'{"access_token":"' + secret + b'"}'
+        for index in range(96):
+            private.add("synthetic-private-registry-filled-" + str(index))
         relay.start()
         try:
-            with mock.patch.object(lab._OwnedIdpUpstream, "request", return_value=(200, [("Content-Type", "application/json")], body)), \
-                 mock.patch.object(private, "add", side_effect=lab.LabError("private_registry_limit")):
+            with mock.patch.object(lab._OwnedIdpUpstream, "request", return_value=(200, [("Content-Type", "application/json")], body)):
                 connection = http.client.HTTPConnection("127.0.0.1", relay.server.server_port, timeout=2)
                 try:
                     connection.request("POST", "/realms/termivar-owned-code/protocol/openid-connect/token",
@@ -995,8 +1059,58 @@ class ControllerTests(unittest.TestCase):
                 finally:
                     connection.close()
             self.assertEqual(relay.errors, ["relay_failure"])
+            self.assertEqual(relay.failure_causes, ["private_registry_limit"])
+            self.assertEqual(len(private._values), 96)
         finally:
             relay.stop()
+
+    def test_target_private_registry_exhaustion_is_closed_before_introspection(self):
+        private = lab.PrivateValues()
+        relay = lab.TokenRelay(private)
+        self.addCleanup(relay.server.server_close)
+        for index in range(96):
+            private.add("synthetic-private-target-registry-filled-" + str(index))
+        target = lab.TargetApplication(relay, "synthetic-private-resource-secret")
+        target.phase = "refresh-health-loss"
+        target.start()
+        try:
+            with mock.patch.object(lab, "request_bytes") as introspection:
+                connection = http.client.HTTPConnection("127.0.0.1", target.server.server_port, timeout=2)
+                try:
+                    connection.request("GET", "/app/health", headers={"Authorization": "Bearer synthetic-private-new-access"})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 500)
+                    self.assertEqual(response.read(4097), b'{"error":"owned_target_failure"}')
+                finally:
+                    connection.close()
+                introspection.assert_not_called()
+            self.assertEqual(target.errors, ["target_failure"])
+            self.assertEqual(target.failure_causes, ["private_registry_limit"])
+            diagnostic = lab._fixture_runtime_diagnostic("refresh-health-loss", relay, target)
+            self.assertEqual(diagnostic["target"]["cause_classes"], ["private_registry_limit"])
+            self.assertEqual(diagnostic["private_registry"]["entry_count"], 96)
+            private.check(json.dumps(diagnostic).encode())
+        finally:
+            target.stop()
+
+    def test_fixture_diagnostics_do_not_export_unknown_codes_values_or_malformed_channels(self):
+        relay = lab.TokenRelay(lab.PrivateValues())
+        target = lab.TargetApplication(relay, "synthetic-private-diagnostic-secret")
+        self.addCleanup(relay.server.server_close)
+        self.addCleanup(target.server.server_close)
+        private_code = "synthetic-private-exception-code-and-message"
+        relay.private.add(private_code)
+        lab._record_fixture_failure(relay, lab.LabError(private_code), "relay")
+        diagnostic = lab._fixture_runtime_diagnostic("refresh-a", relay, target)
+        self.assertEqual(diagnostic["relay"]["cause_classes"], ["fixture_contract_failure"])
+        relay.private.check(json.dumps(diagnostic).encode())
+        relay.failure_causes = [private_code]
+        target.errors = None
+        diagnostic = lab._fixture_runtime_diagnostic(private_code, relay, target)
+        self.assertEqual(diagnostic["relay"]["cause_classes"], {"type": "array", "length": 1})
+        self.assertEqual(diagnostic["target"]["error_count"], None)
+        self.assertEqual(diagnostic["scenario"], {"type": "str"})
+        relay.private.check(json.dumps(diagnostic).encode())
 
     def test_owned_private_factory_requires_exact_independent_network_and_container_facts(self):
         owner, name, container, network = literal_owned_provider_boundary()

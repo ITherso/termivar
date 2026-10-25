@@ -290,6 +290,44 @@ class PrivateValues:
                         for value in self._values), "secret_digest_in_output")
 
 
+def _record_fixture_failure(owner: object, error: Exception, channel: str) -> None:
+    """Keep the original failure and only a closed, value-free cause class."""
+    owner.errors.append(channel + "_failure")
+    cause = ("private_registry_limit" if isinstance(error, LabError) and error.code == "private_registry_limit"
+             else "fixture_contract_failure" if isinstance(error, LabError)
+             else "transport_io_failure" if isinstance(error, OSError)
+             else "value_failure")
+    if cause not in owner.failure_causes and len(owner.failure_causes) < 4:
+        owner.failure_causes.append(cause)
+
+
+def _fixture_runtime_diagnostic(scenario: str, relay: object, target: object) -> dict:
+    """No raw exceptions, tokens, source paths, response bodies or URLs."""
+    def count(value: object, maximum: int) -> object:
+        return len(value) if type(value) in (list, dict) and len(value) <= maximum else marker(value)
+
+    def channel(owner: object) -> dict:
+        causes = getattr(owner, "failure_causes", _MISSING)
+        allowed = {"private_registry_limit", "fixture_contract_failure", "transport_io_failure", "value_failure"}
+        return {"error_count": count(getattr(owner, "errors", _MISSING), MAX_TRACE),
+                "cause_classes": (list(causes) if type(causes) is list and len(causes) <= 4
+                                  and all(type(value) is str and value in allowed for value in causes)
+                                  else marker(causes)),
+                "handler_failed": marker(getattr(getattr(owner, "server", None), "handler_failed", _MISSING)),
+                "trace_row_count": count(getattr(owner, "trace", _MISSING), MAX_TRACE)}
+
+    captures = getattr(relay, "_refresh_captures", _MISSING)
+    selected = captures.get(scenario, _MISSING) if type(captures) is dict else _MISSING
+    return {"scenario": scenario if scenario in SCENARIOS else marker(scenario),
+            "relay": channel(relay), "target": channel(target),
+            "private_registry": {"entry_count": count(getattr(getattr(relay, "private", None), "_values", _MISSING), 96),
+                                 "entry_limit": 96},
+            "refresh_capture_count": count(captures, 3),
+            "selected_refresh_capture": {
+                key: marker(getattr(selected, key, _MISSING))
+                for key in ("initial_returned", "refresh_responses", "replacement_returned", "replacement_value_differs")}}
+
+
 @dataclasses.dataclass(frozen=True)
 class Result:
     stdout: bytes
@@ -1036,6 +1074,7 @@ class TokenRelay:
         self.phase = "setup"
         self.trace: list[dict] = []
         self.errors: list[str] = []
+        self.failure_causes: list[str] = []
         self.public_redirect: str | None = None
         self.scanner_scenarios_complete = False
         self._refresh_captures: dict[str, _RefreshCapture] = {}
@@ -1103,8 +1142,8 @@ class TokenRelay:
                                         "identity_requested": self.headers.get("Accept-Encoding") == "identity",
                                         **capture_flags})
                     _send(self, status, response_body, "application/octet-stream", response_headers)
-                except (LabError, OSError, ValueError):
-                    owner.errors.append("relay_failure")
+                except (LabError, OSError, ValueError) as error:
+                    _record_fixture_failure(owner, error, "relay")
                     _send(self, 502, b'{"error":"owned_relay_failure"}', "application/json")
 
         self.server = OwnedHTTPServer(Handler)
@@ -1191,6 +1230,7 @@ class TargetApplication:
         self.phase = "setup"
         self.trace: list[dict] = []
         self.errors: list[str] = []
+        self.failure_causes: list[str] = []
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -1250,8 +1290,8 @@ class TargetApplication:
                                         "provider_active": provider_active,
                                         "application_gate_denied": application_gate_denied})
                     _send(self, status, b"" if head else body, mime)
-                except (LabError, OSError, ValueError):
-                    owner.errors.append("target_failure")
+                except (LabError, OSError, ValueError) as error:
+                    _record_fixture_failure(owner, error, "target")
                     _send(self, 500, b'{"error":"owned_target_failure"}', "application/json")
 
         self.server = OwnedHTTPServer(Handler)
@@ -1448,6 +1488,7 @@ class KeycloakLab:
             raise LabError("idp_readiness_timeout", self._setup_diagnostic(inspected))
         # Readiness connection failures are not scanner acceptance failures.
         self.relay.errors.clear()
+        self.relay.failure_causes.clear()
         self.relay.trace.clear()
         self.relay.server.handler_failed = False
 
@@ -2111,7 +2152,8 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                 require(result.returncode == 0, "scan_exit_contract", {"scenario": name, "expected_exit": 0,
                                                                       "actual_exit": result.returncode})
                 require(not relay.errors and not target.errors and not relay.server.handler_failed
-                        and not target.server.handler_failed, "fixture_runtime_failure")
+                        and not target.server.handler_failed, "fixture_runtime_failure",
+                        _fixture_runtime_diagnostic(name, relay, target))
                 audit, source = audit_from_output(result, bundle)
                 rows = target.trace[target_start:]
                 idp_rows = [row for row in relay.trace[relay_start:] if row["phase"] == name]
