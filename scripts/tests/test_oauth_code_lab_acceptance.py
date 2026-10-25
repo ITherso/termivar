@@ -27,6 +27,25 @@ ROLES = {
 }
 
 
+def literal_image_inspection(profile="legacy"):
+    """Original literal engine-shape fixtures, not captured Docker output."""
+    row = {
+        "Id": "sha256:b55801be6ce15109868bd056dc18d62d47106bfaad7ffbd1a5d804192ec98257",
+        "RepoDigests": ["quay.io/keycloak/keycloak@sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc"],
+        "Architecture": "amd64", "Os": "linux", "Config": {"User": "1000"},
+    }
+    if profile == "containerd":
+        row["Id"] = "sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc"
+        row["Descriptor"] = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc",
+            "size": 1056,
+        }
+    elif profile != "legacy":
+        raise AssertionError("unknown synthetic image-inspection profile")
+    return [row]
+
+
 def synthetic_audit(name="valid-a"):
     """Literal reviewed V5 subset consumed by the helper, not a product export."""
     if name == "option-off":
@@ -547,6 +566,144 @@ max_token_response_bytes = 8192
 
 class ControllerTests(unittest.TestCase):
     def test_actual_docker_prepare_and_cleanup_call_paths_with_bounded_fakes(self):
+        owner = self._exercise_docker_prepare_and_cleanup(literal_image_inspection())
+        self.assertEqual(owner.image_inspection["status"], "validated")
+        self.assertEqual(owner.image_inspection["profile"], "legacy_config_id")
+        self.assertIsNone(owner.image_inspection["manifest_descriptor"])
+
+    def test_containerd_manifest_image_id_reaches_same_prepare_and_cleanup_path(self):
+        owner = self._exercise_docker_prepare_and_cleanup(literal_image_inspection("containerd"))
+        self.assertEqual(owner.image_inspection["status"], "validated")
+        self.assertEqual(owner.image_inspection["profile"], "containerd_manifest_descriptor")
+        self.assertEqual(owner.image_inspection["manifest_descriptor"], {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc",
+            "size": 1056,
+        })
+
+    def test_two_literal_image_profiles_keep_same_pins_platform_and_nonroot_users(self):
+        for fixture, expected in (("legacy", "legacy_config_id"), ("containerd", "containerd_manifest_descriptor")):
+            for user in ("1000", "1000:0"):
+                with self.subTest(fixture=fixture, user=user):
+                    document = literal_image_inspection(fixture)
+                    document[0]["Config"]["User"] = user
+                    result = lab.validate_image_inspection(document)
+                    self.assertEqual(result["profile"], expected)
+                    self.assertEqual(result["platform"], "linux/amd64")
+                    self.assertEqual(result["user"], user)
+                    self.assertEqual(result["expected_config_digest"], "sha256:b55801be6ce15109868bd056dc18d62d47106bfaad7ffbd1a5d804192ec98257")
+
+    def test_image_inspection_rejects_missing_wrong_or_contradictory_identity_fields(self):
+        cases = [("root-" + str(index), value) for index, value in enumerate((None, {}, True, 0, [], [None], [{}], literal_image_inspection() * 2))]
+        for fixture in ("legacy", "containerd"):
+            for key in ("Id", "RepoDigests", "Architecture", "Os", "Config"):
+                document = literal_image_inspection(fixture)
+                del document[0][key]
+                cases.append((fixture + "-missing-" + key, document))
+            for key, values in {
+                "Id": (None, False, 0, {}, [], "sha256:" + "0" * 64, "sha256:" + "A" * 64),
+                "RepoDigests": (None, False, {}, "pinned", [], [False], ["unreviewed"],
+                                literal_image_inspection()[0]["RepoDigests"] * 2,
+                                ["quay.io/other/keycloak@sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc"]),
+                "Architecture": (None, False, 1, [], "arm64", "AMD64"),
+                "Os": (None, False, {}, "windows", "Linux"),
+                "Config": (None, False, [], "1000", {}, {"User": False}, {"User": 1000}, {"User": "0"}, {"User": "root"}, {"User": "1000:1"}),
+            }.items():
+                for index, value in enumerate(values):
+                    document = literal_image_inspection(fixture)
+                    document[0][key] = value
+                    cases.append((fixture + "-wrong-" + key + "-" + str(index), document))
+        for key, values in {
+            "mediaType": (None, False, {}, "application/vnd.oci.image.index.v1+json"),
+            "digest": (None, True, [], "sha256:b55801be6ce15109868bd056dc18d62d47106bfaad7ffbd1a5d804192ec98257"),
+            "size": (None, True, "1056", 1056.0, -1, 1055, 1057, 10 ** 100),
+        }.items():
+            missing = literal_image_inspection("containerd")
+            del missing[0]["Descriptor"][key]
+            cases.append(("descriptor-missing-" + key, missing))
+            for index, value in enumerate(values):
+                document = literal_image_inspection("containerd")
+                document[0]["Descriptor"][key] = value
+                cases.append(("descriptor-wrong-" + key + "-" + str(index), document))
+        for value in (None, False, [], "manifest", {}):
+            document = literal_image_inspection("containerd")
+            document[0]["Descriptor"] = value
+            cases.append(("descriptor-container-type-" + type(value).__name__, document))
+        missing = literal_image_inspection("containerd")
+        del missing[0]["Descriptor"]
+        cases.append(("containerd-missing-descriptor", missing))
+        for value in (None, literal_image_inspection("containerd")[0]["Descriptor"]):
+            document = literal_image_inspection()
+            document[0]["Descriptor"] = value
+            cases.append(("legacy-unreviewed-descriptor-" + type(value).__name__, document))
+        extra = literal_image_inspection("containerd")
+        extra[0]["Descriptor"]["platform"] = {"os": "linux", "architecture": "arm64"}
+        cases.append(("unreviewed-descriptor-platform", extra))
+        for name, document in cases:
+            with self.subTest(name=name), self.assertRaises(lab.LabError) as raised:
+                lab.validate_image_inspection(document)
+            self.assertIn(raised.exception.code, ("idp_image_config_identity", "idp_image_user"))
+            self.assertLess(len(json.dumps(raised.exception.diagnostic).encode()), 4096)
+            self.assertIn("actual", raised.exception.diagnostic)
+            self.assertIn("expected", raised.exception.diagnostic)
+
+    def test_image_failure_diagnostic_is_reduced_and_survives_execute_cleanup(self):
+        document = literal_image_inspection("containerd")
+        document[0]["Descriptor"]["size"] = True
+        document[0]["Config"]["Env"] = ["UNRELATED_PRIVATE=synthetic-inspect-secret-must-not-export"]
+        with tempfile.TemporaryDirectory(prefix="test-owned-image-", dir=ROOT) as directory:
+            output = Path(directory) / "evidence"
+            with mock.patch.object(FakeLab, "prepare", side_effect=lambda: lab.validate_image_inspection(document)), \
+                 self.assertRaisesRegex(lab.LabError, "idp_image_config_identity"):
+                AcceptanceTests.execute_fake(self, output=output)
+            payload = (output / "oauth-code-lab-acceptance.json").read_bytes()
+            evidence = json.loads(payload)
+            self.assertEqual(evidence["failure"]["code"], "idp_image_config_identity")
+            self.assertIs(evidence["failure"]["diagnostic"]["actual"]["descriptor_size"], True)
+            self.assertEqual(evidence["failure"]["diagnostic"]["actual"]["profile"], "containerd_manifest_descriptor")
+            self.assertEqual(evidence["scenarios"], {})
+            self.assertEqual(evidence["offline"], {"status": "not_run"})
+            self.assertEqual(evidence["cleanup"]["idp"]["status"], "complete")
+            self.assertTrue(evidence["cleanup"]["private_work_removed"])
+            self.assertNotIn(b"synthetic-inspect-secret", payload)
+            self.assertNotIn(b"Config.Env", payload)
+
+    def test_validated_image_profile_is_retained_by_complete_execute_evidence(self):
+        def prepare(owner):
+            owner.image_inspection = lab.validate_image_inspection(literal_image_inspection("containerd"))
+            owner.prepared = True
+
+        with mock.patch.object(FakeLab, "prepare", prepare):
+            document, _, output = AcceptanceTests.execute_fake(self)
+        self.assertEqual(document["status"], "passed")
+        self.assertEqual(document["image_inspection"]["profile"], "containerd_manifest_descriptor")
+        self.assertEqual(document["image_inspection"]["manifest_descriptor"]["size"], 1056)
+        saved = json.loads((output / "oauth-code-lab-acceptance.json").read_bytes())
+        self.assertEqual(saved["image_inspection"], document["image_inspection"])
+
+    def test_prepare_rejects_oversized_inspection_before_creating_any_owned_resource(self):
+        labels = []
+        document = literal_image_inspection()
+        document[0]["Config"]["Env"] = ["x" * (128 * 1024)]
+
+        class Runner:
+            def run(self, args, *, label, **kwargs):
+                labels.append(label)
+                value = b"default\n" if label == "docker-local-context" else (
+                    json.dumps(document).encode() if label == "inspect-idp-image" else b"pulled")
+                return lab.Result(value, b"", 0, 0.01)
+
+        owner = lab.KeycloakLab(Runner(), mock.Mock(origin="http://127.0.0.1:1234"), {})
+        with mock.patch.object(lab.sys, "platform", "linux"), \
+             mock.patch.dict(lab.os.environ, {"DOCKER_HOST": ""}), \
+             self.assertRaisesRegex(lab.LabError, "json_size"):
+            owner.prepare()
+        self.assertEqual(labels, ["docker-local-context", "prepare-pinned-idp", "inspect-idp-image"])
+        self.assertFalse(owner.network_created)
+        self.assertFalse(owner.container_created)
+        self.assertIsNone(owner.image_inspection)
+
+    def _exercise_docker_prepare_and_cleanup(self, image_document):
         private = lab.PrivateValues()
         resource_secret = "synthetic-resource-secret-never-in-argv"
         controller_secret = "synthetic-controller-secret-never-in-argv"
@@ -575,8 +732,7 @@ class ControllerTests(unittest.TestCase):
                 if label == "docker-local-context":
                     value = b"default\n"
                 elif label == "inspect-idp-image":
-                    value = json.dumps([{"Id": "sha256:b55801be6ce15109868bd056dc18d62d47106bfaad7ffbd1a5d804192ec98257",
-                                         "Config": {"User": "1000"}}]).encode()
+                    value = json.dumps(image_document).encode()
                 elif label in ("inspect-owned-idp", "cleanup-owned-identity"):
                     value = json.dumps([{
                         "Config": {"User": "1000:0", "Labels": {"termivar.oauth.owner": owner.owner}},
@@ -614,6 +770,7 @@ class ControllerTests(unittest.TestCase):
         self.assertNotIn(controller_secret, " ".join(args))
         self.assertEqual(json.loads(attachments[0][1]), realm)
         self.assertEqual(attachments[0][0], ["docker", "start", "--attach", "--interactive", owner.container])
+        return owner
 
     def test_actual_obtain_code_call_path_uses_query_free_admin_sso_and_form_post(self):
         observed = []

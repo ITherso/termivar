@@ -45,6 +45,7 @@ KEYCLOAK_SOURCE = "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b"
 KEYCLOAK_INDEX = "sha256:a78d6b79572168cb25886b80a8b5b8d4ed4390743e3eecb810538683e209dd6b"
 KEYCLOAK_AMD64 = "sha256:3e1ac632e743660017b1e6bb4c3ffc800fd02c82cdd0db858cd03456a98a8dfc"
 KEYCLOAK_CONFIG = "sha256:b55801be6ce15109868bd056dc18d62d47106bfaad7ffbd1a5d804192ec98257"
+KEYCLOAK_MANIFEST_BYTES = 1056
 IMAGE = "quay.io/keycloak/keycloak@" + KEYCLOAK_AMD64
 REALM = "termivar-owned-code"
 PUBLIC_CLIENT = "termivar-owned-public"
@@ -170,6 +171,67 @@ def encoded_form(fields: dict[str, str]) -> bytes:
 
 def challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+
+
+def validate_image_inspection(document: object) -> dict:
+    """Admit two reviewed engine identity shapes, never an arbitrary image ID.
+
+    Legacy image stores expose the pinned config ID. The containerd store
+    exposes its target manifest ID and descriptor instead. Both must bind the
+    same exact pulled reference, platform and non-root user. Other inspection
+    fields (notably Config.Env) are neither evidence nor diagnostics.
+    """
+    row = document[0] if type(document) is list and len(document) == 1 and type(document[0]) is dict else {}
+    identity = row.get("Id", _MISSING)
+    descriptor = row.get("Descriptor", _MISSING)
+    config = row.get("Config", _MISSING)
+    user = config.get("User", _MISSING) if type(config) is dict else _MISSING
+    repos = row.get("RepoDigests", _MISSING)
+    profile = ("legacy_config_id" if identity == KEYCLOAK_CONFIG else
+               "containerd_manifest_descriptor" if identity == KEYCLOAK_AMD64 else "unrecognized")
+
+    def digest_marker(value: object) -> object:
+        return value if type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) else marker(value)
+
+    def literal_marker(value: object, allowed: tuple[str, ...]) -> object:
+        return value if type(value) is str and value in allowed else marker(value)
+
+    descriptor_fields = descriptor if type(descriptor) is dict else {}
+    size = descriptor_fields.get("size", _MISSING)
+    diagnostic = {
+        "expected": {"profiles": ["legacy_config_id", "containerd_manifest_descriptor"],
+                     "config_digest": KEYCLOAK_CONFIG, "manifest_digest": KEYCLOAK_AMD64,
+                     "manifest_bytes": KEYCLOAK_MANIFEST_BYTES, "pinned_reference": IMAGE,
+                     "platform": "linux/amd64", "users": ["1000", "1000:0"]},
+        "actual": {"root": marker(document), "row": marker(document[0]) if type(document) is list and len(document) == 1 else {"state": "unavailable"},
+                   "profile": profile, "id": digest_marker(identity), "descriptor": marker(descriptor),
+                   "descriptor_digest": digest_marker(descriptor_fields.get("digest", _MISSING)),
+                   "descriptor_media_type": literal_marker(descriptor_fields.get("mediaType", _MISSING), ("application/vnd.oci.image.manifest.v1+json",)),
+                   "descriptor_size": size if type(size) is int and 0 <= size <= MAX_HTTP_BODY else marker(size) if type(size) is not int else {"type": "int", "state": "outside_diagnostic_bound"},
+                   "repo_digests": marker(repos), "exact_pinned_reference": type(repos) is list and repos == [IMAGE],
+                   "os": literal_marker(row.get("Os", _MISSING), ("linux", "windows", "darwin")),
+                   "architecture": literal_marker(row.get("Architecture", _MISSING), ("amd64", "arm64", "arm", "386")),
+                   "config": marker(config), "user": literal_marker(user, ("1000", "1000:0", "0", "root"))},
+    }
+    require(type(document) is list and len(document) == 1 and type(document[0]) is dict
+            and type(identity) is str and profile != "unrecognized"
+            and type(repos) is list and len(repos) == 1 and type(repos[0]) is str and repos == [IMAGE]
+            and type(row.get("Architecture")) is str and row["Architecture"] == "amd64"
+            and type(row.get("Os")) is str and row["Os"] == "linux",
+            "idp_image_config_identity", diagnostic)
+    if profile == "legacy_config_id":
+        require(descriptor is _MISSING, "idp_image_config_identity", diagnostic)
+    else:
+        require(type(descriptor) is dict and set(descriptor) == {"mediaType", "digest", "size"}
+                and descriptor.get("mediaType") == "application/vnd.oci.image.manifest.v1+json"
+                and descriptor.get("digest") == KEYCLOAK_AMD64
+                and type(descriptor.get("size")) is int and descriptor["size"] == KEYCLOAK_MANIFEST_BYTES,
+                "idp_image_config_identity", diagnostic)
+    require(type(config) is dict and type(user) is str and user in ("1000", "1000:0"), "idp_image_user", diagnostic)
+    return {"status": "validated", "profile": profile, "id": identity,
+            "pinned_reference": IMAGE, "expected_config_digest": KEYCLOAK_CONFIG,
+            "platform": "linux/amd64", "user": user,
+            "manifest_descriptor": dict(descriptor) if profile == "containerd_manifest_descriptor" else None}
 
 
 class PrivateValues:
@@ -761,6 +823,7 @@ class KeycloakLab:
         self.network_created = False
         self.container_created = False
         self.attached = None
+        self.image_inspection = None
 
     def prepare(self) -> None:
         require(sys.platform.startswith("linux"), "linux_docker_required")
@@ -768,10 +831,9 @@ class KeycloakLab:
         context = self.runner.run(["docker", "context", "show"], label="docker-local-context")
         require(context.stdout.strip() == b"default", "nondefault_docker_context_refused")
         self.runner.run(["docker", "pull", "--platform", "linux/amd64", IMAGE], label="prepare-pinned-idp", timeout=300)
-        image = strict_json(self.runner.run(["docker", "image", "inspect", IMAGE], label="inspect-idp-image").stdout)
-        require(isinstance(image, list) and len(image) == 1 and image[0].get("Id") == KEYCLOAK_CONFIG,
-                "idp_image_config_identity")
-        require(image[0].get("Config", {}).get("User") in ("1000", "1000:0"), "idp_image_user")
+        image = strict_json(self.runner.run(["docker", "image", "inspect", IMAGE], label="inspect-idp-image").stdout,
+                            MAX_HTTP_BODY)
+        self.image_inspection = validate_image_inspection(image)
         self.runner.run(["docker", "network", "create", "--internal", "--driver", "bridge",
                          "--label", "termivar.oauth.owner=" + self.owner, self.network], label="create-owned-network")
         self.network_created = True
@@ -1294,6 +1356,7 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
         else:
             cleanup["private_work_secondary_error"] = "private_work_cleanup_failed"
     evidence["cleanup"] = cleanup
+    evidence["image_inspection"] = getattr(lab, "image_inspection", None)
     evidence["commands"] = runner.records
     evidence["cms_or_idp_execution"] = "performed" if evidence["scenarios"] else "not_established"
     if primary_error is not None:

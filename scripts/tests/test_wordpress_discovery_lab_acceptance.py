@@ -54,6 +54,7 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "V2: --session-cookie-file FILE",
         "V3: --session-login-file FILE",
         "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
+        "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
         "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
         "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
     ],
@@ -61,7 +62,7 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "complete health-qualified session-resource HTML may nominate public WordPress "
         "metadata; the credential is not sent to metadata or fingerprint requests; "
         "authenticated-page fingerprint acquisition is not selected; WordPress "
-        "supplied-session composition remains limited to V1/V2; V3/V4 are rejected "
+        "supplied-session composition remains limited to V1/V2; V3/V4/V5 are rejected "
         "before their secret files are read"
     ),
 }
@@ -1607,6 +1608,34 @@ def attach_supplied_session_comparison(
 
 
 class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
+    def test_session_capability_fixture_matches_narrow_named_producer_contract(self):
+        # The expected list/clauses above are independent literals. Reading this
+        # fixed producer is a consistency guard, not generation of the oracle
+        # or captured executable/real-CMS evidence.
+        source = (REPOSITORY_ROOT / "crates/termivar-cli/src/capabilities.rs").read_text(encoding="utf-8")
+        start = 'surface!(\n            "option.supplied-session-review",'
+        self.assertEqual(source.count(start), 1, "named producer extraction no longer applies")
+        block = source.split(start, 1)[1].split('\n        ),', 1)[0]
+        opening = '\n            &[\n'
+        self.assertEqual(block.count(opening), 1, "prerequisite extraction no longer applies")
+        lines = block.split(opening, 1)[1].split('\n            ],', 1)[0].splitlines()
+        self.assertTrue(lines and all(line.strip().endswith(',') for line in lines))
+        prerequisites = [json.loads(line.strip()[:-1]) for line in lines]
+        self.assertEqual(prerequisites, SYNTHETIC_SESSION_CAPABILITY["prerequisites"])
+        documentation = '\n            "docs/internals/supplied-session-review.md",'
+        self.assertEqual(block.count(documentation), 1, "limitation extraction no longer applies")
+        limitation_line = block.split(documentation, 1)[0].splitlines()[-1].strip()
+        self.assertTrue(limitation_line.endswith(','))
+        limitation = json.loads(limitation_line[:-1])
+        for clause in (
+            "health-qualified session-resource HTML may nominate public WordPress metadata",
+            "credential is not sent to metadata or fingerprint requests",
+            "authenticated-page fingerprint acquisition is not selected",
+            "WordPress supplied-session composition remains limited to V1/V2",
+            "V3/V4/V5 are rejected before their secret files are read",
+        ):
+            self.assertIn(clause, limitation)
+
     def test_discovery_capability_uses_the_real_prerequisites_wire_field(self):
         document = {
             "schema": "termivar-cli-capabilities/v1",
@@ -1658,11 +1687,21 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         ):
             runner._validate_discovery_capability(missing_v4)
 
+        missing_v5 = copy.deepcopy(document)
+        missing_v5["surfaces"][1]["prerequisites"].remove(
+            "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy"
+        )
+        with self.assertRaisesRegex(
+            runner.AcceptanceError,
+            "capabilities do not report compiled supplied-session review",
+        ):
+            runner._validate_discovery_capability(missing_v5)
+
         stale_wordpress_boundary = copy.deepcopy(document)
         stale_wordpress_boundary["surfaces"][1]["limitation"] = (
             stale_wordpress_boundary["surfaces"][1]["limitation"].replace(
+                "V3/V4/V5 are rejected before their secret files are read",
                 "V3/V4 are rejected before their secret files are read",
-                "V3 is rejected before its secret file is read",
             )
         )
         self.assertNotEqual(stale_wordpress_boundary, document)

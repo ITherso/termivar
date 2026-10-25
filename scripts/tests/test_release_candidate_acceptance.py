@@ -471,7 +471,7 @@ EXPECTED_SUPPLIED_SESSION_LIMITATION = (
     "2 + 2 * resource_count with at most three resources; complete uncoded JSON is bounded to "
     "32 KiB and all smaller parent/body limits. An imported transaction and S256 context are "
     "operator assertions, not proof this client initiated authorization, secured state/nonce, "
-    "or observed remote PKCE enforcement. The access token remains opaque Bearer material: "
+    "or observed remote PKCE enforcement. The access token remains opaque bearer material: "
     "no OIDC identity or token signature validation, browser callback, discovery, refresh or "
     "installed-version authority is established. Explicit token-scope echo is required by this "
     "profile; a token response alone never establishes target session health. Credential use "
