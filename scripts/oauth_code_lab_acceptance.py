@@ -367,6 +367,64 @@ def last_owned_container_state(inspected: object, owner: object) -> dict:
     return result
 
 
+def daemon_start_lexical_signals(stdout: bytes, stderr: bytes, *, capture_complete: bool,
+                                 inspected: object, owner: object, private: PrivateValues | None) -> dict:
+    """Fixed presence flags, not a masked transcript or an English parser."""
+    def refused(reason: str) -> dict:
+        return {"state": "not_eligible", "reason": reason}
+
+    if capture_complete is not True or type(stdout) is not bytes or stdout:
+        return refused("complete_empty_stdout_required")
+    if type(stderr) is not bytes or not 0 < len(stderr) <= MAX_HTTP_BODY:
+        return refused("bounded_complete_stderr_required")
+    if any(value not in (10, 13) and not 32 <= value <= 126 for value in stderr):
+        return refused("printable_ascii_required")
+    if last_owned_container_state(inspected, owner)["ownership"] != "validated":
+        return refused("validated_task_owner_required")
+    normalized = stderr.replace(b"\r\n", b"\n")
+    if b"\r" in normalized:
+        return refused("single_daemon_line_required")
+    lines = normalized.split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    prefix = b"Error response from daemon: "
+    trailer = b"Error: failed to start containers: " + owner.encode("ascii") + b"-idp"
+    if not (1 <= len(lines) <= 2 and lines[0].startswith(prefix) and len(lines[0]) > len(prefix)
+            and (len(lines) == 1 or lines[1] == trailer)):
+        return refused("single_daemon_line_required")
+    if type(private) is not PrivateValues:
+        return refused("private_registry_required")
+    try:
+        private.check(stderr)
+    except Exception:
+        return refused("private_registry_check_failed")
+    # Whitespace atoms only: paths, URLs, assignments, quoted values, numbers,
+    # hashes and compounds such as secret-tmpfs-value stay opaque. Never split
+    # them into apparently safe vocabulary fragments.
+    vocabulary = (
+        "tmpfs", "uid", "gid", "mode", "size", "mount", "mounts", "log", "logging", "driver", "local",
+        "max-size", "max-file", "invalid", "unknown", "unsupported", "support", "reading", "network",
+        "port", "address", "allocated", "stdin", "attach", "tty", "user", "runtime", "command", "cgroup",
+        "memory", "pids", "permission", "denied", "not", "found", "no", "such", "directory", "read", "file",
+        "filesystem", "cpu", "cpus", "nanocpus", "can", "be", "set", "kernel", "does", "cfs", "scheduler",
+        "mounted", "range", "of", "from", "to", "there", "are", "only", "available", "as", "your", "the",
+        "failed", "start", "container", "containers", "create", "task", "shim", "oci", "process", "exec",
+        "for", "argument", "option", "configuration", "error", "bind", "device", "root", "entrypoint",
+        "quota", "limit", "unable", "with", "is", "on", "and", "or", "in",
+    )
+    body = lines[0][len(prefix):].lower()
+    atoms = [atom.rstrip(b".,:;").decode("ascii") for atom in body.split()]
+    admitted = set(vocabulary)
+    present = set(atoms) & admitted
+    # Literal Moby v28.5.1 daemon_unix.go templates; values are never emitted.
+    cpu_cfs = body == b"nanocpus can not be set, as your kernel does not support cpu cfs scheduler or the cgroup is not mounted"
+    cpu_range = re.fullmatch(rb"range of cpus is from 0\.01 to ([1-9][0-9]{0,3})\.00, as there are only \1 cpus available", body) is not None
+    return {"state": "eligible", "interpretation": "lexical_signals_not_established_cause",
+            "presence": {word: word in present for word in vocabulary},
+            "templates": {"cpu_cfs_unavailable": cpu_cfs, "cpu_range_unavailable": cpu_range},
+            "unknown_token_count": sum(atom not in admitted for atom in atoms)}
+
+
 def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
                                private: PrivateValues | None = None, *, last_inspected: object = None,
                                owner: object = None, overflow: object = None) -> dict:
@@ -384,7 +442,8 @@ def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
                "capture_state": "unavailable", "stdout_captured_bytes": None, "stderr_captured_bytes": None,
                "classification_bytes": 0, "classification_scope": "first_128_kib_per_stream",
                "failure_classes": ["unknown"], "source_layer_markers": ["unknown"],
-               "marker_interpretation": "closed_text_signals_not_established_cause", "diagnostic_errors": []}
+               "marker_interpretation": "closed_text_signals_not_established_cause", "diagnostic_errors": [],
+               "docker_daemon_lexical": {"state": "not_eligible", "reason": "capture_unavailable"}}
     try:
         summary["last_owned_container_inspection"] = last_owned_container_state(last_inspected, owner)
     except Exception:
@@ -443,6 +502,12 @@ def startup_failure_diagnostic(child: CapturedChild, exit_code: object,
         if any(re.match(rb"owned-bootstrap: (?:-c: )?line [0-9]{1,4}:", line) for line in lines):
             summary["source_layer_markers"].append("owned_bootstrap_shell_error_prefix")
         summary["source_layer_markers"] = summary["source_layer_markers"] or ["unknown"]
+        try:
+            summary["docker_daemon_lexical"] = daemon_start_lexical_signals(
+                streams[0], streams[1], capture_complete=summary["capture_state"] == "complete",
+                inspected=last_inspected, owner=owner, private=private)
+        except Exception:
+            summary["docker_daemon_lexical"] = {"state": "not_eligible", "reason": "diagnostic_unavailable"}
     if private is not None:
         try:
             private.check(json.dumps(summary, sort_keys=True).encode())

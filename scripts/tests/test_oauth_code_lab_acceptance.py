@@ -565,6 +565,102 @@ max_token_response_bytes = 8192
 
 
 class ControllerTests(unittest.TestCase):
+    def test_daemon_lexical_vector_has_literal_whole_words_and_cpu_templates(self):
+        owner = "termivar-oauth-0123456789abcdef"
+        inspected = [{"Config": {"Labels": {"termivar.oauth.owner": owner}}}]
+        guard = lab.PrivateValues()
+        body = b"NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted"
+        result = lab.daemon_start_lexical_signals(b"", b"Error response from daemon: " + body + b"\n",
+                    capture_complete=True, inspected=inspected, owner=owner, private=guard)
+        self.assertEqual(result["state"], "eligible")
+        self.assertEqual(result["templates"], {"cpu_cfs_unavailable": True, "cpu_range_unavailable": False})
+        self.assertEqual(result["unknown_token_count"], 0)
+        for word in ("nanocpus", "cpu", "cfs", "scheduler", "cgroup", "mounted", "not", "support"):
+            self.assertIs(result["presence"][word], True)
+        for word in ("tmpfs", "logging", "uid", "network"):
+            self.assertIs(result["presence"][word], False)
+        body = b"range of CPUs is from 0.01 to 4.00, as there are only 4 CPUs available"
+        trailer = b"\nError: failed to start containers: " + owner.encode() + b"-idp\n"
+        result = lab.daemon_start_lexical_signals(b"", b"Error response from daemon: " + body + trailer,
+                    capture_complete=True, inspected=inspected, owner=owner, private=guard)
+        self.assertEqual(result["templates"], {"cpu_cfs_unavailable": False, "cpu_range_unavailable": True})
+        self.assertEqual(result["unknown_token_count"], 3)
+        self.assertTrue(all(type(value) is bool for value in result["presence"].values()))
+        self.assertNotIn("4.00", json.dumps(result))
+        self.assertNotIn(owner, json.dumps(result))
+
+    def test_daemon_lexical_vector_refuses_foreign_or_unassured_inputs(self):
+        owner = "termivar-oauth-0123456789abcdef"
+        inspected = [{"Config": {"Labels": {"termivar.oauth.owner": owner}}}]
+        baseline = {"stdout": b"", "stderr": b"Error response from daemon: invalid tmpfs mount\n", "capture_complete": True,
+                    "inspected": inspected, "owner": owner, "private": lab.PrivateValues()}
+        mutations = (
+            {"stdout": b"foreign stdout"}, {"capture_complete": False}, {"private": None},
+            {"owner": "termivar-oauth-fedcba9876543210"}, {"inspected": None},
+            {"stderr": b"prefix Error response from daemon: invalid tmpfs\n"},
+            {"stderr": b"Error response from daemonish: invalid tmpfs\n"},
+            {"stderr": baseline["stderr"] + b"foreign unrelated line\n"},
+            {"stderr": baseline["stderr"] + b"Error: failed to start containers: other-idp\n"},
+            {"stderr": baseline["stderr"] + b"\n"},
+            {"stderr": b"Error response from daemon: tmpfs \xff\n"},
+            {"stderr": b"Error response from daemon: tmpfs\tvalue\n"},
+            {"stderr": b"Error response from daemon: " + b"x" * (128 * 1024)},
+        )
+        for index, mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                result = lab.daemon_start_lexical_signals(**{**baseline, **mutation})
+                self.assertEqual(result["state"], "not_eligible")
+                self.assertNotIn("presence", result)
+                self.assertNotIn("unknown_token_count", result)
+
+    def test_daemon_lexical_vector_never_splits_secret_like_atoms_or_known_private_material(self):
+        owner = "termivar-oauth-0123456789abcdef"
+        inspected = [{"Config": {"Labels": {"termivar.oauth.owner": owner}}}]
+        guard = lab.PrivateValues()
+        compounds = b'prefix-tmpfs tmpfs-suffix prefix_tmpfs tmpfs_suffix tmpfs123 123tmpfs /tmpfs/file https://tmpfs.invalid mount=private token:tmpfs "tmpfs" [tmpfs]'
+        result = lab.daemon_start_lexical_signals(b"", b"Error response from daemon: " + compounds,
+                    capture_complete=True, inspected=inspected, owner=owner, private=guard)
+        self.assertEqual(result["state"], "eligible")
+        self.assertEqual(result["unknown_token_count"], 12)
+        self.assertFalse(any(result["presence"].values()))
+        self.assertNotIn("prefix-tmpfs", json.dumps(result))
+        self.assertNotIn("https://", json.dumps(result))
+        secret = b"synthetic-private-mount-value-never-export"
+        guard.add(secret)
+        for private_bytes in (secret, hashlib.sha256(secret).hexdigest().encode()):
+            refused = lab.daemon_start_lexical_signals(b"", b"Error response from daemon: invalid tmpfs " + private_bytes,
+                        capture_complete=True, inspected=inspected, owner=owner, private=guard)
+            self.assertEqual(refused, {"state": "not_eligible", "reason": "private_registry_check_failed"})
+            self.assertNotIn(private_bytes, json.dumps(refused).encode())
+        with mock.patch.object(guard, "check", side_effect=OSError("synthetic-private-guard-error")):
+            refused = lab.daemon_start_lexical_signals(b"", b"Error response from daemon: invalid tmpfs",
+                        capture_complete=True, inspected=inspected, owner=owner, private=guard)
+        self.assertEqual(refused["reason"], "private_registry_check_failed")
+        self.assertNotIn("synthetic-private", json.dumps(refused))
+
+    def test_daemon_cpu_template_prefix_suffix_or_value_mismatch_never_match(self):
+        owner = "termivar-oauth-0123456789abcdef"
+        inspected = [{"Config": {"Labels": {"termivar.oauth.owner": owner}}}]
+        body = b"NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted"
+        for message in (b"private-" + body, body + b"-private", b"range of CPUs is from 0.01 to 4.00, as there are only 3 CPUs available"):
+            result = lab.daemon_start_lexical_signals(b"", b"Error response from daemon: " + message,
+                        capture_complete=True, inspected=inspected, owner=owner, private=lab.PrivateValues())
+            self.assertEqual(result["templates"], {"cpu_cfs_unavailable": False, "cpu_range_unavailable": False})
+
+    def test_normal_prepare_records_daemon_vector_without_adding_work_or_hiding_failure(self):
+        _, failure = self._exercise_docker_prepare_and_cleanup(
+            literal_image_inspection("containerd"), startup_exit=1, startup_after_inspection=True,
+            inspection_state={"Status": "created", "Running": False, "ExitCode": 0, "OOMKilled": False, "Error": ""},
+            startup_output=b"Error response from daemon: invalid tmpfs mount reading size\n")
+        self.assertEqual(failure.code, "idp_startup_failure")
+        result = failure.diagnostic["docker_daemon_lexical"]
+        self.assertEqual(result["state"], "eligible")
+        self.assertEqual(result["unknown_token_count"], 0)
+        for word in ("invalid", "tmpfs", "mount", "reading", "size"):
+            self.assertIs(result["presence"][word], True)
+        self.assertIs(result["presence"]["cpu"], False)
+        self.assertEqual(result["interpretation"], "lexical_signals_not_established_cause")
+
     def test_last_owned_state_is_typed_stale_and_never_exports_inspection_secrets(self):
         owner = "termivar-oauth-0123456789abcdef"
         sentinel = "synthetic-private-state-error-and-environment-value"
@@ -944,6 +1040,9 @@ class ControllerTests(unittest.TestCase):
                 return lab.Result(b"", startup_output, startup_exit or 0, 0)
 
         class Runner:
+            def __init__(self):
+                self.private = private
+
             def run(self, args, *, label, **kwargs):
                 calls.append((args, label))
                 if label == "docker-local-context":
