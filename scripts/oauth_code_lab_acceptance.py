@@ -276,18 +276,59 @@ class PrivateValues:
 
     def __init__(self) -> None:
         self._values: list[bytes] = []
+        self._owned_input_root: bytes | None = None
+        self._owned_input_path_digests: set[bytes] = set()
+        self._retained_bytes = 0
 
     def add(self, value: str | bytes) -> None:
+        require(len(value) <= MAX_HTTP_BODY, "private_registry_limit")
         raw = value.encode("utf-8") if isinstance(value, str) else value
         if len(raw) >= 16 and raw not in self._values:
-            require(len(self._values) < 96 and len(raw) <= MAX_HTTP_BODY, "private_registry_limit")
+            require(len(self._values) < 96 and len(raw) <= MAX_HTTP_BODY
+                    and self._retained_bytes + len(raw) <= 96 * MAX_HTTP_BODY, "private_registry_limit")
             self._values.append(raw)
+            self._retained_bytes += len(raw)
+
+    def register_owned_input_path(self, work_root: Path, raw_path: str) -> None:
+        """Only the frozen eighteen controller-owned direct child paths.
+
+        The registered root guards every raw child path by containment. Each
+        full original child-path hash is still guarded separately; this does
+        not remove secret or raw provider-response canaries to save slots.
+        """
+        require(type(work_root) is type(Path()) and work_root.is_absolute() and type(raw_path) is str,
+                "private_input_path_guard")
+        root = str(work_root)
+        require(16 <= len(root) <= MAX_HTTP_BODY and len(raw_path) <= MAX_HTTP_BODY,
+                "private_input_path_guard")
+        root_bytes = root.encode("utf-8")
+        require(root_bytes in self._values
+                and (self._owned_input_root is None or self._owned_input_root == root_bytes),
+                "private_input_path_guard")
+        # Exact string equality is intentional: Windows Path equality alone
+        # would silently accept changed-case aliases. No resolve/read occurs.
+        admitted = any(raw_path == str(work_root / (name + suffix))
+                       for name in SCENARIOS for suffix in (".toml", ".secret.tsv"))
+        require(admitted and str(Path(raw_path).parent) == root, "private_input_path_guard")
+        raw = raw_path.encode("utf-8")
+        require(len(raw) <= MAX_HTTP_BODY and root_bytes in raw, "private_input_path_guard")
+        digest = hashlib.sha256(raw).digest()
+        if digest not in self._owned_input_path_digests:
+            require(len(self._owned_input_path_digests) < 18
+                    and self._retained_bytes + len(digest) <= 96 * MAX_HTTP_BODY,
+                    "private_registry_limit")
+            self._owned_input_path_digests.add(digest)
+            self._retained_bytes += len(digest)
+        # Share the already charged immutable root canary, not another copy.
+        self._owned_input_root = self._values[self._values.index(root_bytes)]
 
     def check(self, source: bytes) -> None:
         require(not any(value in source for value in self._values), "secret_in_output")
         # Detect public unkeyed digests without ever exporting the digest.
         require(not any(hashlib.sha256(value).hexdigest().encode() in source
                         for value in self._values), "secret_digest_in_output")
+        require(not any(value.hex().encode("ascii") in source
+                        for value in self._owned_input_path_digests), "secret_digest_in_output")
 
 
 def _record_fixture_failure(owner: object, error: Exception, channel: str) -> None:
@@ -2112,8 +2153,8 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                 target.deny_renewed_health = name == "refresh-health-loss"
                 policy = work / (name + ".toml")
                 grant_file = work / (name + ".secret.tsv")
-                private.add(str(policy))
-                private.add(str(grant_file))
+                private.register_owned_input_path(work, str(policy))
+                private.register_owned_input_path(work, str(grant_file))
                 grant = None
                 if name != "option-off":
                     if name == "replayed-code":

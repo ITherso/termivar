@@ -868,6 +868,35 @@ max_token_response_bytes = 8192
                     self.assertEqual(saved["offline"]["status"], "not_run")
                     self.assertTrue(saved["cleanup"]["private_work_removed"])
 
+    def test_fixed_nine_path_guard_reproduces_old_raw_registration_exhaustion_then_completes(self):
+        class RepresentativeCanaryRunner(FakeRunner):
+            def __init__(inner):
+                super().__init__()
+                # Independent capacity stress, not captured provider/cookie
+                # counts: all synthetic values stay guarded until closeout.
+                for index in range(73):
+                    inner.private.add("synthetic-private-controller-canary-" + str(index))
+
+        old = RepresentativeCanaryRunner()
+        with mock.patch.object(lab.PrivateValues, "register_owned_input_path",
+                               lambda private, work_root, raw_path: private.add(raw_path)), \
+             self.assertRaisesRegex(lab.LabError, "^private_registry_limit$"):
+            self.execute_fake(old)
+        self.assertEqual(len(old.private._values), 96)
+        self.assertLess(len(old.scanner_arguments), 9)
+
+        current = RepresentativeCanaryRunner()
+        result, _, _ = self.execute_fake(current)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(len(current.scanner_arguments), 9)
+        self.assertEqual(len(current.records), 32)
+        self.assertEqual(len(current.private._owned_input_path_digests), 18)
+        # 73 original canaries + two controller secrets + work root + the
+        # deliberately wrong verifier + three synthetic initial RT values.
+        self.assertEqual(len(current.private._values), 80)
+        self.assertEqual(set(result["offline"]["bundles"]), set(NAMES))
+        self.assertEqual(set(result["offline"]["controlled_comparisons"]), set(CONTROLS))
+
     def test_controller_replay_acceptance_is_a_failure_but_all_offline_checks_still_execute(self):
         runner = FakeRunner(replay_status=200)
         with tempfile.TemporaryDirectory(prefix="test-owned-oauth-", dir=ROOT) as directory:
@@ -927,6 +956,90 @@ max_token_response_bytes = 8192
 
 
 class ControllerTests(unittest.TestCase):
+    def test_all_eighteen_owned_path_raw_values_and_full_hashes_remain_private(self):
+        private = lab.PrivateValues()
+        work_root = ROOT / "synthetic-private-owned-input-work"
+        private.add(str(work_root))
+        self.assertEqual(len(private._owned_input_path_digests), 0)
+        paths = [str(work_root / (name + suffix))
+                 for name in NAMES for suffix in (".toml", ".secret.tsv")]
+        self.assertEqual(len(set(paths)), 18)
+        for raw in paths:
+            private.register_owned_input_path(work_root, raw)
+            with self.assertRaisesRegex(lab.LabError, "^secret_in_output$"):
+                private.check(raw.encode("utf-8"))
+            with self.assertRaisesRegex(lab.LabError, "^secret_digest_in_output$"):
+                private.check(hashlib.sha256(raw.encode("utf-8")).hexdigest().encode("ascii"))
+        self.assertEqual(len(private._values), 1)
+        self.assertEqual(len(private._owned_input_path_digests), 18)
+        self.assertEqual(private._retained_bytes, len(str(work_root).encode("utf-8")) + 18 * 32)
+        private.register_owned_input_path(work_root, paths[0])
+        self.assertEqual(len(private._owned_input_path_digests), 18)
+        self.assertIs(private._owned_input_root, private._values[0])
+        with self.assertRaisesRegex(lab.LabError, "^private_input_path_guard$"):
+            private.register_owned_input_path(work_root, str(work_root / "nineteenth.toml"))
+        self.assertEqual(len(private._owned_input_path_digests), 18)
+
+    def test_owned_path_guard_rejects_unregistered_roots_aliases_and_arbitrary_values(self):
+        work_root = ROOT / "synthetic-private-owned-input-work"
+        raw = str(work_root / "refresh-a.toml")
+        unregistered = lab.PrivateValues()
+        with self.assertRaisesRegex(lab.LabError, "^private_input_path_guard$"):
+            unregistered.register_owned_input_path(work_root, raw)
+        private = lab.PrivateValues()
+        private.add(str(work_root))
+        private.register_owned_input_path(work_root, raw)
+        other = ROOT / "synthetic-private-other-owned-input-work"
+        private.add(str(other))
+        bad = (
+            (str(work_root), raw),
+            (work_root, Path(raw)),
+            (Path("relative-owned-input-work"), "relative-owned-input-work/refresh-a.toml"),
+            (work_root, "synthetic-private-arbitrary-secret-value"),
+            (work_root, str(work_root / "REFRESH-A.toml")),
+            (work_root, str(work_root / "refresh-a.TOML")),
+            (work_root, str(work_root) + "/./refresh-a.toml"),
+            (work_root, str(work_root / "nested" / "refresh-a.toml")),
+            (work_root, str(work_root.parent / (work_root.name + "-lookalike") / "refresh-a.toml")),
+            (work_root, str(other / "refresh-a.toml")),
+            (other, str(other / "refresh-a.toml")),
+            (Path(str(work_root).swapcase()), raw),
+        )
+        for root, candidate in bad:
+            with self.subTest(root_type=type(root).__name__, value_type=type(candidate).__name__), \
+                 self.assertRaisesRegex(lab.LabError, "^private_input_path_guard$"):
+                private.register_owned_input_path(root, candidate)
+        self.assertEqual(len(private._owned_input_path_digests), 1)
+
+    def test_secret_count_and_accounted_payload_bounds_are_not_expanded_by_path_guard(self):
+        private = lab.PrivateValues()
+        for index in range(96):
+            private.add("synthetic-private-boundary-" + str(index))
+        with self.assertRaisesRegex(lab.LabError, "^private_registry_limit$"):
+            private.add("synthetic-private-ninety-seventh-secret")
+        self.assertEqual(len(private._values), 96)
+
+        aggregate = lab.PrivateValues()
+        anchor = str(ROOT.anchor)
+        root = Path(anchor + "p" * (lab.MAX_HTTP_BODY - 128 - len(anchor)))
+        self.assertEqual(len(str(root).encode("ascii")), lab.MAX_HTTP_BODY - 128)
+        aggregate.add(str(root))
+        for name in NAMES:
+            for suffix in (".toml", ".secret.tsv"):
+                aggregate.register_owned_input_path(root, str(root / (name + suffix)))
+        for index in range(94):
+            value = ("synthetic-private-large-" + str(index)).encode("ascii")
+            aggregate.add(value + b"x" * (lab.MAX_HTTP_BODY - len(value)))
+        self.assertEqual(len(aggregate._values), 95)
+        self.assertLessEqual(aggregate._retained_bytes, 96 * lab.MAX_HTTP_BODY)
+        with self.assertRaisesRegex(lab.LabError, "^private_registry_limit$"):
+            aggregate.add(b"z" * lab.MAX_HTTP_BODY)
+        self.assertEqual(len(aggregate._values), 95)
+        with self.assertRaisesRegex(lab.LabError, "^private_registry_limit$"):
+            aggregate.add(b"z" * (lab.MAX_HTTP_BODY + 1))
+        with self.assertRaisesRegex(lab.LabError, "^private_registry_limit$"):
+            aggregate.add("\u0131" * lab.MAX_HTTP_BODY)
+
     def test_public_code_and_refresh_forms_are_closed_and_keep_distinct_encoding(self):
         code = (b"grant_type=authorization_code&client_id=termivar-owned-public&redirect_uri="
                 b"http%3A%2F%2F127.0.0.1%3A1234%2Fcallback&code=original-synthetic-code&code_verifier=" + b"v" * 64)
