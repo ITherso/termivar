@@ -565,6 +565,13 @@ max_token_response_bytes = 8192
 
 
 class ControllerTests(unittest.TestCase):
+    def test_normal_prepare_satisfies_independent_local_logger_compression_constraint(self):
+        # Synthetic daemon oracle from public Moby local/config.go, not CI logs:
+        # compression defaults true and cannot accompany one retained file.
+        owner = self._exercise_docker_prepare_and_cleanup(literal_image_inspection("containerd"),
+                                                         enforce_logger_constraint=True)
+        self.assertEqual(owner.image_inspection["status"], "validated")
+
     def test_daemon_lexical_vector_has_literal_whole_words_and_cpu_templates(self):
         owner = "termivar-oauth-0123456789abcdef"
         inspected = [{"Config": {"Labels": {"termivar.oauth.owner": owner}}}]
@@ -1010,7 +1017,8 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(owner.image_inspection)
 
     def _exercise_docker_prepare_and_cleanup(self, image_document, startup_exit=None, startup_output=b"",
-                                            startup_after_inspection=False, inspection_state=None):
+                                            startup_after_inspection=False, inspection_state=None,
+                                            enforce_logger_constraint=False):
         private = lab.PrivateValues()
         resource_secret = "synthetic-resource-secret-never-in-argv"
         controller_secret = "synthetic-controller-secret-never-in-argv"
@@ -1019,6 +1027,8 @@ class ControllerTests(unittest.TestCase):
         calls = []
         attachments = []
         owner = None
+        created = []
+        daemon_logging_conflict = False
 
         class Process:
             def __init__(self):
@@ -1026,17 +1036,28 @@ class ControllerTests(unittest.TestCase):
 
             def poll(self):
                 self.polls += 1
+                if daemon_logging_conflict:
+                    return 1
                 if startup_after_inspection and self.polls == 1:
                     return None
                 return startup_exit
 
         class Attachment:
             def __init__(self, args, payload):
+                nonlocal daemon_logging_conflict
                 attachments.append((args, payload))
                 self.process = Process()
                 self.overflow = mock.Mock(is_set=lambda: False)
+                if enforce_logger_constraint:
+                    values = created[0]
+                    driver = values[values.index("--log-driver") + 1]
+                    options = dict(values[index + 1].split("=", 1) for index, value in enumerate(values) if value == "--log-opt")
+                    daemon_logging_conflict = (driver == "local" and int(options.get("max-file", "5")) <= 1
+                                               and options.get("compress", "true") == "true")
 
             def finish(self, timeout):
+                if daemon_logging_conflict:
+                    return lab.Result(b"", b"Error response from daemon: synthetic local logger constraint refusal\n", 1, 0)
                 return lab.Result(b"", startup_output, startup_exit or 0, 0)
 
         class Runner:
@@ -1045,6 +1066,8 @@ class ControllerTests(unittest.TestCase):
 
             def run(self, args, *, label, **kwargs):
                 calls.append((args, label))
+                if label == "create-owned-idp":
+                    created.append(args)
                 if label == "docker-local-context":
                     value = b"default\n"
                 elif label == "inspect-idp-image":
@@ -1053,6 +1076,7 @@ class ControllerTests(unittest.TestCase):
                     value = json.dumps([{
                         "Config": {"User": "1000:0", "Labels": {"termivar.oauth.owner": owner.owner}},
                         "HostConfig": {"Privileged": False, "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges=true"],
+                                       "LogConfig": {"Type": "local", "Config": {"max-size": "1m", "max-file": "1", "compress": "false"}},
                                        "NetworkMode": owner.network, "Binds": None, "Memory": 1073741824, "PidsLimit": 256,
                                        "Tmpfs": {"/tmp": "size=67108864,uid=1000", "/opt/keycloak/data": "size=201326592,uid=1000"},
                                        "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]}},
@@ -1091,6 +1115,9 @@ class ControllerTests(unittest.TestCase):
                                   "create-owned-idp", "inspect-owned-idp", "inspect-owned-network", "cleanup-owned-identity",
                                   "stop-owned-idp", "remove-owned-idp", "cleanup-owned-network-identity", "remove-owned-network"])
         args = next(args for args, label in calls if label == "create-owned-idp")
+        self.assertEqual(args[args.index("--log-driver") + 1], "local")
+        options = [args[index + 1] for index, value in enumerate(args) if value == "--log-opt"]
+        self.assertEqual(options, ["max-size=1m", "max-file=1", "compress=false"])
         for required in ("--pull=never", "--interactive", "1000:0", "ALL", "no-new-privileges=true", "127.0.0.1::8080"):
             self.assertIn(required, args)
         self.assertNotIn("--privileged", args)
@@ -1214,6 +1241,7 @@ class ControllerTests(unittest.TestCase):
         owner, network = "termivar-oauth-synthetic", "termivar-oauth-synthetic-net"
         container = {"Config": {"User": "1000:0", "Labels": {"termivar.oauth.owner": owner}},
                      "HostConfig": {"Privileged": False, "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges=true"],
+                                    "LogConfig": {"Type": "local", "Config": {"max-size": "1m", "max-file": "1", "compress": "false"}},
                                     "NetworkMode": network, "Binds": None, "Memory": 1073741824, "PidsLimit": 256,
                                     "Tmpfs": {"/tmp": "size=67108864,uid=1000", "/opt/keycloak/data": "size=201326592,uid=1000"},
                                     "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]}}, "Mounts": []}
@@ -1232,6 +1260,32 @@ class ControllerTests(unittest.TestCase):
             lab.validate_isolation(changed, net, owner, network)
         with self.assertRaises(lab.LabError):
             lab.validate_isolation(container, {**net, "Internal": False}, owner, network)
+        logging = {"Type": "local", "Config": {"max-size": "1m", "max-file": "1", "compress": "false"}}
+        invalid_logs = [None, False, [], "local", {}, {"Type": "local"}, {"Config": logging["Config"]},
+                        {"Type": "json-file", "Config": logging["Config"]},
+                        {"Type": False, "Config": logging["Config"]},
+                        {"Type": "local", "Config": None}, {"Type": "local", "Config": []}]
+        for key, values in (("compress", (None, False, True, "true", "False", 0)),
+                            ("max-size", (None, "2m", 1000000)), ("max-file", (None, "2", 1))):
+            missing = copy.deepcopy(logging)
+            del missing["Config"][key]
+            invalid_logs.append(missing)
+            for value in values:
+                changed = copy.deepcopy(logging)
+                changed["Config"][key] = value
+                invalid_logs.append(changed)
+        extra = copy.deepcopy(logging)
+        extra["Config"]["unreviewed-option"] = "value"
+        invalid_logs.append(extra)
+        for index, value in enumerate(invalid_logs):
+            changed = copy.deepcopy(container)
+            changed["HostConfig"]["LogConfig"] = value
+            with self.subTest(log_case=index), self.assertRaisesRegex(lab.LabError, "isolation_log_config"):
+                lab.validate_isolation(changed, net, owner, network)
+        changed = copy.deepcopy(container)
+        del changed["HostConfig"]["LogConfig"]
+        with self.assertRaisesRegex(lab.LabError, "isolation_log_config"):
+            lab.validate_isolation(changed, net, owner, network)
 
 
 if __name__ == "__main__":

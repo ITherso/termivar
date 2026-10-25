@@ -1033,6 +1033,7 @@ class KeycloakLab:
                 "--user", "1000:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
                 "--memory", "1g", "--cpus", "2", "--pids-limit", "256",
                 "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1",
+                "--log-opt", "compress=false",
                 "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=67108864,uid=1000,gid=0,mode=1700",
                 "--tmpfs", "/opt/keycloak/data:rw,nosuid,nodev,noexec,size=201326592,uid=1000,gid=0,mode=1700",
                 "--env", "KC_DB=dev-file", "--env", "KC_CACHE=local",
@@ -1125,6 +1126,13 @@ def validate_isolation(container: dict, network: dict, owner: str, name: str) ->
             and "no-new-privileges=true" in host.get("SecurityOpt", [])
             and host.get("NetworkMode") == name and not host.get("Binds")
             and host.get("Memory") == 1073741824 and host.get("PidsLimit") == 256, "isolation_host")
+    logging = host.get("LogConfig")
+    require(type(logging) is dict and set(logging) == {"Type", "Config"}
+            and type(logging.get("Type")) is str and logging["Type"] == "local"
+            and type(logging.get("Config")) is dict
+            and all(type(value) is str for value in logging["Config"].values())
+            and logging["Config"] == {"max-size": "1m", "max-file": "1", "compress": "false"},
+            "isolation_log_config")
     require(isinstance(host.get("Tmpfs"), dict)
             and set(host["Tmpfs"]) == {"/tmp", "/opt/keycloak/data"}
             and all(isinstance(value, str) and "size=" in value and "uid=1000" in value
