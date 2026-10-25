@@ -22,6 +22,7 @@ import html.parser
 import http.client
 import http.cookiejar
 import http.server
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -568,6 +569,137 @@ def request_bytes(url: str, method: str, body: bytes | None = None,
         conn.close()
 
 
+_IDP_UPSTREAM_SEAL = object()
+
+
+def _owned_network_plan(network: object, owner: str, name: str) -> tuple[str, tuple]:
+    require(type(network) is dict and type(owner) is str
+            and re.fullmatch(r"termivar-oauth-[0-9a-f]{16}", owner) is not None
+            and name == owner + "-net", "idp_network_identity")
+    labels, ipam = network.get("Labels"), network.get("IPAM")
+    require(type(labels) is dict and labels.get("termivar.oauth.owner") == owner
+            and network.get("Name") == name and network.get("Internal") is True
+            and network.get("Driver") == "bridge" and type(network.get("Id")) is str
+            and re.fullmatch(r"[0-9a-f]{64}", network["Id"]) is not None,
+            "idp_network_identity")
+    rows = ipam.get("Config") if type(ipam) is dict else None
+    require(type(rows) is list and 1 <= len(rows) <= 4, "idp_private_subnet")
+    ranges = tuple(ipaddress.IPv4Network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+    subnets = []
+    for row in rows:
+        raw = row.get("Subnet") if type(row) is dict else None
+        require(type(raw) is str and len(raw) <= 32, "idp_private_subnet")
+        try:
+            subnet = ipaddress.IPv4Network(raw, strict=True)
+        except ValueError:
+            raise LabError("idp_private_subnet") from None
+        require(any(subnet.subnet_of(scope) for scope in ranges) and all(not subnet.overlaps(previous) for previous in subnets), "idp_private_subnet")
+        subnets.append(subnet)
+    return network["Id"], tuple(subnets)
+
+
+def _provider_route(method: str, target: str) -> str:
+    require(type(target) is str and len(target) <= 4096, "relay_route_refused")
+    parsed = urllib.parse.urlsplit(target)
+    require(target == parsed.path and not parsed.scheme and not parsed.netloc
+            and not parsed.query and not parsed.fragment and not target.startswith("//"), "relay_route_refused")
+    routes = {("GET", REALM_PATH + "/.well-known/openid-configuration"): "setup-metadata",
+              ("POST", TOKEN_PATH): "token-exchange", ("POST", INTROSPECTION_PATH): "backend-introspection",
+              ("POST", AUTH_PATH): "controller-authorization"}
+    routes.update({("POST", "/admin/realms/" + REALM + "/users/" + value + "/impersonation"): "controller-sso-setup"
+                   for value in USER_IDS.values()})
+    require(type(method) is str and (method, target) in routes, "relay_route_refused")
+    return routes[(method, target)]
+
+
+@dataclasses.dataclass(frozen=True, repr=False)
+class _OwnedIdpUpstream:
+    _address: str
+    _network_id: str
+    _subnet: ipaddress.IPv4Network
+    _relay_host: str
+    _seal: object
+
+    def __post_init__(self):
+        self._validate()
+
+    def _validate(self) -> None:
+        require(self._seal is _IDP_UPSTREAM_SEAL and type(self._address) is str and len(self._address) <= 15
+                and type(self._network_id) is str and len(self._network_id) == 64
+                and re.fullmatch(r"[0-9a-f]{64}", self._network_id) is not None,
+                "idp_binding_seal")
+        require(type(self._subnet) is ipaddress.IPv4Network and any(self._subnet.subnet_of(ipaddress.IPv4Network(scope))
+                for scope in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")), "idp_binding_address")
+        try:
+            address = ipaddress.IPv4Address(self._address)
+        except ValueError:
+            raise LabError("idp_binding_address") from None
+        require(str(address) == self._address and address in self._subnet
+                and address not in (self._subnet.network_address, self._subnet.broadcast_address), "idp_binding_address")
+        matched = re.fullmatch(r"127\.0\.0\.1:([0-9]{1,5})", self._relay_host) if type(self._relay_host) is str and len(self._relay_host) <= 32 else None
+        require(matched is not None and 1 <= int(matched[1]) <= 65535
+                and self._relay_host == "127.0.0.1:" + str(int(matched[1])), "idp_binding_relay_host")
+
+    def request(self, method: str, target: str, body: bytes | None, headers: dict) -> tuple[int, list, bytes]:
+        require(self._seal is _IDP_UPSTREAM_SEAL and type(self) is _OwnedIdpUpstream, "idp_binding_seal")
+        self._validate()
+        _provider_route(method, target)
+        require(body is None or type(body) is bytes and len(body) <= MAX_HTTP_BODY, "http_body_limit")
+        require(method != "GET" or body is None, "relay_route_refused")
+        require(type(headers) is dict and set(headers) <= {"Host", "Accept-Encoding", "Content-Type", "Cookie", "Authorization", "Accept"}
+                and headers.get("Host") == self._relay_host and headers.get("Accept-Encoding") == "identity"
+                and all(type(value) is str and len(value) <= 16384 and "\r" not in value and "\n" not in value
+                        for value in headers.values()), "relay_header_limit")
+        conn = http.client.HTTPConnection(self._address, 8080, timeout=8)
+        try:
+            conn.request(method, target, body, headers)
+            response = conn.getresponse()
+            data = response.read(MAX_HTTP_BODY + 1)
+            require(len(data) <= MAX_HTTP_BODY, "http_body_limit")
+            return response.status, response.getheaders(), data
+        except (OSError, http.client.HTTPException):
+            raise LabError("owned_http_transport") from None
+        finally:
+            conn.close()
+
+
+def owned_idp_upstream(container: object, network: object, owner: str, name: str,
+                       relay_origin: str) -> _OwnedIdpUpstream | None:
+    network_id, subnets = _owned_network_plan(network, owner, name)
+    require(type(container) is dict and type(container.get("Config")) is dict
+            and type(container["Config"].get("Labels")) is dict
+            and type(container.get("HostConfig")) is dict and type(container.get("State")) is dict
+            and type(container["HostConfig"].get("SecurityOpt")) is list
+            and type(container.get("Mounts")) is list and all(type(row) is dict for row in container["Mounts"])
+            and type(container.get("NetworkSettings")) is dict, "idp_container_identity")
+    validate_isolation(container, network, owner, name)
+    state, settings = container["State"], container["NetworkSettings"]
+    require(type(state.get("Running")) is bool and state.get("Status") in ("created", "running")
+            and (state["Running"] is True) == (state["Status"] == "running"), "idp_container_state")
+    attachments = settings.get("Networks")
+    require(type(attachments) is dict and set(attachments) == {name}
+            and type(attachments[name]) is dict, "idp_single_network_attachment")
+    attachment = attachments[name]
+    require(type(attachment.get("NetworkID")) is str
+            and attachment["NetworkID"] in ((network_id,) if state["Running"] else ("", network_id)),
+            "idp_attachment_network_identity")
+    raw = attachment.get("IPAddress")
+    require(type(raw) is str and len(raw) <= 15, "idp_binding_address")
+    if not raw:
+        require(state["Running"] is False, "idp_binding_address")
+        return None
+    try:
+        address = ipaddress.IPv4Address(raw)
+    except ValueError:
+        raise LabError("idp_binding_address") from None
+    matching = [subnet for subnet in subnets if address in subnet and address not in (subnet.network_address, subnet.broadcast_address)]
+    require(len(matching) == 1 and str(address) == raw, "idp_binding_address")
+    if state["Running"] is False:
+        return None
+    origin = _loopback_origin(relay_origin)
+    return _OwnedIdpUpstream(raw, network_id, matching[0], urllib.parse.urlsplit(origin).netloc, _IDP_UPSTREAM_SEAL)
+
+
 class FormParser(html.parser.HTMLParser):
     """Small original controller parser; never executes provider HTML/JS."""
 
@@ -825,7 +957,7 @@ def _send(handler, status: int, body: bytes, content_type: str, headers: list = 
 class TokenRelay:
     def __init__(self, private: PrivateValues):
         self.private = private
-        self.upstream = None
+        self._upstream = None
         self.phase = "setup"
         self.trace: list[dict] = []
         self.errors: list[str] = []
@@ -845,30 +977,15 @@ class TokenRelay:
 
             def forward(self):
                 try:
-                    parsed = urllib.parse.urlsplit(self.path)
-                    if self.command == "GET" and parsed.path == REALM_PATH + "/.well-known/openid-configuration" and not parsed.query:
-                        role = "setup-metadata"
-                    elif self.command == "POST" and parsed.path == TOKEN_PATH and not parsed.query:
-                        role = "token-exchange"
-                    elif self.command == "POST" and parsed.path == INTROSPECTION_PATH and not parsed.query:
-                        role = "backend-introspection"
-                    elif self.command == "POST" and parsed.path == AUTH_PATH and not parsed.query:
-                        role = "controller-authorization"
-                    elif self.command == "POST" and parsed.path in {
-                        "/admin/realms/" + REALM + "/users/" + identifier + "/impersonation" for identifier in USER_IDS.values()
-                    } and not parsed.query:
-                        role = "controller-sso-setup"
-                    else:
-                        raise LabError("relay_route_refused")
-                    require(owner.upstream is not None and len(owner.trace) < MAX_TRACE, "relay_not_ready_or_limit")
+                    role = _provider_route(self.command, self.path)
+                    require(type(owner._upstream) is _OwnedIdpUpstream and len(owner.trace) < MAX_TRACE, "relay_not_ready_or_limit")
                     body = _read_request(self, MAX_HTTP_BODY)
-                    require(not parsed.query and not parsed.fragment, "relay_query_refused")
                     headers = {"Host": urllib.parse.urlsplit(owner.origin).netloc, "Accept-Encoding": "identity"}
                     for key in ("Content-Type", "Cookie", "Authorization", "Accept"):
                         if self.headers.get(key) is not None:
                             require(len(self.headers[key]) <= 16384, "relay_header_limit")
                             headers[key] = self.headers[key]
-                    status, response_headers, response_body = request_bytes(owner.upstream + self.path, self.command, body or None, headers)
+                    status, response_headers, response_body = owner._upstream.request(self.command, self.path, body or None, headers)
                     require(not any(k.lower() == "content-encoding" for k, _ in response_headers), "relay_coded_response")
                     # Values are only checked for leakage in private memory. The
                     # provider response is forwarded unchanged, never repaired.
@@ -893,6 +1010,12 @@ class TokenRelay:
                     _send(self, 502, b'{"error":"owned_relay_failure"}', "application/json")
 
         self.server = OwnedHTTPServer(Handler)
+
+    def bind_upstream(self, upstream: _OwnedIdpUpstream) -> None:
+        require(type(upstream) is _OwnedIdpUpstream and upstream._seal is _IDP_UPSTREAM_SEAL
+                and self._upstream is None, "idp_binding_already_frozen_or_invalid")
+        upstream._validate()
+        self._upstream = upstream
 
     @property
     def origin(self) -> str:
@@ -1014,6 +1137,47 @@ class KeycloakLab:
         self.container_created = False
         self.attached = None
         self.image_inspection = None
+        self._binding = None
+        self._last_owned_state = {"observation_scope": "last_inspected_before_client_exit_not_atomic_final_state",
+                                  "ownership": "not_established", "state": "unavailable"}
+        self.setup_evidence = {"internal_network_plan_validated": False, "isolation_validated": False,
+                               "no_host_port_bindings_validated": False, "log_configuration_validated": False,
+                               "binding_frozen": False, "binding_count": 0, "last_binding_state": "not_observed",
+                               "metadata_attempt_count": 0, "metadata_response_count": 0,
+                               "metadata_status_counts": {}, "owned_http_transport_failure_count": 0,
+                               "last_metadata": {"state": "not_observed", "json_type": None,
+                                                 "issuer_matches": None, "token_endpoint_matches": None}}
+
+    def _setup_diagnostic(self, inspected: object) -> dict:
+        try:
+            facts = self.setup_evidence
+            for key in ("binding_count", "metadata_attempt_count", "metadata_response_count", "owned_http_transport_failure_count"):
+                require(integer(facts[key]) and facts[key] <= MAX_TRACE, "readiness_diagnostic_count")
+            bins = facts["metadata_status_counts"]
+            require(type(bins) is dict and len(bins) <= MAX_TRACE
+                    and all(type(key) is str and re.fullmatch(r"[1-5][0-9]{2}", key)
+                            and integer(value) and 1 <= value <= MAX_TRACE for key, value in bins.items())
+                    and sum(bins.values()) == facts["metadata_response_count"]
+                    and facts["metadata_attempt_count"] == facts["metadata_response_count"] + facts["owned_http_transport_failure_count"]
+                    and facts["binding_count"] in (0, 1), "readiness_diagnostic_count")
+            require(all(type(facts[key]) is bool for key in ("internal_network_plan_validated", "isolation_validated",
+                        "no_host_port_bindings_validated", "log_configuration_validated", "binding_frozen"))
+                    and facts["binding_frozen"] == (facts["binding_count"] == 1)
+                    and facts["last_binding_state"] in ("not_observed", "pending_running_or_private_address", "validated_frozen_private_backend"),
+                    "readiness_diagnostic_state")
+            metadata = facts["last_metadata"]
+            require(type(metadata) is dict and set(metadata) == {"state", "json_type", "issuer_matches", "token_endpoint_matches"}
+                    and metadata["state"] in ("not_observed", "response_not_200", "parsed", "transport_unavailable", "json_malformed")
+                    and metadata["json_type"] in (None, "object", "array", "string", "boolean", "integer", "number", "null")
+                    and all(value is None or type(value) is bool for value in (metadata["issuer_matches"], metadata["token_endpoint_matches"])),
+                    "readiness_diagnostic_metadata")
+            diagnostic = {"phase": "owned_provider_readiness", **facts,
+                          "metadata_status_counts": dict(bins), "last_metadata": dict(facts["last_metadata"]),
+                          "last_owned_container_inspection": last_owned_container_state(inspected, self.owner) if inspected is not None else self._last_owned_state}
+            self.runner.private.check(json.dumps(diagnostic, sort_keys=True).encode())
+            return diagnostic
+        except Exception:
+            return {"phase": "owned_provider_readiness", "diagnostic_state": "unavailable"}
 
     def prepare(self) -> None:
         require(sys.platform.startswith("linux"), "linux_docker_required")
@@ -1027,9 +1191,14 @@ class KeycloakLab:
         self.runner.run(["docker", "network", "create", "--internal", "--driver", "bridge",
                          "--label", "termivar.oauth.owner=" + self.owner, self.network], label="create-owned-network")
         self.network_created = True
+        network = strict_json(self.runner.run(["docker", "network", "inspect", self.network], label="inspect-owned-network").stdout,
+                              MAX_HTTP_BODY)
+        require(type(network) is list and len(network) == 1, "idp_network_identity")
+        _owned_network_plan(network[0], self.owner, self.network)
+        self.setup_evidence["internal_network_plan_validated"] = True
         args = ["docker", "create", "--pull=never", "--platform", "linux/amd64", "--interactive",
                 "--name", self.container, "--label", "termivar.oauth.owner=" + self.owner,
-                "--network", self.network, "--publish", "127.0.0.1::8080",
+                "--network", self.network,
                 "--user", "1000:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
                 "--memory", "1g", "--cpus", "2", "--pids-limit", "256",
                 "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=1",
@@ -1062,26 +1231,56 @@ class KeycloakLab:
                                   "diagnostic_errors": ["startup_diagnostic_unavailable"]}
                 raise LabError("idp_startup_failure", diagnostic)
             inspected = strict_json(self.runner.run(["docker", "inspect", self.container], label="inspect-owned-idp", sensitive_output=True).stdout)
-            row = inspected[0]
-            ports = row.get("NetworkSettings", {}).get("Ports", {}).get("8080/tcp")
-            if isinstance(ports, list) and len(ports) == 1:
-                require(ports[0].get("HostIp") == "127.0.0.1" and re.fullmatch(r"[0-9]{1,5}", ports[0].get("HostPort", "")), "idp_loopback_port")
-                self.relay.upstream = "http://127.0.0.1:" + ports[0]["HostPort"]
+            require(type(inspected) is list and len(inspected) == 1, "idp_container_identity")
+            try:
+                self._last_owned_state = last_owned_container_state(inspected, self.owner)
+            except Exception:
+                pass
+            candidate = owned_idp_upstream(inspected[0], network[0], self.owner, self.network, self.relay.origin)
+            self.setup_evidence.update({"isolation_validated": True, "no_host_port_bindings_validated": True,
+                                        "log_configuration_validated": True})
+            if candidate is None:
+                require(self._binding is None, "idp_binding_lost")
+                self.setup_evidence["last_binding_state"] = "pending_running_or_private_address"
+            else:
+                if self._binding is None:
+                    self.relay.bind_upstream(candidate)
+                    self._binding = candidate
+                    self.setup_evidence.update({"binding_frozen": True, "binding_count": 1})
+                else:
+                    require(candidate == self._binding, "idp_binding_changed")
+                self.setup_evidence["last_binding_state"] = "validated_frozen_private_backend"
+                self.setup_evidence["metadata_attempt_count"] += 1
                 try:
                     status, _, data = request_bytes(self.relay.origin + REALM_PATH + "/.well-known/openid-configuration", "GET")
+                    require(type(status) is int and 100 <= status <= 599, "idp_metadata_status")
+                    self.setup_evidence["metadata_response_count"] += 1
+                    bins = self.setup_evidence["metadata_status_counts"]
+                    bins[str(status)] = bins.get(str(status), 0) + 1
+                    self.setup_evidence["last_metadata"] = {"state": "response_not_200", "json_type": None,
+                                                            "issuer_matches": None, "token_endpoint_matches": None}
                     if status == 200:
                         document = strict_json(data)
-                        require(document.get("issuer") == self.relay.origin + REALM_PATH
-                                and document.get("token_endpoint") == self.relay.origin + TOKEN_PATH, "idp_advertised_origin")
+                        kind = {dict: "object", list: "array", str: "string", bool: "boolean", int: "integer", float: "number", type(None): "null"}[type(document)]
+                        self.setup_evidence["last_metadata"].update({"state": "parsed", "json_type": kind})
+                        require(type(document) is dict, "idp_metadata_object")
+                        issuer = document.get("issuer") == self.relay.origin + REALM_PATH
+                        token = document.get("token_endpoint") == self.relay.origin + TOKEN_PATH
+                        self.setup_evidence["last_metadata"].update({"issuer_matches": issuer, "token_endpoint_matches": token})
+                        require(issuer and token, "idp_advertised_origin", self._setup_diagnostic(inspected))
                         break
                 except LabError as error:
+                    if error.code == "owned_http_transport":
+                        self.setup_evidence["owned_http_transport_failure_count"] += 1
+                        self.setup_evidence["last_metadata"] = {"state": "transport_unavailable", "json_type": None,
+                                                                "issuer_matches": None, "token_endpoint_matches": None}
+                    elif error.code == "json_malformed":
+                        self.setup_evidence["last_metadata"]["state"] = "json_malformed"
                     if error.code not in ("owned_http_transport", "json_malformed"):
                         raise
             time.sleep(1)
         else:
-            raise LabError("idp_readiness_timeout")
-        network = strict_json(self.runner.run(["docker", "network", "inspect", self.network], label="inspect-owned-network").stdout)
-        validate_isolation(inspected[0], network[0], self.owner, self.network)
+            raise LabError("idp_readiness_timeout", self._setup_diagnostic(inspected))
         # Readiness connection failures are not scanner acceptance failures.
         self.relay.errors.clear()
         self.relay.trace.clear()
@@ -1141,8 +1340,10 @@ def validate_isolation(container: dict, network: dict, owner: str, name: str) ->
     require(network.get("Internal") is True and network.get("Driver") == "bridge"
             and network.get("Labels", {}).get("termivar.oauth.owner") == owner, "isolation_network")
     ports = host.get("PortBindings")
-    require(isinstance(ports, dict) and set(ports) == {"8080/tcp"}
-            and len(ports["8080/tcp"]) == 1 and ports["8080/tcp"][0].get("HostIp") == "127.0.0.1", "isolation_port")
+    require(ports is None or type(ports) is dict and not ports, "isolation_port")
+    settings = container.get("NetworkSettings")
+    exposed = settings.get("Ports") if type(settings) is dict else None
+    require(exposed is None or type(exposed) is dict and all(value is None for value in exposed.values()), "isolation_port")
 
 
 def policy_source(issuer: str, redirect: str, principal: str) -> bytes:
@@ -1569,6 +1770,10 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
             cleanup["private_work_secondary_error"] = "private_work_cleanup_failed"
     evidence["cleanup"] = cleanup
     evidence["image_inspection"] = getattr(lab, "image_inspection", None)
+    try:
+        evidence["provider_setup"] = lab._setup_diagnostic(None) if hasattr(lab, "_setup_diagnostic") else None
+    except Exception:
+        evidence["provider_setup"] = {"phase": "owned_provider_readiness", "diagnostic_state": "unavailable"}
     evidence["commands"] = runner.records
     evidence["cms_or_idp_execution"] = "performed" if evidence["scenarios"] else "not_established"
     if primary_error is not None:

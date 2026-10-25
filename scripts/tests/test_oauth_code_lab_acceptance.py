@@ -46,6 +46,23 @@ def literal_image_inspection(profile="legacy"):
     return [row]
 
 
+def literal_owned_provider_boundary():
+    """Independent original Docker metadata, not captured native output."""
+    owner = "termivar-oauth-0123456789abcdef"
+    name = owner + "-net"
+    network = {"Id": "a" * 64, "Name": name, "Internal": True, "Driver": "bridge",
+               "Labels": {"termivar.oauth.owner": owner}, "IPAM": {"Config": [{"Subnet": "172.28.0.0/16"}]}}
+    container = {"Config": {"User": "1000:0", "Labels": {"termivar.oauth.owner": owner}},
+                 "HostConfig": {"Privileged": False, "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges=true"],
+                                "NetworkMode": name, "Binds": None, "Memory": 1073741824, "PidsLimit": 256,
+                                "LogConfig": {"Type": "local", "Config": {"max-size": "1m", "max-file": "1", "compress": "false"}},
+                                "Tmpfs": {"/tmp": "size=67108864,uid=1000", "/opt/keycloak/data": "size=201326592,uid=1000"},
+                                "PortBindings": {}}, "Mounts": [], "State": {"Status": "running", "Running": True},
+                 "NetworkSettings": {"Ports": {"8080/tcp": None}, "Networks": {name: {
+                     "NetworkID": "a" * 64, "IPAddress": "172.28.0.2"}}}}
+    return owner, name, container, network
+
+
 def synthetic_audit(name="valid-a"):
     """Literal reviewed V5 subset consumed by the helper, not a product export."""
     if name == "option-off":
@@ -565,6 +582,154 @@ max_token_response_bytes = 8192
 
 
 class ControllerTests(unittest.TestCase):
+    def test_owned_private_factory_requires_exact_independent_network_and_container_facts(self):
+        owner, name, container, network = literal_owned_provider_boundary()
+        binding = lab.owned_idp_upstream(container, network, owner, name, "http://127.0.0.1:1234")
+        self.assertIs(type(binding), lab._OwnedIdpUpstream)
+        self.assertNotIn("172.28.0.2", repr(binding))
+        self.assertNotIn(owner, repr(binding))
+        mutations = (
+            ("network", ("Internal",), 1), ("network", ("Driver",), "overlay"),
+            ("network", ("Name",), "foreign-network"), ("network", ("Id",), True),
+            ("network", ("Labels", "termivar.oauth.owner"), "foreign-owner"),
+            ("network", ("IPAM", "Config"), []), ("network", ("IPAM", "Config"), True),
+            ("container", ("Config", "Labels", "termivar.oauth.owner"), "foreign-owner"),
+            ("container", ("HostConfig", "PortBindings"), {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "1234"}]}),
+            ("container", ("HostConfig", "PortBindings"), False),
+            ("container", ("NetworkSettings", "Networks", name, "NetworkID"), "b" * 64),
+            ("container", ("NetworkSettings", "Networks", name, "NetworkID"), True),
+            ("container", ("NetworkSettings", "Networks"), []),
+            ("container", ("NetworkSettings", "Networks"), {name: {}, "foreign": {}}),
+            ("container", ("State", "Running"), 1), ("container", ("State", "Running"), False),
+            ("container", ("State", "Status"), "created"), ("container", ("State",), None),
+        )
+        for index, (root, path, value) in enumerate(mutations):
+            documents = {"network": copy.deepcopy(network), "container": copy.deepcopy(container)}
+            target = documents[root]
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            with self.subTest(index=index), mock.patch.object(lab.http.client, "HTTPConnection") as connection, \
+                 self.assertRaises(lab.LabError):
+                lab.owned_idp_upstream(documents["container"], documents["network"], owner, name, "http://127.0.0.1:1234")
+            connection.assert_not_called()
+        for subnet in (True, "8.8.8.0/24", "127.0.0.0/8", "169.254.0.0/16", "192.0.2.0/24", "172.28.0.1/16", "fd00::/64"):
+            changed = copy.deepcopy(network)
+            changed["IPAM"]["Config"] = [{"Subnet": subnet}]
+            with self.subTest(subnet_class="rejected"), self.assertRaises(lab.LabError):
+                lab.owned_idp_upstream(container, changed, owner, name, "http://127.0.0.1:1234")
+        for address in (None, True, "", "8.8.8.8", "172.29.0.2", "172.28.0.0", "172.28.255.255", "::1", "172.28.0.%32"):
+            changed = copy.deepcopy(container)
+            changed["NetworkSettings"]["Networks"][name]["IPAddress"] = address
+            with self.subTest(address_class="rejected"), self.assertRaises(lab.LabError):
+                lab.owned_idp_upstream(changed, network, owner, name, "http://127.0.0.1:1234")
+        for key in ("NetworkID", "IPAddress"):
+            changed = copy.deepcopy(container)
+            del changed["NetworkSettings"]["Networks"][name][key]
+            with self.subTest(missing=key), self.assertRaises(lab.LabError):
+                lab.owned_idp_upstream(changed, network, owner, name, "http://127.0.0.1:1234")
+        pending = copy.deepcopy(container)
+        pending["State"] = {"Status": "created", "Running": False}
+        pending["NetworkSettings"]["Networks"][name].update({"NetworkID": "", "IPAddress": ""})
+        self.assertIsNone(lab.owned_idp_upstream(pending, network, owner, name, "http://127.0.0.1:1234"))
+
+    def test_private_descriptor_dispatch_is_exact_bounded_and_does_not_relax_loopback_client(self):
+        owner, name, container, network = literal_owned_provider_boundary()
+        binding = lab.owned_idp_upstream(container, network, owner, name, "http://127.0.0.1:1234")
+        headers = {"Host": "127.0.0.1:1234", "Accept-Encoding": "identity"}
+        target = "/realms/termivar-owned-code/.well-known/openid-configuration"
+        with mock.patch.object(lab.http.client, "HTTPConnection") as factory:
+            response = factory.return_value.getresponse.return_value
+            response.status, response.read.return_value, response.getheaders.return_value = 200, b"{}", []
+            self.assertEqual(binding.request("GET", target, None, headers), (200, [], b"{}"))
+            factory.assert_called_once_with("172.28.0.2", 8080, timeout=8)
+            factory.return_value.request.assert_called_once_with("GET", target, None, headers)
+            response.read.assert_called_once_with(128 * 1024 + 1)
+            factory.return_value.close.assert_called_once()
+        refused = ("http://foreign.invalid" + target, "//foreign.invalid" + target, target + "?x=1", target + "#x", "/unseen/", target + "/")
+        for path in refused:
+            with self.subTest(target_class="rejected"), mock.patch.object(lab.http.client, "HTTPConnection") as connection, \
+                 self.assertRaises(lab.LabError):
+                binding.request("GET", path, None, headers)
+            connection.assert_not_called()
+        with mock.patch.object(lab.http.client, "HTTPConnection") as connection:
+            for url in ("http://172.28.0.2:8080" + target, "http://8.8.8.8:8080" + target):
+                with self.assertRaises(lab.LabError):
+                    lab.request_bytes(url, "GET")
+            connection.assert_not_called()
+        for field, value in (("_address", "8.8.8.8"), ("_address", "172.29.0.2"),
+                              ("_subnet", lab.ipaddress.IPv4Network("0.0.0.0/0")),
+                              ("_relay_host", "foreign.invalid:1234"), ("_seal", True)):
+            forged = copy.copy(binding)
+            object.__setattr__(forged, field, value)
+            with self.subTest(field=field), mock.patch.object(lab.http.client, "HTTPConnection") as connection, \
+                 self.assertRaises(lab.LabError):
+                forged.request("GET", target, None, headers)
+            connection.assert_not_called()
+        with self.assertRaises(lab.LabError):
+            lab._OwnedIdpUpstream("172.28.0.2", "a" * 64, lab.ipaddress.IPv4Network("172.28.0.0/16"), "127.0.0.1:1234", True)
+        relay = lab.TokenRelay(lab.PrivateValues())
+        self.addCleanup(relay.server.server_close)
+        relay.bind_upstream(binding)
+        with self.assertRaises(lab.LabError):
+            relay.bind_upstream(binding)
+
+    def test_internal_only_network_uses_owned_private_binding_without_host_port(self):
+        with mock.patch.object(lab.time, "monotonic", side_effect=(0, 0, 181)):
+            owner = self._exercise_docker_prepare_and_cleanup(literal_image_inspection("containerd"),
+                                                             internal_bridge=True)
+        self.assertTrue(owner.setup_evidence["binding_frozen"])
+        self.assertEqual(owner.setup_evidence["binding_count"], 1)
+        self.assertEqual(owner.setup_evidence["metadata_attempt_count"], 1)
+
+    def test_readiness_timeout_distinguishes_pending_binding_status_transport_and_json(self):
+        cases = (
+            (True, None, 0, {}, 0, "not_observed"),
+            (False, (503,), 1, {"503": 1}, 0, "response_not_200"),
+            (False, (lab.LabError("owned_http_transport"),), 1, {}, 1, "transport_unavailable"),
+            (False, ((200, b"{"),), 1, {"200": 1}, 0, "json_malformed"),
+        )
+        for pending, outcomes, attempts, bins, failures, state in cases:
+            with self.subTest(state=state), mock.patch.object(lab.time, "monotonic", side_effect=(0, 0, 181)):
+                owner, error = self._exercise_docker_prepare_and_cleanup(literal_image_inspection("containerd"),
+                    pending_private_address=pending, readiness_outcomes=outcomes, expected_error="idp_readiness_timeout")
+            self.assertEqual(error.code, "idp_readiness_timeout")
+            diagnostic = error.diagnostic
+            self.assertEqual(diagnostic["metadata_attempt_count"], attempts)
+            self.assertEqual(diagnostic["metadata_status_counts"], bins)
+            self.assertEqual(diagnostic["owned_http_transport_failure_count"], failures)
+            self.assertEqual(diagnostic["last_metadata"]["state"], state)
+            self.assertIsNone(diagnostic["last_metadata"]["issuer_matches"])
+            self.assertIsNone(diagnostic["last_metadata"]["token_endpoint_matches"])
+            self.assertEqual(diagnostic["binding_count"], int(not pending))
+            self.assertTrue(diagnostic["no_host_port_bindings_validated"])
+            payload = json.dumps(diagnostic)
+            for private in ("172.28.0.2", owner.owner, owner.network, "http://", "a" * 64):
+                self.assertNotIn(private, payload)
+
+    def test_readiness_reuses_one_frozen_binding_and_rejects_diagnostic_bool_counts(self):
+        with mock.patch.object(lab.time, "monotonic", side_effect=(0, 0, 1, 2)):
+            owner = self._exercise_docker_prepare_and_cleanup(literal_image_inspection("containerd"),
+                       readiness_outcomes=(503, lab.LabError("owned_http_transport"), 200))
+        owner.relay.bind_upstream.assert_called_once()
+        self.assertEqual(owner.setup_evidence["binding_count"], 1)
+        self.assertEqual(owner.setup_evidence["metadata_attempt_count"], 3)
+        self.assertEqual(owner.setup_evidence["metadata_status_counts"], {"503": 1, "200": 1})
+        self.assertEqual(owner.setup_evidence["last_metadata"], {"state": "parsed", "json_type": "object",
+                                                                 "issuer_matches": True, "token_endpoint_matches": True})
+        for key in ("binding_count", "metadata_attempt_count", "metadata_response_count", "owned_http_transport_failure_count"):
+            original = owner.setup_evidence[key]
+            owner.setup_evidence[key] = True
+            self.assertEqual(owner._setup_diagnostic(None), {"phase": "owned_provider_readiness", "diagnostic_state": "unavailable"})
+            owner.setup_evidence[key] = original
+        original = owner.setup_evidence["metadata_status_counts"]
+        for malformed in ({"200": True}, {"999": 1}, {"200": 0}, [], {"200": 3}):
+            owner.setup_evidence["metadata_status_counts"] = malformed
+            self.assertEqual(owner._setup_diagnostic(None)["diagnostic_state"], "unavailable")
+        owner.setup_evidence["metadata_status_counts"] = original
+        with mock.patch.object(owner.runner.private, "check", side_effect=OSError("synthetic-private-diagnostic-error")):
+            self.assertEqual(owner._setup_diagnostic(None)["diagnostic_state"], "unavailable")
+
     def test_normal_prepare_satisfies_independent_local_logger_compression_constraint(self):
         # Synthetic daemon oracle from public Moby local/config.go, not CI logs:
         # compression defaults true and cannot accompany one retained file.
@@ -1018,7 +1183,8 @@ class ControllerTests(unittest.TestCase):
 
     def _exercise_docker_prepare_and_cleanup(self, image_document, startup_exit=None, startup_output=b"",
                                             startup_after_inspection=False, inspection_state=None,
-                                            enforce_logger_constraint=False):
+                                            enforce_logger_constraint=False, internal_bridge=True,
+                                            pending_private_address=False, readiness_outcomes=None, expected_error=None):
         private = lab.PrivateValues()
         resource_secret = "synthetic-resource-secret-never-in-argv"
         controller_secret = "synthetic-controller-secret-never-in-argv"
@@ -1073,7 +1239,7 @@ class ControllerTests(unittest.TestCase):
                 elif label == "inspect-idp-image":
                     value = json.dumps(image_document).encode()
                 elif label in ("inspect-owned-idp", "cleanup-owned-identity"):
-                    value = json.dumps([{
+                    document = {
                         "Config": {"User": "1000:0", "Labels": {"termivar.oauth.owner": owner.owner}},
                         "HostConfig": {"Privileged": False, "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges=true"],
                                        "LogConfig": {"Type": "local", "Config": {"max-size": "1m", "max-file": "1", "compress": "false"}},
@@ -1082,9 +1248,22 @@ class ControllerTests(unittest.TestCase):
                                        "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]}},
                          "Mounts": [], "NetworkSettings": {"Ports": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "2345"}]}},
                          "State": inspection_state,
-                    }]).encode()
+                    }
+                    if internal_bridge:
+                        document["HostConfig"]["PortBindings"] = {}
+                        document["NetworkSettings"] = {"Ports": {"8080/tcp": None}, "Networks": {
+                            owner.network: {"NetworkID": "a" * 64, "IPAddress": "172.28.0.2"}}}
+                        document["State"] = inspection_state or {"Status": "running", "Running": True}
+                        if pending_private_address:
+                            document["State"] = {"Status": "created", "Running": False}
+                            document["NetworkSettings"]["Networks"][owner.network]["IPAddress"] = ""
+                    value = json.dumps([document]).encode()
                 elif label in ("inspect-owned-network", "cleanup-owned-network-identity"):
-                    value = json.dumps([{"Internal": True, "Driver": "bridge", "Labels": {"termivar.oauth.owner": owner.owner}}]).encode()
+                    document = {"Internal": True, "Driver": "bridge", "Labels": {"termivar.oauth.owner": owner.owner}}
+                    if internal_bridge:
+                        document.update({"Name": owner.network, "Id": "a" * 64,
+                                         "IPAM": {"Config": [{"Subnet": "172.28.0.0/16"}]}})
+                    value = json.dumps([document]).encode()
                 else:
                     value = b"owned-success"
                 return lab.Result(value, b"", 0, 0.01)
@@ -1092,11 +1271,19 @@ class ControllerTests(unittest.TestCase):
         owner = lab.KeycloakLab(Runner(), relay, realm)
         metadata = {"issuer": "http://127.0.0.1:1234/realms/termivar-owned-code",
                     "token_endpoint": "http://127.0.0.1:1234/realms/termivar-owned-code/protocol/openid-connect/token"}
+        outcomes = list(readiness_outcomes) if readiness_outcomes is not None else [503 if startup_after_inspection else 200]
+
+        def metadata_response(*args, **kwargs):
+            result = outcomes.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return (result[0], [], result[1]) if type(result) is tuple else (result, [], json.dumps(metadata).encode())
+
         with mock.patch.object(lab.sys, "platform", "linux"), mock.patch.dict(lab.os.environ, {"DOCKER_HOST": ""}), \
              mock.patch.object(lab, "CapturedChild", Attachment), \
-              mock.patch.object(lab, "request_bytes", return_value=(503 if startup_after_inspection else 200, [], json.dumps(metadata).encode())) as requests, \
+              mock.patch.object(lab, "request_bytes", side_effect=metadata_response) as requests, \
               mock.patch.object(lab.time, "sleep"):
-            if startup_exit is None:
+            if startup_exit is None and expected_error is None:
                 owner.prepare()
             else:
                 with self.assertRaises(lab.LabError) as raised:
@@ -1104,22 +1291,30 @@ class ControllerTests(unittest.TestCase):
             outcome = owner.cleanup()
         self.assertEqual(outcome["status"], "complete")
         labels = [label for _, label in calls]
+        if expected_error is not None:
+            self.assertEqual(raised.exception.code, expected_error)
+            self.assertEqual(labels.count("inspect-owned-network"), 1)
+            self.assertEqual(labels.count("inspect-owned-idp"), 1)
+            self.assertEqual(requests.call_count, int(not pending_private_address))
+            return owner, raised.exception
         if startup_exit is not None:
             self.assertEqual(labels.count("inspect-owned-idp"), int(startup_after_inspection))
-            self.assertEqual(requests.call_count, int(startup_after_inspection))
-            self.assertNotIn("inspect-owned-network", labels)
+            expected_probe = int(startup_after_inspection and inspection_state is not None and inspection_state.get("Running") is True)
+            self.assertEqual(requests.call_count, expected_probe)
+            self.assertEqual(labels.count("inspect-owned-network"), 1)
             self.assertEqual(labels[-5:], ["cleanup-owned-identity", "stop-owned-idp", "remove-owned-idp",
                                           "cleanup-owned-network-identity", "remove-owned-network"])
             return owner, raised.exception
-        self.assertEqual(labels, ["docker-local-context", "prepare-pinned-idp", "inspect-idp-image", "create-owned-network",
-                                  "create-owned-idp", "inspect-owned-idp", "inspect-owned-network", "cleanup-owned-identity",
+        self.assertEqual(labels, ["docker-local-context", "prepare-pinned-idp", "inspect-idp-image", "create-owned-network", "inspect-owned-network",
+                                  "create-owned-idp"] + ["inspect-owned-idp"] * requests.call_count + ["cleanup-owned-identity",
                                   "stop-owned-idp", "remove-owned-idp", "cleanup-owned-network-identity", "remove-owned-network"])
         args = next(args for args, label in calls if label == "create-owned-idp")
         self.assertEqual(args[args.index("--log-driver") + 1], "local")
         options = [args[index + 1] for index, value in enumerate(args) if value == "--log-opt"]
         self.assertEqual(options, ["max-size=1m", "max-file=1", "compress=false"])
-        for required in ("--pull=never", "--interactive", "1000:0", "ALL", "no-new-privileges=true", "127.0.0.1::8080"):
+        for required in ("--pull=never", "--interactive", "1000:0", "ALL", "no-new-privileges=true"):
             self.assertIn(required, args)
+        self.assertNotIn("--publish", args)
         self.assertNotIn("--privileged", args)
         self.assertNotIn("--volume", args)
         self.assertNotIn(resource_secret, " ".join(args))
@@ -1244,7 +1439,7 @@ class ControllerTests(unittest.TestCase):
                                     "LogConfig": {"Type": "local", "Config": {"max-size": "1m", "max-file": "1", "compress": "false"}},
                                     "NetworkMode": network, "Binds": None, "Memory": 1073741824, "PidsLimit": 256,
                                     "Tmpfs": {"/tmp": "size=67108864,uid=1000", "/opt/keycloak/data": "size=201326592,uid=1000"},
-                                    "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]}}, "Mounts": []}
+                                    "PortBindings": {}}, "Mounts": []}
         net = {"Internal": True, "Driver": "bridge", "Labels": {"termivar.oauth.owner": owner}}
         lab.validate_isolation(container, net, owner, network)
         for section, key, value in (("HostConfig", "Privileged", True), ("HostConfig", "CapDrop", []),
@@ -1255,7 +1450,7 @@ class ControllerTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(lab.LabError):
                 lab.validate_isolation(changed, net, owner, network)
         changed = copy.deepcopy(container)
-        changed["HostConfig"]["PortBindings"]["8080/tcp"][0]["HostIp"] = "0.0.0.0"
+        changed["HostConfig"]["PortBindings"] = {"8080/tcp": [{"HostIp": "0.0.0.0", "HostPort": "1234"}]}
         with self.assertRaises(lab.LabError):
             lab.validate_isolation(changed, net, owner, network)
         with self.assertRaises(lab.LabError):
