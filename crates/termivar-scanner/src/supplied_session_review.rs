@@ -947,7 +947,8 @@ pub struct SuppliedSessionPolicy {
     cookies: Vec<SuppliedSessionCookieMetadata>,
     login: Option<SuppliedSessionLoginPolicy>,
     renewal: Option<SuppliedSessionRenewalPolicy>,
-    oauth_code: Option<oauth_code::OAuthCodePolicy>,
+    // Keep the new optional payload out of every legacy policy's inline layout.
+    oauth_code: Option<Box<oauth_code::OAuthCodePolicy>>,
     policy_reference: String,
     application_reference: String,
     principal_reference: String,
@@ -1717,7 +1718,7 @@ impl SuppliedSessionPolicy {
             format!("supplied-session-policy-sha256:{}", hex(digest.finalize()));
         policy.version = SuppliedSessionPolicyVersion::V5;
         policy.credential_acquisition = SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce;
-        policy.oauth_code = Some(oauth_code);
+        policy.oauth_code = Some(Box::new(oauth_code));
         Ok(policy)
     }
 
@@ -1805,7 +1806,7 @@ impl SuppliedSessionPolicy {
     }
 
     pub(crate) fn oauth_code_policy(&self) -> Option<&oauth_code::OAuthCodePolicy> {
-        self.oauth_code.as_ref()
+        self.oauth_code.as_deref()
     }
 
     pub(crate) fn health_json_field(&self) -> &str {
@@ -2862,6 +2863,22 @@ fn http_token_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_optional_policy_storage_is_indirect_for_legacy_contexts() {
+        fn optional_payload(
+            policy: &SuppliedSessionPolicy,
+        ) -> &Option<Box<oauth_code::OAuthCodePolicy>> {
+            &policy.oauth_code
+        }
+        let legacy = renewal_policy();
+        assert!(optional_payload(&legacy).is_none());
+        assert!(legacy.oauth_code_policy().is_none());
+        assert_eq!(
+            std::mem::size_of_val(optional_payload(&legacy)),
+            std::mem::size_of::<usize>()
+        );
+    }
 
     // Original, independently specified imported-code profile. It does not
     // assert that Termivar initiated an authorization or verified OIDC identity.

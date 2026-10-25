@@ -805,8 +805,9 @@ pub struct WebAssessmentSuppliedSessionAudit {
     login: Option<SuppliedSessionLoginAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     renewal: Option<SuppliedSessionRenewalAudit>,
+    // V5-only state must not enlarge every legacy report's inline payload.
     #[serde(skip_serializing_if = "Option::is_none")]
-    oauth_code: Option<SuppliedSessionOAuthCodeAudit>,
+    oauth_code: Option<Box<SuppliedSessionOAuthCodeAudit>>,
 }
 
 /// Value-free record of the one explicit credential transition and its health gate.
@@ -874,7 +875,7 @@ const fn legacy_credential_acquisition(value: &SuppliedSessionCredentialAcquisit
 
 impl WebAssessmentSuppliedSessionAudit {
     pub fn oauth_code(&self) -> Option<&SuppliedSessionOAuthCodeAudit> {
-        self.oauth_code.as_ref()
+        self.oauth_code.as_deref()
     }
     pub fn renewal(&self) -> Option<&SuppliedSessionRenewalAudit> {
         self.renewal.as_ref()
@@ -977,8 +978,10 @@ pub(super) struct SuppliedSessionRuntimeConfig {
     requests: HttpRequestBroker,
     login_page: Option<SuppliedSessionRequestDescriptor>,
     login_submit: Option<SuppliedSessionRequestDescriptor>,
-    oauth_code_requests: Option<OAuthCodeRequestBroker>,
-    oauth_code_descriptor: Option<OAuthCodeRequestDescriptor>,
+    // These children are allocated only when V5 is selected. The broker and
+    // descriptor retain the same owner and shared assessment allowance.
+    oauth_code_requests: Option<Box<OAuthCodeRequestBroker>>,
+    oauth_code_descriptor: Option<Box<OAuthCodeRequestDescriptor>>,
     health: SuppliedSessionRequestDescriptor,
     resources: Vec<(SuppliedSessionRequestDescriptor, String)>,
 }
@@ -1020,8 +1023,10 @@ impl SuppliedSessionRuntimeConfig {
         let (oauth_code_requests, oauth_code_descriptor) =
             if policy.version() == SuppliedSessionPolicyVersion::V5 {
                 (
-                    Some(authority.mint_oauth_code_broker(&policy)?),
-                    Some(OAuthCodeRequestDescriptor::from_policy(&policy).ok_or(())?),
+                    Some(Box::new(authority.mint_oauth_code_broker(&policy)?)),
+                    Some(Box::new(
+                        OAuthCodeRequestDescriptor::from_policy(&policy).ok_or(())?,
+                    )),
                 )
             } else {
                 (None, None)
@@ -1127,20 +1132,24 @@ impl SuppliedSessionRuntimeConfig {
                     state.add_not_dispatched(&resources);
                     return state.finish(policy);
                 };
-                let (audit, acquired) = oauth_code::acquire(
-                    OAuthCodeAcquisitionContext {
-                        authority,
-                        requests: idp_requests,
-                        descriptor,
-                        policy: &policy,
-                        deadline,
-                        budget: state.dispatch_budget(),
-                    },
-                    &grant,
-                )
+                // Keep this new child's construction frame out of legacy
+                // session polls; it is still driven by this one parent.
+                let (audit, acquired) = boxed_dispatch_execution(|| {
+                    oauth_code::acquire(
+                        OAuthCodeAcquisitionContext {
+                            authority,
+                            requests: idp_requests,
+                            descriptor,
+                            policy: &policy,
+                            deadline,
+                            budget: state.dispatch_budget(),
+                        },
+                        &grant,
+                    )
+                })
                 .await;
                 state.response_bytes = state.response_bytes.saturating_add(audit.response_bytes());
-                state.oauth_code = Some(audit);
+                state.oauth_code = Some(Box::new(audit));
                 match acquired {
                     Ok(acquired) => {
                         // Provider-declared lifetime narrows use; reaching it
@@ -1654,7 +1663,7 @@ struct ExecutionState {
     response_bytes: u64,
     epoch: u8,
     renewal: Option<SuppliedSessionRenewalAudit>,
-    oauth_code: Option<SuppliedSessionOAuthCodeAudit>,
+    oauth_code: Option<Box<SuppliedSessionOAuthCodeAudit>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1675,7 +1684,7 @@ impl ExecutionState {
             selected_resource_count,
             response_bytes: 0,
             epoch: 1,
-            oauth_code: SuppliedSessionOAuthCodeAudit::selected(policy),
+            oauth_code: SuppliedSessionOAuthCodeAudit::selected(policy).map(Box::new),
             renewal: policy
                 .renewal_after_resource_count()
                 .map(|after_resource_count| SuppliedSessionRenewalAudit {
@@ -3757,6 +3766,23 @@ fn strict_top_level_boolean(bytes: &[u8], field: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn oauth_optional_runtime_storage_is_indirect_for_legacy_contexts() {
+        let _: fn(&SuppliedSessionRuntimeConfig) -> &Option<Box<OAuthCodeRequestBroker>> =
+            |config| &config.oauth_code_requests;
+        let _: fn(&SuppliedSessionRuntimeConfig) -> &Option<Box<OAuthCodeRequestDescriptor>> =
+            |config| &config.oauth_code_descriptor;
+        let _: fn(
+            &WebAssessmentSuppliedSessionAudit,
+        ) -> &Option<Box<SuppliedSessionOAuthCodeAudit>> = |audit| &audit.oauth_code;
+        let legacy = policy(&url::Url::parse("http://127.0.0.1:1/app/").unwrap());
+        let state = ExecutionState::new(&legacy, 1);
+        assert!(state.oauth_code.is_none());
+        assert_eq!(
+            std::mem::size_of_val(&state.oauth_code),
+            std::mem::size_of::<usize>()
+        );
+    }
     use super::*;
     use crate::supplied_session_review::{
         SuppliedSessionAuthorization, SuppliedSessionCookies, SuppliedSessionFormCredential,
