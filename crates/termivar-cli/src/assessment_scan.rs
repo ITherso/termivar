@@ -481,6 +481,8 @@ struct SuppliedSessionAuditRecord {
     cookie_lifecycle: Option<SuppliedSessionCookieLifecycleRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     login: Option<SuppliedSessionLoginRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_refresh: Option<Box<SuppliedSessionOAuthRefreshRecord>>,
     health_oracle: SuppliedSessionHealthOracleRecord,
     outcome: SuppliedSessionAuditOutcome,
     coverage: SuppliedSessionCoverage,
@@ -571,6 +573,51 @@ struct SuppliedSessionCheckpointRecord {
     body_state: SuppliedSessionBodyState,
     predicate: SuppliedSessionPredicateOutcome,
     response_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<u8>,
+}
+
+/// Explicit value-free subset for incomplete-run diagnostics, not a saved
+/// rendered assessment or a credential receipt. No secret/runtime internals
+/// are serialized merely because the runtime type later gains a field.
+#[cfg(feature = "supplied-session-review")]
+#[derive(Serialize)]
+struct SuppliedSessionOAuthRefreshRecord {
+    profile: &'static str,
+    refresh_policy_reference: String,
+    outcome: &'static str,
+    initial_epoch: u8,
+    final_epoch: u8,
+    request_attempt_count: u8,
+    request_admitted_count: u8,
+    response_completed_count: u8,
+    credential_commit_count: u8,
+    response_bytes: u64,
+    replacement_value_differs: Option<bool>,
+    rotation_assurance: &'static str,
+    server_replay_detection_established: bool,
+    health: Option<SuppliedSessionCheckpointRecord>,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl SuppliedSessionCheckpointRecord {
+    fn from_checkpoint(
+        checkpoint: &termivar_scanner::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit,
+        include_epoch: bool,
+    ) -> Self {
+        Self {
+            sequence: checkpoint.sequence(),
+            phase: checkpoint.phase(),
+            after_subject_count: checkpoint.after_subject_count(),
+            evidence_reference: checkpoint.evidence_reference().map(str::to_owned),
+            outcome: checkpoint.outcome(),
+            status: checkpoint.status(),
+            body_state: checkpoint.body_state(),
+            predicate: checkpoint.predicate(),
+            response_bytes: checkpoint.response_bytes(),
+            epoch: include_epoch.then(|| checkpoint.epoch()),
+        }
+    }
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -857,8 +904,24 @@ impl SuppliedSessionAuditRecord {
             principal_alias: audit.principal_alias().to_owned(),
             principal_assurance: audit.principal_assurance(),
             credential_mechanism: audit.credential_mechanism(),
-            credential_acquisition: (audit.schema() == SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA)
+            credential_acquisition: matches!(audit.schema(), SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA
+                | termivar_scanner::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA)
                 .then(|| audit.credential_acquisition()),
+            oauth_refresh: audit.oauth_refresh().map(|refresh|Box::new(SuppliedSessionOAuthRefreshRecord {
+                profile: "scheduled-public-bearer-refresh/v1",
+                refresh_policy_reference: refresh.refresh_policy_reference().to_owned(),
+                outcome: refresh.outcome().as_str(),
+                initial_epoch: refresh.initial_epoch(), final_epoch: refresh.final_epoch(),
+                request_attempt_count: refresh.request_attempt_count(),
+                request_admitted_count: refresh.request_admitted_count(),
+                response_completed_count: refresh.response_completed_count(),
+                credential_commit_count: refresh.credential_commit_count(),
+                response_bytes: refresh.response_bytes(),
+                replacement_value_differs: refresh.replacement_value_differs(),
+                rotation_assurance: "replacement_value_observed_not_server_revocation",
+                server_replay_detection_established: false,
+                health: refresh.health().map(|health|SuppliedSessionCheckpointRecord::from_checkpoint(health,true)),
+            })),
             cookie_policy: audit
                 .cookie_policy()
                 .map(|policy| SuppliedSessionCookiePolicyRecord {
@@ -915,17 +978,8 @@ impl SuppliedSessionAuditRecord {
             checkpoints: audit
                 .checkpoints()
                 .iter()
-                .map(|checkpoint| SuppliedSessionCheckpointRecord {
-                    sequence: checkpoint.sequence(),
-                    phase: checkpoint.phase(),
-                    after_subject_count: checkpoint.after_subject_count(),
-                    evidence_reference: checkpoint.evidence_reference().map(str::to_owned),
-                    outcome: checkpoint.outcome(),
-                    status: checkpoint.status(),
-                    body_state: checkpoint.body_state(),
-                    predicate: checkpoint.predicate(),
-                    response_bytes: checkpoint.response_bytes(),
-                })
+                .map(|checkpoint| SuppliedSessionCheckpointRecord::from_checkpoint(checkpoint,
+                    audit.schema() == termivar_scanner::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA))
                 .collect(),
             resources: audit
                 .resources()
@@ -3224,6 +3278,7 @@ mod tests {
             principal_assurance: SuppliedSessionPrincipalAssurance::OperatorDeclared,
             credential_mechanism: SuppliedSessionCredentialMechanism::AuthorizationHeader,
             credential_acquisition: None,
+            oauth_refresh: None,
             cookie_policy: None,
             cookie_lifecycle: None,
             login: None,
@@ -3247,6 +3302,7 @@ mod tests {
                     body_state: SuppliedSessionBodyState::Complete,
                     predicate: SuppliedSessionPredicateOutcome::Matched,
                     response_bytes: 10,
+                    epoch: None,
                 },
                 SuppliedSessionCheckpointRecord {
                     sequence: 1,
@@ -3261,6 +3317,7 @@ mod tests {
                     body_state: SuppliedSessionBodyState::Complete,
                     predicate: SuppliedSessionPredicateOutcome::Matched,
                     response_bytes: 11,
+                    epoch: None,
                 },
             ],
             resources: vec![SuppliedSessionResourceRecord {

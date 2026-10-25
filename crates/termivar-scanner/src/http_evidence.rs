@@ -86,6 +86,7 @@ pub(crate) use request_broker::{
 #[cfg(feature = "supplied-session-review")]
 pub(crate) use request_broker::{
     OAuthCodeRequestBroker, OAuthCodeRequestDescriptor, OAuthCodeRequestError,
+    OAuthRefreshRequestDescriptor,
 };
 #[cfg(feature = "xml-external-entity-review")]
 pub(crate) use request_broker::{

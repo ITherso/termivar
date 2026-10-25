@@ -76,7 +76,10 @@ GROUPS = ("only_in_after", "only_in_before", "changed", "unchanged")
 SCENARIOS = (
     "option-off", "valid-a", "replayed-code", "wrong-verifier",
     "wrong-b-health", "valid-b-context",
+    "refresh-a", "refresh-b-context", "refresh-health-loss",
 )
+REFRESH_SCENARIOS = ("refresh-a", "refresh-b-context", "refresh-health-loss")
+REFRESH_POSITIVE = ("refresh-a", "refresh-b-context")
 EXPECTED_SESSION_ROLES = {
     "option-off": (),
     "valid-a": ("health", "resource-one", "health", "resource-two", "health"),
@@ -84,13 +87,42 @@ EXPECTED_SESSION_ROLES = {
     "wrong-verifier": (),
     "wrong-b-health": ("health",),
     "valid-b-context": ("health", "resource-one", "health", "resource-two", "health"),
+    "refresh-a": ("health", "resource-one", "health", "health", "resource-two", "health"),
+    "refresh-b-context": ("health", "resource-one", "health", "health", "resource-two", "health"),
+    "refresh-health-loss": ("health", "resource-one", "health", "health"),
 }
 EXPECTED_OUTCOMES = {
     "valid-a": "complete", "valid-b-context": "complete",
     "replayed-code": "oauth_code_exchange_unavailable",
     "wrong-verifier": "oauth_code_exchange_unavailable",
     "wrong-b-health": "startup_unhealthy",
+    "refresh-a": "complete", "refresh-b-context": "complete", "refresh-health-loss": "session_lost",
 }
+EXPECTED_RESOURCES = {"option-off": 0, "valid-a": 2, "replayed-code": 0,
+                      "wrong-verifier": 0, "wrong-b-health": 0, "valid-b-context": 2,
+                      "refresh-a": 2, "refresh-b-context": 2, "refresh-health-loss": 1}
+EXPECTED_TOKEN_POSTS = {"option-off": 0, "valid-a": 1, "replayed-code": 1,
+                        "wrong-verifier": 1, "wrong-b-health": 1, "valid-b-context": 1,
+                        "refresh-a": 2, "refresh-b-context": 2, "refresh-health-loss": 2}
+EXPECTED_IDP_SEQUENCE = {
+    "option-off": (),
+    "valid-a": ("authorization_code",) + ("backend-introspection",) * 5,
+    "replayed-code": ("authorization_code",), "wrong-verifier": ("authorization_code",),
+    "wrong-b-health": ("authorization_code", "backend-introspection"),
+    "valid-b-context": ("authorization_code",) + ("backend-introspection",) * 5,
+    "refresh-a": ("authorization_code",) + ("backend-introspection",) * 3
+                 + ("refresh_token",) + ("backend-introspection",) * 3,
+    "refresh-b-context": ("authorization_code",) + ("backend-introspection",) * 3
+                         + ("refresh_token",) + ("backend-introspection",) * 3,
+    "refresh-health-loss": ("authorization_code",) + ("backend-introspection",) * 3
+                          + ("refresh_token", "backend-introspection"),
+}
+OFFLINE_CONTROLS = (
+    ("a-to-b-context", "valid-a", "valid-b-context", "different-principal"),
+    ("refresh-a-to-b-context", "refresh-a", "refresh-b-context", "different-principal"),
+    ("code-to-refresh-policy", "valid-a", "refresh-a", "different-policy"),
+    ("refresh-health-loss", "refresh-a", "refresh-health-loss", "coverage"),
+)
 ASSURANCE = {
     "profile": "external-public-code-s256-bearer/v1",
     "transport_profile": "owned-numeric-loopback-http/v1",
@@ -858,6 +890,10 @@ def realm_document(resource_secret: str, controller_secret: str, redirect: str) 
         "registrationAllowed": False, "resetPasswordAllowed": False,
         "loginWithEmailAllowed": False, "duplicateEmailsAllowed": False,
         "accessTokenLifespan": 180, "accessCodeLifespan": 120,
+        # Reviewed pinned RealmRepresentation/TokenManager contract. A separate
+        # after-flow controller check observes provider reuse behavior; this
+        # configuration never promotes the product's rotation assurance.
+        "revokeRefreshToken": True, "refreshTokenMaxReuse": 0,
         "defaultDefaultClientScopes": [], "defaultOptionalClientScopes": [],
         "clientScopes": [{"name": SCOPE, "protocol": "openid-connect",
                           "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"},
@@ -954,6 +990,45 @@ def _send(handler, status: int, body: bytes, content_type: str, headers: list = 
     handler.close_connection = True
 
 
+def public_token_grant(body: bytes, redirect: str | None) -> str:
+    """Reduce a selected public-client form to a closed class, never its values."""
+    require(type(body) is bytes and 0 < len(body) <= 16 * 1024, "public_token_form_size")
+    try:
+        pairs = urllib.parse.parse_qsl(body.decode("ascii"), keep_blank_values=True,
+                                      strict_parsing=True, errors="strict", max_num_fields=5)
+    except (UnicodeError, ValueError):
+        raise LabError("public_token_form") from None
+    fields = dict(pairs)
+    require(len(pairs) == len(fields) and fields.get("client_id") == PUBLIC_CLIENT, "public_token_form")
+    kind = fields.get("grant_type")
+    if kind == "authorization_code":
+        require(set(fields) == {"grant_type", "client_id", "redirect_uri", "code", "code_verifier"}
+                and type(redirect) is str and fields["redirect_uri"] == redirect
+                and 1 <= len(fields["code"]) <= 2048
+                and all(0x21 <= ord(c) <= 0x7e for c in fields["code"])
+                and re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", fields["code_verifier"]) is not None,
+                "public_token_form")
+    elif kind == "refresh_token":
+        require(set(fields) == {"grant_type", "client_id", "refresh_token", "scope"}
+                and fields["scope"] == SCOPE and 1 <= len(fields["refresh_token"]) <= 8192
+                and all(0x20 <= ord(c) <= 0x7e for c in fields["refresh_token"]), "public_token_form")
+    else:
+        raise LabError("public_token_grant")
+    return kind
+
+
+@dataclasses.dataclass(repr=False)
+class _RefreshCapture:
+    # At most one initial private RT per each of three closed scenarios. The
+    # replacement is compared then discarded here; the leakage registry remains
+    # separately bounded. No raw body/token or digest is serialized as evidence.
+    initial_refresh: str | None = None
+    initial_returned: bool = False
+    refresh_responses: int = 0
+    replacement_returned: bool | None = None
+    replacement_value_differs: bool | None = None
+
+
 class TokenRelay:
     def __init__(self, private: PrivateValues):
         self.private = private
@@ -961,6 +1036,9 @@ class TokenRelay:
         self.phase = "setup"
         self.trace: list[dict] = []
         self.errors: list[str] = []
+        self.public_redirect: str | None = None
+        self.scanner_scenarios_complete = False
+        self._refresh_captures: dict[str, _RefreshCapture] = {}
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -980,6 +1058,14 @@ class TokenRelay:
                     role = _provider_route(self.command, self.path)
                     require(type(owner._upstream) is _OwnedIdpUpstream and len(owner.trace) < MAX_TRACE, "relay_not_ready_or_limit")
                     body = _read_request(self, MAX_HTTP_BODY)
+                    grant_type = None
+                    public = owner.phase in SCENARIOS and role == "token-exchange"
+                    if public:
+                        require(self.command == "POST" and not self.headers.get("Authorization")
+                                and not self.headers.get("Cookie")
+                                and self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
+                                and self.headers.get("Accept-Encoding") == "identity", "public_token_context")
+                        grant_type = public_token_grant(body, owner.public_redirect)
                     headers = {"Host": urllib.parse.urlsplit(owner.origin).netloc, "Accept-Encoding": "identity"}
                     for key in ("Content-Type", "Cookie", "Authorization", "Accept"):
                         if self.headers.get(key) is not None:
@@ -990,26 +1076,94 @@ class TokenRelay:
                     # Values are only checked for leakage in private memory. The
                     # provider response is forwarded unchanged, never repaired.
                     error_class = None
+                    capture_flags = {"refresh_token_present": None, "replacement_value_differs": None}
                     if role == "token-exchange":
                         try:
                             document = strict_json(response_body, MAX_TOKEN_BODY)
-                            if isinstance(document, dict):
-                                for name in ("access_token", "refresh_token", "id_token"):
-                                    if isinstance(document.get(name), str):
-                                        owner.private.add(document[name])
-                                if document.get("error") == "invalid_grant":
-                                    error_class = "invalid_grant"
                         except LabError:
-                            pass
+                            document = None
+                        if isinstance(document, dict):
+                            # Registry/capture failures must not be swallowed as
+                            # malformed JSON and silently disable privacy checks.
+                            for name in ("access_token", "refresh_token", "id_token"):
+                                if isinstance(document.get(name), str):
+                                    owner.private.add(document[name])
+                            if document.get("error") == "invalid_grant":
+                                error_class = "invalid_grant"
+                            if public and owner.phase in REFRESH_SCENARIOS:
+                                owner.private.add(response_body)
+                                capture_flags = owner._capture_refresh(grant_type, status, document)
                     owner.trace.append({"phase": owner.phase, "role": role, "method": self.command,
                                         "request_bytes": len(body), "status": status,
-                                        "response_bytes": len(response_body), "error_class": error_class})
+                                        "response_bytes": len(response_body), "error_class": error_class,
+                                        "grant_type": grant_type,
+                                        "credential_header_present": bool(self.headers.get("Authorization")),
+                                        "cookie_present": bool(self.headers.get("Cookie")),
+                                        "public_form_valid": public,
+                                        "identity_requested": self.headers.get("Accept-Encoding") == "identity",
+                                        **capture_flags})
                     _send(self, status, response_body, "application/octet-stream", response_headers)
                 except (LabError, OSError, ValueError):
                     owner.errors.append("relay_failure")
                     _send(self, 502, b'{"error":"owned_relay_failure"}', "application/json")
 
         self.server = OwnedHTTPServer(Handler)
+
+    def _capture_refresh(self, grant_type: str, status: int, document: dict) -> dict:
+        require(self.phase in REFRESH_SCENARIOS and len(self._refresh_captures) <= 3, "refresh_capture_scope")
+        capture = self._refresh_captures.setdefault(self.phase, _RefreshCapture())
+        value = document.get("refresh_token")
+        usable = (type(value) is str and 1 <= len(value) <= 8192
+                  and all(0x20 <= ord(c) <= 0x7e for c in value))
+        if grant_type == "authorization_code":
+            require(capture.initial_refresh is None and capture.refresh_responses == 0, "refresh_capture_duplicate")
+            capture.initial_returned = status == 200 and usable
+            capture.initial_refresh = value if capture.initial_returned else None
+        else:
+            require(grant_type == "refresh_token" and capture.refresh_responses == 0, "refresh_capture_duplicate")
+            capture.refresh_responses = 1
+            capture.replacement_returned = usable if status == 200 else None
+            capture.replacement_value_differs = (not secrets.compare_digest(capture.initial_refresh, value)
+                                                if status == 200 and usable and capture.initial_refresh is not None else None)
+        return {"refresh_token_present": capture.initial_returned if grant_type == "authorization_code" else capture.replacement_returned,
+                "replacement_value_differs": None if grant_type == "authorization_code" else capture.replacement_value_differs}
+
+    def refresh_completed(self, scenario: str) -> bool:
+        capture = self._refresh_captures.get(scenario)
+        return capture is not None and capture.refresh_responses == 1 and capture.replacement_value_differs is True
+
+    def replay_initial_after_completed_flow(self, scenario: str) -> dict:
+        require(self.scanner_scenarios_complete is True and scenario in REFRESH_POSITIVE
+                and self.refresh_completed(scenario), "refresh_control_phase")
+        capture = self._refresh_captures[scenario]
+        require(type(capture.initial_refresh) is str, "refresh_control_missing_value")
+        # A surprising token response can contain three sensitive fields. Do
+        # not acquire more material if the existing privacy bound cannot hold it.
+        require(len(self.private._values) <= 93, "refresh_control_not_run",
+                {"scenario": scenario, "status": "not_run", "reason": "private_registry_capacity"})
+        previous_phase = self.phase
+        self.phase = "controller-old-refresh-" + scenario
+        try:
+            status, _, data = request_bytes(self.origin + TOKEN_PATH, "POST", encoded_form({
+                "grant_type": "refresh_token", "client_id": PUBLIC_CLIENT,
+                "refresh_token": capture.initial_refresh, "scope": SCOPE}),
+                {"Content-Type": "application/x-www-form-urlencoded", "Accept-Encoding": "identity"},
+                maximum=MAX_TOKEN_BODY)
+            document = strict_json(data, MAX_TOKEN_BODY)
+            error_class = "invalid_grant" if type(document) is dict and document.get("error") == "invalid_grant" else "other_or_missing"
+            require(status == 400 and error_class == "invalid_grant", "refresh_control_provider_result",
+                    {"scenario": scenario, "status": status if type(status) is int else marker(status),
+                     "error_class": error_class, "operation": "controller_after_completed_flow"})
+            return {"execution_class": "independent_controller_after_all_completed_scans",
+                    "request_count": 1, "status": status, "error_class": error_class,
+                    "product_server_replay_detection_established": False}
+        finally:
+            capture.initial_refresh = None
+            self.phase = previous_phase
+
+    def clear_refresh_values(self) -> None:
+        for capture in self._refresh_captures.values():
+            capture.initial_refresh = None
 
     def bind_upstream(self, upstream: _OwnedIdpUpstream) -> None:
         require(type(upstream) is _OwnedIdpUpstream and upstream._seal is _IDP_UPSTREAM_SEAL
@@ -1033,6 +1187,7 @@ class TargetApplication:
         self.relay = relay
         self.resource_secret = resource_secret
         self.expected_user = "canary-a"
+        self.deny_renewed_health = False
         self.phase = "setup"
         self.trace: list[dict] = []
         self.errors: list[str] = []
@@ -1058,6 +1213,7 @@ class TargetApplication:
                     authorization = self.headers.get("Authorization")
                     role = {HEALTH: "health", RESOURCES[0]: "resource-one", RESOURCES[1]: "resource-two"}.get(parsed.path, "ordinary")
                     healthy = False
+                    provider_active = application_gate_denied = False
                     canary_a = canary_b = False
                     if authorization:
                         require(self.command == "GET" and role != "ordinary" and authorization.startswith("Bearer "), "target_credential_scope")
@@ -1069,9 +1225,16 @@ class TargetApplication:
                             {"Content-Type": "application/x-www-form-urlencoded", "Authorization": "Basic " + basic}, maximum=MAX_TOKEN_BODY)
                         require(status == 200, "target_introspection_status")
                         document = strict_json(data, MAX_TOKEN_BODY)
+                        provider_active = type(document) is dict and document.get("active") is True
                         canary_a = introspection_allows(document, "canary-a")
                         canary_b = introspection_allows(document, "canary-b")
                         healthy = canary_a if owner.expected_user == "canary-a" else canary_b
+                        application_gate_denied = owner.deny_renewed_health and owner.relay.refresh_completed(owner.phase)
+                        if application_gate_denied:
+                            # This owned APPLICATION policy refuses its renewed
+                            # context despite separately active provider tokens.
+                            # No provider expiry/principal/revocation is claimed.
+                            canary_a = canary_b = healthy = False
                     if role == "ordinary":
                         require(not authorization and parsed.path == "/", "target_ordinary_scope")
                         body, status, mime = b"<!doctype html><main>owned anonymous application</main>", 200, "text/html; charset=utf-8"
@@ -1083,7 +1246,9 @@ class TargetApplication:
                         body, status, mime = b'{"denied":true}', 403, "application/json"
                     owner.trace.append({"phase": owner.phase, "role": role, "method": self.command,
                                         "credential_present": bool(authorization), "accepted": healthy,
-                                        "entry_path": parsed.path == "/", "response_bytes": 0 if head else len(body)})
+                                        "entry_path": parsed.path == "/", "response_bytes": 0 if head else len(body),
+                                        "provider_active": provider_active,
+                                        "application_gate_denied": application_gate_denied})
                     _send(self, status, b"" if head else body, mime)
                 except (LabError, OSError, ValueError):
                     owner.errors.append("target_failure")
@@ -1346,16 +1511,17 @@ def validate_isolation(container: dict, network: dict, owner: str, name: str) ->
     require(exposed is None or type(exposed) is dict and all(value is None for value in exposed.values()), "isolation_port")
 
 
-def policy_source(issuer: str, redirect: str, principal: str) -> bytes:
+def policy_source(issuer: str, redirect: str, principal: str, *, renewable: bool = False) -> bytes:
     require(principal in ("canary-a", "canary-b"), "fixture_principal")
-    return f'''schema = "security.supplied-session-policy/v5"
+    require(type(renewable) is bool, "fixture_policy_mode")
+    source = f'''schema = "security.supplied-session-policy/v{6 if renewable else 5}"
 principal_alias = "{principal}"
 credential_mechanism = "authorization_header"
 credential_acquisition = "imported_oauth_code_pkce"
 health_path = "/app/health"
 health_json_field = "{'canary_b' if principal == 'canary-b' else 'canary_a'}"
 resources = ["/app/private/one", "/app/private/two"]
-max_session_requests = 6
+max_session_requests = {8 if renewable else 6}
 max_total_response_bytes = 65536
 max_response_body_bytes = 8192
 max_wall_time_ms = 10000
@@ -1369,7 +1535,15 @@ client_id = "{PUBLIC_CLIENT}"
 redirect_uri = "{redirect}"
 scopes = ["canary-read"]
 max_token_response_bytes = 8192
-'''.encode()
+'''
+    if renewable:
+        source += '''
+[oauth_refresh]
+profile = "scheduled-public-bearer-refresh/v1"
+after_resource_count = 1
+max_attempts = 1
+'''
+    return source.encode()
 
 
 def validate_fixture_policy(source: bytes) -> None:
@@ -1383,12 +1557,23 @@ def validate_fixture_policy(source: bytes) -> None:
     except (UnicodeError, tomllib.TOMLDecodeError):
         raise LabError("fixture_policy_toml") from None
     nested = document.get("oauth_code")
-    require(isinstance(nested, dict) and document.get("schema") == "security.supplied-session-policy/v5"
+    require(isinstance(nested, dict) and document.get("schema") in (
+                "security.supplied-session-policy/v5", "security.supplied-session-policy/v6")
             and type(document.get("max_response_body_bytes")) is int
             and document["max_response_body_bytes"] == 8192
             and type(nested.get("max_token_response_bytes")) is int
             and nested["max_token_response_bytes"] == 8192
             and nested["max_token_response_bytes"] <= document["max_response_body_bytes"], "fixture_policy_body_caps")
+    if document["schema"] == "security.supplied-session-policy/v6":
+        refresh = document.get("oauth_refresh")
+        require(type(refresh) is dict and set(refresh) == {"profile", "after_resource_count", "max_attempts"}
+                and refresh["profile"] == "scheduled-public-bearer-refresh/v1"
+                and type(refresh["after_resource_count"]) is int and refresh["after_resource_count"] == 1
+                and type(refresh["max_attempts"]) is int and refresh["max_attempts"] == 1
+                and type(document.get("max_session_requests")) is int and document["max_session_requests"] == 8
+                and document.get("resources") == ["/app/private/one", "/app/private/two"], "fixture_refresh_schedule")
+    else:
+        require("oauth_refresh" not in document, "fixture_refresh_not_selected")
 
 
 def private_write(path: Path, data: bytes) -> None:
@@ -1409,6 +1594,14 @@ def snapshot(directory: Path) -> dict[str, bytes]:
     return result
 
 
+def selected_input_bytes(path: Path) -> bytes:
+    require(path.is_file() and not path.is_symlink() and 0 < path.stat().st_size <= 16 * 1024, "selected_input_shape")
+    with path.open("rb") as stream:
+        data = stream.read(16 * 1024 + 1)
+    require(0 < len(data) <= 16 * 1024, "selected_input_size")
+    return data
+
+
 def audit_from_output(result: Result, bundle: Path) -> tuple[dict | None, dict | None]:
     if bundle.is_dir():
         source = strict_json(snapshot(bundle)["assessment.json"])
@@ -1421,18 +1614,156 @@ def audit_from_output(result: Result, bundle: Path) -> tuple[dict | None, dict |
     return report.get("supplied_session_audit"), None
 
 
+def _opaque_reference(value: object, prefix: str) -> bool:
+    return type(value) is str and re.fullmatch(re.escape(prefix) + r"[0-9a-f]{64}", value) is not None
+
+
+def _validate_refresh_case(name: str, audit: object, session: list[dict], exchanges: list[dict],
+                           diagnostic: dict) -> dict:
+    require(type(audit) is dict and audit.get("schema") == "security.supplied-session-audit/v6"
+            and audit.get("credential_acquisition") == "imported_oauth_code_pkce"
+            and audit.get("principal_alias") == ("canary-b" if name == "refresh-b-context" else "canary-a")
+            and audit.get("outcome") == EXPECTED_OUTCOMES[name], "refresh_session_contract", diagnostic)
+    code, refresh = audit.get("oauth_code"), audit.get("oauth_refresh")
+    require(type(code) is dict and type(refresh) is dict, "refresh_audit_objects", diagnostic)
+    require(all(key in code and type(code[key]) is type(value) and code[key] == value
+                for key, value in ASSURANCE.items()), "oauth_claim_boundaries", diagnostic)
+    keys = {"profile", "idp_reference", "refresh_policy_reference", "after_resource_count", "max_attempts",
+            "token_interpretation", "rotation_assurance", "server_replay_detection_established",
+            "initial_epoch", "final_epoch", "request_attempt_count", "request_admitted_count",
+            "response_completed_count", "credential_commit_count", "status", "body_state", "response_bytes",
+            "configured_token_response_byte_limit", "token_response_validated", "response_scope_matched",
+            "declared_token_lifetime_seconds", "replacement_refresh_token_received", "replacement_value_differs",
+            "prior_credential_evidence_reference", "boundary_resource_evidence_reference",
+            "boundary_health_evidence_reference", "evidence_reference", "health", "outcome"}
+    require(set(refresh) == keys, "refresh_closed_fields", diagnostic)
+    claims = {"profile": "scheduled-public-bearer-refresh/v1", "after_resource_count": 1,
+              "max_attempts": 1, "token_interpretation": "opaque_bearer_not_oidc_identity",
+              "rotation_assurance": "replacement_value_observed_not_server_revocation",
+              "server_replay_detection_established": False, "initial_epoch": 1, "final_epoch": 2}
+    require(all(type(refresh.get(key)) is type(value) and refresh[key] == value for key, value in claims.items()),
+            "refresh_claim_boundaries", diagnostic)
+    require(_opaque_reference(refresh.get("idp_reference"), "oauth-code-policy-sha256:")
+            and refresh["idp_reference"] == code.get("idp_reference")
+            and _opaque_reference(refresh.get("refresh_policy_reference"), "oauth-refresh-policy-sha256:"),
+            "refresh_policy_binding", diagnostic)
+    require(len(exchanges) == 2 and [row.get("grant_type") for row in exchanges] == ["authorization_code", "refresh_token"],
+            "refresh_token_post_count", diagnostic)
+    require(all(integer(row.get("response_bytes")) for row in session + exchanges), "refresh_trace_byte_types", diagnostic)
+    for phase, row in zip((code, refresh), exchanges):
+        require(all(integer(phase.get(key)) and phase[key] == 1 for key in (
+                    "request_attempt_count", "request_admitted_count", "response_completed_count", "credential_commit_count"))
+                and phase.get("status") == row.get("status") == 200
+                and phase.get("body_state") == "complete" and phase.get("token_response_validated") is True
+                and phase.get("response_scope_matched") is True and phase.get("outcome") == "credential_committed"
+                and integer(phase.get("response_bytes")) and phase["response_bytes"] == row.get("response_bytes")
+                and phase["response_bytes"] > 0 and type(phase.get("configured_token_response_byte_limit")) is int
+                and phase["configured_token_response_byte_limit"] == 8192
+                and integer(phase.get("declared_token_lifetime_seconds"))
+                and 1 <= phase["declared_token_lifetime_seconds"] <= 3600, "refresh_exchange_accounting", diagnostic)
+    require(code.get("verifier_in_admitted_request") is True and code.get("refresh_token_returned") is True
+            and refresh.get("replacement_refresh_token_received") is True and refresh.get("replacement_value_differs") is True
+            and exchanges[0].get("refresh_token_present") is True
+            and exchanges[1].get("refresh_token_present") is True
+            and exchanges[1].get("replacement_value_differs") is True, "refresh_independent_value_observation", diagnostic)
+    expected_resources = EXPECTED_RESOURCES[name]
+    require(all(integer(audit.get(key)) and audit[key] == value for key, value in {
+        "selected_resource_count": 2, "dispatched_resource_count": expected_resources,
+        "committed_resource_count": expected_resources, "dispatched_request_count": len(session) + 2,
+    }.items()), "refresh_session_accounting", diagnostic)
+    checkpoints, resources, health = audit.get("checkpoints"), audit.get("resources"), refresh["health"]
+    healthy = name in REFRESH_POSITIVE
+    require(type(checkpoints) is list and len(checkpoints) == (3 if healthy else 2)
+            and all(type(row) is dict for row in checkpoints)
+            and type(resources) is list and len(resources) == 2 and all(type(row) is dict for row in resources)
+            and type(health) is dict, "refresh_entity_arrays", diagnostic)
+    checkpoint_keys = {"sequence", "phase", "after_subject_count", "evidence_reference", "outcome", "status",
+                       "body_state", "predicate", "response_bytes", "epoch"}
+    require(all(set(row) == checkpoint_keys for row in checkpoints + [health])
+            and all(set(row) == {"sequence", "resource_reference", "evidence_reference", "outcome", "status", "response_bytes", "epoch"}
+                    for row in resources), "refresh_entity_fields", diagnostic)
+    require([row.get("phase") for row in checkpoints] == (["startup", "subject_boundary", "terminal"] if healthy
+                                                         else ["startup", "subject_boundary"]), "refresh_checkpoint_phases", diagnostic)
+    for index, row in enumerate(checkpoints):
+        wire = session[(0, 2, 5)[index]]
+        require(integer(row.get("sequence")) and row["sequence"] == index
+                and integer(row.get("after_subject_count")) and row["after_subject_count"] == index
+                and type(row.get("epoch")) is int and row["epoch"] == (2 if index == 2 else 1)
+                and row.get("status") == 200 and row.get("body_state") == "complete"
+                and row.get("outcome") == "healthy" and row.get("predicate") == "matched"
+                and _opaque_reference(row.get("evidence_reference"), "supplied-session-checkpoint-evidence-sha256:")
+                and integer(row.get("response_bytes")) and row["response_bytes"] == wire.get("response_bytes"),
+                "refresh_common_checkpoint", diagnostic)
+    require(type(health.get("sequence")) is int and health["sequence"] == 2
+            and health.get("phase") == "renewal" and type(health.get("after_subject_count")) is int
+            and health["after_subject_count"] == 1 and type(health.get("epoch")) is int and health["epoch"] == 2
+            and health.get("status") == 200 and health.get("body_state") == "complete"
+            and health.get("outcome") == ("healthy" if healthy else "unhealthy")
+            and health.get("predicate") == ("matched" if healthy else "not_matched")
+            and _opaque_reference(health.get("evidence_reference"), "supplied-session-checkpoint-evidence-sha256:")
+            and integer(health.get("response_bytes")) and health["response_bytes"] == session[3].get("response_bytes"),
+            "refresh_renewed_health", diagnostic)
+    for index, row in enumerate(resources):
+        committed = index == 0 or healthy
+        require(integer(row.get("sequence")) and row["sequence"] == index
+                and type(row.get("epoch")) is int and row["epoch"] == index + 1
+                and row.get("outcome") == ("committed" if committed else "not_dispatched")
+                and row.get("status") == (200 if committed else None)
+                and _opaque_reference(row.get("resource_reference"), "supplied-session-resource-sha256:")
+                and (_opaque_reference(row.get("evidence_reference"), "supplied-session-resource-evidence-sha256:")
+                     if committed else row.get("evidence_reference") is None)
+                and integer(row.get("response_bytes")) and row["response_bytes"] == (session[(1, 4)[index]].get("response_bytes") if committed else 0),
+                "refresh_resource_epochs", diagnostic)
+    require(len({row["resource_reference"] for row in resources}) == 2, "session_resource_duplicates", diagnostic)
+    require(refresh["prior_credential_evidence_reference"] == code.get("evidence_reference")
+            and refresh["boundary_resource_evidence_reference"] == resources[0].get("evidence_reference")
+            and refresh["boundary_health_evidence_reference"] == checkpoints[1].get("evidence_reference")
+            and _opaque_reference(code.get("evidence_reference"), "supplied-session-oauth-code-evidence-sha256:")
+            and _opaque_reference(refresh.get("evidence_reference"), "supplied-session-oauth-refresh-evidence-sha256:"),
+            "refresh_committed_boundary_binding", diagnostic)
+    evidence = [phase["evidence_reference"] for phase in (code, refresh, health)]
+    evidence += [row["evidence_reference"] for row in checkpoints + resources if row["evidence_reference"] is not None]
+    require(len(set(evidence)) == len(evidence), "refresh_duplicate_evidence", diagnostic)
+    wire_bytes = sum(row["response_bytes"] for row in session) + sum(row["response_bytes"] for row in exchanges)
+    audit_bytes = code["response_bytes"] + refresh["response_bytes"] + health["response_bytes"] + sum(row["response_bytes"] for row in checkpoints + resources)
+    require(integer(audit.get("response_bytes")) and audit["response_bytes"] == wire_bytes == audit_bytes
+            and type(audit.get("response_byte_limit")) is int and audit["response_byte_limit"] == 65536
+            and audit.get("response_byte_limit_exceeded") is False, "refresh_byte_accounting", diagnostic)
+    require(audit.get("coverage") == ("complete" if healthy else "partial")
+            and audit.get("refresh_performed") is True and audit.get("anonymous_fallback_performed") is False
+            and audit.get("continuous_authentication_established") is False
+            and audit.get("exploit_execution") == "not_performed" and audit.get("impact_validation") == "not_performed",
+            "refresh_session_claim_boundaries", diagnostic)
+    require(all(row.get("provider_active") is True for row in session)
+            and all(row.get("accepted") is True and row.get("application_gate_denied") is False for row in session[:3])
+            and (all(row.get("accepted") is True and row.get("application_gate_denied") is False for row in session)
+                 if healthy else session[-1].get("accepted") is False and session[-1].get("application_gate_denied") is True),
+            "refresh_application_oracle", diagnostic)
+    return {"status": "passed", "diagnostic": diagnostic, "oauth_outcome": code["outcome"],
+            "refresh_outcome": refresh["outcome"], "session_outcome": audit["outcome"],
+            "idp_response_bytes": code["response_bytes"] + refresh["response_bytes"],
+            "session_response_bytes": audit["response_bytes"], "resource_epochs": [row["epoch"] for row in resources],
+            "health_request_count": len(checkpoints) + 1,
+            "application_health_refusal_not_provider_expiry": not healthy}
+
+
 def validate_case(name: str, audit: object, target_rows: list[dict], idp_rows: list[dict],
                   anonymous_baseline: list[dict] | None) -> dict:
     require(name in SCENARIOS, "unknown_scenario")
+    require(type(target_rows) is list and type(idp_rows) is list
+            and len(target_rows) <= MAX_TRACE and len(idp_rows) <= MAX_TRACE
+            and all(type(row) is dict and type(row.get("credential_present")) is bool for row in target_rows)
+            and all(type(row) is dict for row in idp_rows), "case_trace_shape",
+            {"scenario": name, "target_rows": marker(target_rows), "idp_rows": marker(idp_rows)})
     anonymous = [{"method": row.get("method"), "role": row.get("role"), "entry_path": row.get("entry_path")}
                  for row in target_rows if row.get("credential_present") is False]
     session = [row for row in target_rows if row.get("credential_present") is True]
     exchanges = [row for row in idp_rows if row.get("role") == "token-exchange"]
     diagnostic_oauth = audit.get("oauth_code") if isinstance(audit, dict) else None
     diagnostic = {"scenario": name,
-                  "expected": {"session_requests": len(EXPECTED_SESSION_ROLES[name]) + int(name != "option-off"),
-                               "resource_count": 2 if name in ("valid-a", "valid-b-context") else 0,
-                               "token_posts": int(name != "option-off")},
+                  "expected": {"session_requests": len(EXPECTED_SESSION_ROLES[name]) + EXPECTED_TOKEN_POSTS[name],
+                               "resource_count": EXPECTED_RESOURCES[name], "token_posts": EXPECTED_TOKEN_POSTS[name],
+                               "provider_sequence": list(EXPECTED_IDP_SEQUENCE[name])},
                   "actual": {"session_requests": marker(audit.get("dispatched_request_count", _MISSING)) if isinstance(audit, dict) else marker(audit),
                              "resource_count": marker(audit.get("committed_resource_count", _MISSING)) if isinstance(audit, dict) else marker(audit),
                              "token_posts": len(exchanges), "target_session_requests": len(session),
@@ -1441,14 +1772,31 @@ def validate_case(name: str, audit: object, target_rows: list[dict], idp_rows: l
                                                         "credential_commit_count", "response_bytes", "token_response_validated")},
                              "checkpoints": marker(audit.get("checkpoints", _MISSING)) if isinstance(audit, dict) else marker(audit),
                              "resources": marker(audit.get("resources", _MISSING)) if isinstance(audit, dict) else marker(audit)}}
+    diagnostic_refresh = audit.get("oauth_refresh", _MISSING) if type(audit) is dict else _MISSING
+    diagnostic["actual"]["oauth_refresh"] = {key: marker(diagnostic_refresh.get(key, _MISSING)) if type(diagnostic_refresh) is dict else marker(diagnostic_refresh)
+        for key in ("request_attempt_count", "request_admitted_count", "response_completed_count", "credential_commit_count",
+                    "initial_epoch", "final_epoch", "response_bytes", "token_response_validated", "health")}
     require(anonymous_baseline is None or anonymous == anonymous_baseline, "ordinary_trace_changed", diagnostic)
     require(all(row.get("method") == "GET" and row.get("role") == "ordinary" and row.get("entry_path") is True
                 for row in anonymous), "ordinary_trace_scope", diagnostic)
     require(tuple(row.get("role") for row in session) == EXPECTED_SESSION_ROLES[name]
             and all(row.get("method") == "GET" for row in session), "session_trace", diagnostic)
+    require(len(exchanges) == EXPECTED_TOKEN_POSTS[name],
+            "refresh_token_post_count" if name in REFRESH_SCENARIOS else "token_post_count", diagnostic)
+    sequence = tuple(row.get("grant_type") if row.get("role") == "token-exchange" else row.get("role") for row in idp_rows)
+    diagnostic["actual"]["provider_sequence"] = [value if type(value) is str and value in {"authorization_code", "refresh_token", "backend-introspection"} else marker(value) for value in sequence]
+    require(sequence == EXPECTED_IDP_SEQUENCE[name] and all(row.get("method") == "POST" for row in idp_rows),
+            "provider_trace_sequence", diagnostic)
+    require(all(row.get("credential_header_present") is False and row.get("cookie_present") is False
+                and row.get("public_form_valid") is True and row.get("identity_requested") is True for row in exchanges),
+            "public_token_trace_context", diagnostic)
     if name == "option-off":
         require(audit is None and not exchanges and not session and len(anonymous) == 3, "option_off_contract", diagnostic)
         return {"status": "passed", "anonymous_trace": anonymous, "diagnostic": diagnostic}
+    if name in REFRESH_SCENARIOS:
+        result = _validate_refresh_case(name, audit, session, exchanges, diagnostic)
+        result["anonymous_trace"] = anonymous
+        return result
     require(isinstance(audit, dict), "session_audit_object", diagnostic)
     require(audit.get("schema") == "security.supplied-session-audit/v5"
             and audit.get("credential_acquisition") == "imported_oauth_code_pkce"
@@ -1575,8 +1923,10 @@ def _self_compare(document: object, source: dict) -> dict:
     return counts
 
 
-def run_offline(runner: Runner, binary: str, bundles: dict[str, tuple[Path, dict]], private: PrivateValues) -> dict:
+def run_offline(runner: Runner, binary: str, bundles: dict[str, tuple[Path, dict]], private: PrivateValues,
+                input_snapshots: dict[Path, bytes] | None = None) -> dict:
     results = {}
+    require(tuple(bundles) == SCENARIOS, "offline_bundle_registry")
     initial = {name: snapshot(bundle) for name, (bundle, _) in bundles.items()}
     require(sum(len(data) for members in initial.values() for data in members.values()) <= MAX_ALL_BUNDLE_BYTES,
             "offline_retained_bundle_limit")
@@ -1591,34 +1941,67 @@ def run_offline(runner: Runner, binary: str, bundles: dict[str, tuple[Path, dict
         counts = _self_compare(strict_json(compare.stdout), before)
         require(snapshot(bundle) == frozen, "offline_input_modified")
         results[name] = {"verify": "integrity_match", "self_compare_counts": counts, "input_bytes_preserved": True}
-    require("valid-a" in bundles and "valid-b-context" in bundles, "context_compare_sources")
-    left, right = bundles["valid-a"], bundles["valid-b-context"]
-    compared = runner.run([binary, "report", "compare", "--before", str(left[0] / "assessment.json"),
-                           "--after", str(right[0] / "assessment.json"), "--same-scope", "--format", "json"], label="a-to-b-context-compare")
-    document = strict_json(compared.stdout)
-    counts = comparison_counts(document)
-    require(len(item_identities(left[1])) == counts["only_in_before"] + counts["changed"] + counts["unchanged"]
-            and len(item_identities(right[1])) == counts["only_in_after"] + counts["changed"] + counts["unchanged"], "context_compare_conservation")
-    nested = document.get("supplied_session_comparison")
-    require(isinstance(nested, dict) and nested.get("status") == "not_compared"
-            and nested.get("context", {}).get("status") == "session_policy_changed"
-            and nested.get("health_and_coverage", {}).get("status") == "not_comparable"
-            and nested.get("accounting", {}).get("status") == "not_comparable", "different_principal_compare")
-    before_rows = document["only_in_before"] + document["changed"] + document["unchanged"]
-    after_rows = document["only_in_after"] + document["changed"] + document["unchanged"]
-    require(item_identities({"item_count": len(before_rows), "items": before_rows}) == item_identities(left[1])
-            and item_identities({"item_count": len(after_rows), "items": after_rows}) == item_identities(right[1]), "context_compare_identities")
-    require(left[1].get("supplied_session", {}).get("principal_alias") == "canary-a"
-            and right[1].get("supplied_session", {}).get("principal_alias") == "canary-b", "context_compare_principals")
+    controls = {}
+    for control, before_name, after_name, kind in OFFLINE_CONTROLS:
+        require(before_name in bundles and after_name in bundles, "context_compare_sources")
+        left, right = bundles[before_name], bundles[after_name]
+        compared = runner.run([binary, "report", "compare", "--before", str(left[0] / "assessment.json"),
+                               "--after", str(right[0] / "assessment.json"), "--same-scope", "--format", "json"], label=control + "-compare")
+        document = strict_json(compared.stdout)
+        counts = comparison_counts(document)
+        require(len(item_identities(left[1])) == counts["only_in_before"] + counts["changed"] + counts["unchanged"]
+                and len(item_identities(right[1])) == counts["only_in_after"] + counts["changed"] + counts["unchanged"], "context_compare_conservation")
+        nested = document.get("supplied_session_comparison")
+        require(type(nested) is dict, "controlled_session_object")
+        left_audit, right_audit = left[1].get("supplied_session"), right[1].get("supplied_session")
+        require(type(left_audit) is dict and type(right_audit) is dict, "controlled_session_sources")
+        if kind == "coverage":
+            require(nested.get("status") == "compared_within_same_declared_context"
+                    and nested.get("context", {}).get("status") == "same_declared_context"
+                    and nested.get("health_and_coverage", {}).get("status") == "changed"
+                    and nested.get("accounting", {}).get("status") == "changed"
+                    and left_audit.get("schema") == right_audit.get("schema") == "security.supplied-session-audit/v6"
+                    and type(left_audit.get("policy_reference")) is str
+                    and left_audit["policy_reference"] == right_audit.get("policy_reference")
+                    and left_audit["oauth_refresh"]["final_epoch"] == right_audit["oauth_refresh"]["final_epoch"] == 2,
+                    "renewed_health_coverage_compare")
+            result_status = "compared_same_context_health_coverage_changed"
+        else:
+            require(nested.get("status") == "not_compared"
+                    and nested.get("context", {}).get("status") == "session_policy_changed"
+                    and nested.get("health_and_coverage", {}).get("status") == "not_comparable"
+                    and nested.get("accounting", {}).get("status") == "not_comparable", "different_principal_compare")
+            require(type(left_audit.get("policy_reference")) is str
+                    and type(right_audit.get("policy_reference")) is str
+                    and left_audit["policy_reference"] != right_audit["policy_reference"], "controlled_policy_references")
+            if kind == "different-principal":
+                require(left_audit.get("principal_alias") == "canary-a" and right_audit.get("principal_alias") == "canary-b", "context_compare_principals")
+                result_status = "not_compared_different_declared_principal"
+            else:
+                require(left_audit.get("schema") == "security.supplied-session-audit/v5"
+                        and right_audit.get("schema") == "security.supplied-session-audit/v6"
+                        and left_audit.get("principal_alias") == right_audit.get("principal_alias") == "canary-a", "context_compare_methodology")
+                result_status = "not_compared_different_policy_and_methodology"
+        before_rows = document["only_in_before"] + document["changed"] + document["unchanged"]
+        after_rows = document["only_in_after"] + document["changed"] + document["unchanged"]
+        require(item_identities({"item_count": len(before_rows), "items": before_rows}) == item_identities(left[1])
+                and item_identities({"item_count": len(after_rows), "items": after_rows}) == item_identities(right[1]), "context_compare_identities")
+        controls[control] = {"item_counts": counts, "status": result_status}
     require(all(snapshot(bundle) == initial[name] for name, (bundle, _) in bundles.items()), "controlled_compare_input_modified")
-    return {"status": "passed", "bundles": results,
-            "controlled_comparisons": {"a-to-b-context": {"item_counts": counts, "status": "not_compared_different_declared_principal"}}}
+    if input_snapshots is not None:
+        require(len(input_snapshots) == 16 and sum(len(data) for data in input_snapshots.values()) <= MAX_HTTP_BODY
+                and all(selected_input_bytes(path) == data
+                        for path, data in input_snapshots.items()), "offline_selected_input_modified")
+    return {"status": "passed", "bundles": results, "controlled_comparisons": controls,
+            "selected_input_bytes_preserved": input_snapshots is not None}
 
 
 def validate_fixture() -> dict:
     # RFC7636 Appendix B independent known-answer, not production-generated.
     require(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "rfc7636_oracle")
-    require(len(SCENARIOS) == 6 and len(set(SCENARIOS)) == 6 and set(EXPECTED_SESSION_ROLES) == set(SCENARIOS), "scenario_registry")
+    require(len(SCENARIOS) == 9 and len(set(SCENARIOS)) == 9
+            and set(EXPECTED_SESSION_ROLES) == set(EXPECTED_RESOURCES) == set(EXPECTED_TOKEN_POSTS)
+            == set(EXPECTED_IDP_SEQUENCE) == set(SCENARIOS) and len(OFFLINE_CONTROLS) == 4, "scenario_registry")
     document = realm_document("synthetic-resource-secret-not-for-runtime", "synthetic-controller-secret-not-for-runtime",
                               "http://127.0.0.1:12345/callback")
     clients = document["clients"]
@@ -1626,8 +2009,12 @@ def validate_fixture() -> dict:
             and all(client["directAccessGrantsEnabled"] is False for client in clients)
             and clients[1]["publicClient"] is False and clients[0]["defaultClientScopes"] == []
             and clients[0]["optionalClientScopes"] == [SCOPE], "realm_contract")
+    require(document["revokeRefreshToken"] is True and type(document["refreshTokenMaxReuse"]) is int
+            and document["refreshTokenMaxReuse"] == 0, "realm_refresh_configuration")
     validate_fixture_policy(policy_source("http://127.0.0.1:1234/realms/termivar-owned-code",
                                          "http://127.0.0.1:5678/callback", "canary-a"))
+    validate_fixture_policy(policy_source("http://127.0.0.1:1234/realms/termivar-owned-code",
+                                         "http://127.0.0.1:5678/callback", "canary-a", renewable=True))
     return {"schema": SCHEMA, "status": "fixture_contracts_valid", "execution_class": "static_only",
             "cms_or_idp_execution": "not_performed", "scenario_registry": list(SCENARIOS),
             "provider_version": KEYCLOAK_VERSION, "provider_source": KEYCLOAK_SOURCE,
@@ -1648,7 +2035,11 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
     evidence = {**validate_fixture(), "status": "running", "execution_class": "real_owned_keycloak_and_native_cli",
                 "source_ref": source_ref, "binary_sha256": binary_hash.hexdigest(),
                 "binary_bytes": binary.stat().st_size, "scenarios": {}, "offline": {"status": "not_run"},
-                "publication": "not_performed"}
+                "publication": "not_performed",
+                "controller_refresh_replay": {"status": "not_run", "expected": {"http_status": 400,
+                    "error_class": "invalid_grant", "submitted_revoke_refresh_token": True,
+                    "submitted_refresh_token_max_reuse": 0}, "observations": {},
+                    "meaning": "independent_owned_provider_control_not_product_revocation_or_identity_assurance"}}
     relay = TokenRelay(private)
     resource_secret = secrets.token_urlsafe(32)
     controller_secret = secrets.token_urlsafe(32)
@@ -1656,10 +2047,13 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
         private.add(value)
     target = TargetApplication(relay, resource_secret)
     redirect = target.origin + "/callback"
+    relay.public_redirect = redirect
     lab = KeycloakLab(runner, relay, realm_document(resource_secret, controller_secret, redirect))
     primary_error = None
+    controller_error = None
     cleanup = {}
     bundles = {}
+    input_snapshots = {}
     with tempfile.TemporaryDirectory(prefix=".private-owned-oauth-", dir=output, ignore_cleanup_errors=True) as temporary:
         work = Path(temporary)
         private.add(str(work))
@@ -1673,7 +2067,8 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
             valid_grant = None
             for name in SCENARIOS:
                 target.phase = relay.phase = name
-                target.expected_user = "canary-b" if name == "valid-b-context" else "canary-a"
+                target.expected_user = "canary-b" if name in ("valid-b-context", "refresh-b-context") else "canary-a"
+                target.deny_renewed_health = name == "refresh-health-loss"
                 policy = work / (name + ".toml")
                 grant_file = work / (name + ".secret.tsv")
                 private.add(str(policy))
@@ -1685,7 +2080,7 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                         grant = valid_grant
                     else:
                         relay.phase = "controller-" + name
-                        username = "canary-b" if name in ("wrong-b-health", "valid-b-context") else "canary-a"
+                        username = "canary-b" if name in ("wrong-b-health", "valid-b-context", "refresh-b-context") else "canary-a"
                         grant = obtain_code(relay.origin, redirect, username, controller_secret, private)
                         if name == "wrong-verifier":
                             verifier = secrets.token_urlsafe(48)
@@ -1694,11 +2089,17 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                         if name == "valid-a":
                             valid_grant = grant
                     policy_bytes = policy_source(relay.origin + REALM_PATH, redirect,
-                                                 "canary-b" if name == "valid-b-context" else "canary-a")
+                                                 "canary-b" if name in ("valid-b-context", "refresh-b-context") else "canary-a",
+                                                 renewable=name in REFRESH_SCENARIOS)
                     validate_fixture_policy(policy_bytes)
                     private_write(policy, policy_bytes)
                     private_write(grant_file, grant.tsv())
-                source_before = grant_file.read_bytes() if grant is not None else None
+                source_before = selected_input_bytes(grant_file) if grant is not None else None
+                policy_before = selected_input_bytes(policy) if grant is not None else None
+                if grant is not None:
+                    input_snapshots.update({policy: policy_before, grant_file: source_before})
+                    require(len(input_snapshots) <= 16 and sum(map(len, input_snapshots.values())) <= MAX_HTTP_BODY,
+                            "selected_input_retained_bound")
                 target_start, relay_start = len(target.trace), len(relay.trace)
                 relay.phase = name
                 bundle = work / (name + "-bundle")
@@ -1720,8 +2121,9 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                 summary.pop("anonymous_trace")
                 summary.update({"exit_code": result.returncode, "bundle_produced": source is not None,
                                 "elapsed_seconds": result.elapsed_seconds,
-                                "secret_input_bytes_preserved": grant is None or grant_file.read_bytes() == source_before})
-                require(summary["secret_input_bytes_preserved"], "secret_input_modified")
+                                "secret_input_bytes_preserved": grant is None or selected_input_bytes(grant_file) == source_before,
+                                "policy_input_bytes_preserved": grant is None or selected_input_bytes(policy) == policy_before})
+                require(summary["secret_input_bytes_preserved"] and summary["policy_input_bytes_preserved"], "secret_or_policy_input_modified")
                 evidence["scenarios"][name] = summary
                 if source is not None:
                     bundles[name] = (bundle, source)
@@ -1730,6 +2132,25 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                 require(source is not None, "expected_completed_bundle", {"scenario": name})
             require(tuple(evidence["scenarios"]) == SCENARIOS, "scenario_coverage")
             require(tuple(bundles) == SCENARIOS, "emitted_bundle_coverage")
+            # No positive flow can depend on state after a replay/revocation
+            # control. All scanner activity finishes before these two controls.
+            relay.scanner_scenarios_complete = True
+            target_count = len(target.trace)
+            scanner_idp_count = sum(row["phase"] in SCENARIOS for row in relay.trace)
+            replay_results = evidence["controller_refresh_replay"]
+            for name in REFRESH_POSITIVE:
+                try:
+                    replay_results["observations"][name] = relay.replay_initial_after_completed_flow(name)
+                    require(len(target.trace) == target_count
+                            and sum(row["phase"] in SCENARIOS for row in relay.trace) == scanner_idp_count,
+                            "refresh_control_contaminated_scanner_trace")
+                except LabError as error:
+                    replay_results["observations"][name] = {"status": "not_run" if error.code == "refresh_control_not_run" else "failed",
+                                                          "code": error.code, "diagnostic": error.diagnostic}
+                    if controller_error is None:
+                        controller_error = error
+            replay_results["status"] = "passed" if controller_error is None else "failed_or_not_run"
+            replay_results["all_scanner_scenarios_completed_before_controls"] = True
         except LabError as error:
             primary_error = error
         except Exception:
@@ -1742,6 +2163,9 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                     cleanup[name + "_stopped"] = True
                 except (LabError, RuntimeError):
                     cleanup[name + "_stopped"] = False
+            relay.clear_refresh_values()
+            cleanup["direct_refresh_capture_references_cleared"] = all(
+                capture.initial_refresh is None for capture in relay._refresh_captures.values())
             try:
                 cleanup["idp"] = lab.cleanup()
             except Exception:
@@ -1754,14 +2178,18 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                     and cleanup["idp"]["status"] == "complete", "cleanup_failed")
             if primary_error is None:
                 frozen_trace_lengths = (len(target.trace), len(relay.trace))
-                evidence["offline"] = run_offline(runner, str(binary), bundles, private)
+                evidence["offline"] = run_offline(runner, str(binary), bundles, private, input_snapshots)
                 require((len(target.trace), len(relay.trace)) == frozen_trace_lengths, "offline_network_activity")
                 evidence["offline"]["fixtures_stopped_before_execution"] = True
         except LabError as error:
             if primary_error is None:
-                primary_error = error
+                primary_error = controller_error if controller_error is not None else error
+                if controller_error is not None:
+                    cleanup["secondary_error"] = error.code
             else:
                 cleanup["secondary_error"] = error.code
+        if primary_error is None and controller_error is not None:
+            primary_error = controller_error
     cleanup["private_work_removed"] = not work.exists()
     if not cleanup["private_work_removed"]:
         if primary_error is None:

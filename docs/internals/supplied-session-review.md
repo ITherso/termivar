@@ -220,14 +220,104 @@ python scripts/oauth_code_lab_acceptance.py \
 The executable must already be built with `supplied-session-review`; actual lab
 execution requires Linux Docker. Only its bounded safe JSON evidence is an
 upload candidate, never temporary transaction files, provider logs or reports.
-The helper removes its owned fixture before all six Verify/self-Compare pairs
-and the declared-principal controlled Compare. Static tests and native synthetic
-CLI tests are distinct from a completed real-provider lab.
+The current helper runs six imported-code scenarios and three scheduled-refresh
+scenarios. It removes its owned fixture before all nine Verify/self-Compare
+pairs and four controlled comparisons. The controller's old-refresh-token
+refusal controls are separate from scanner traffic and do not upgrade the
+product's server-replay assurance. Static tests and native synthetic CLI tests
+are distinct from a completed real-provider lab.
 
 Primary protocol references: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749),
 [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636) and
 [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700). These are development
 references, never scan-time fetch destinations.
+
+## Policy V6: one scheduled opaque-Bearer refresh
+
+V6 uses the same explicit policy and imported transaction file as V5, but selects
+one additional **scheduled** token-endpoint exchange after the first resource
+and its healthy checkpoint. It is not automatic recovery after session loss,
+interactive authorization, OIDC, or a new credential authority. V5 still
+discards refresh material and never refreshes.
+
+Use the complete V5 policy above with exactly these differences (this is an
+excerpt, not another complete policy):
+
+```toml
+schema = "security.supplied-session-policy/v6"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 8
+
+[oauth_refresh]
+profile = "scheduled-public-bearer-refresh/v1"
+after_resource_count = 1
+max_attempts = 1
+```
+
+There must be exactly two selected resources and the exact eight-request child
+allowance. Existing smaller parent, body, byte and time bounds still win. The
+fixed successful schedule is:
+
+| Order | Operation | Credential context |
+| --- | --- | --- |
+| 1 | Imported-code token POST | IdP-only code/S256 form |
+| 2 | Startup health GET | Access credential, epoch 1 |
+| 3–4 | First resource GET and health GET | Epoch 1 |
+| 5 | One refresh-token POST | IdP-only refresh form |
+| 6 | Immediate renewal health GET | Replacement access credential, epoch 2 |
+| 7–8 | Second resource GET and terminal health GET | Epoch 2 |
+
+The two IdP phases share one private broker pool and the same parent accounting,
+deadline and cancellation. Neither endpoint permit grants authority over the
+other origin. The refresh form contains only `grant_type`, `client_id`,
+`refresh_token` and the exact selected `scope`; it carries no target credential,
+cookie, client secret or redirect URI. Refresh material is bounded printable
+ASCII, is not trimmed, and uses form encoding rather than header syntax. The
+form is limited independently to 16 KiB before allocation. The old refresh value
+is discarded after the one attempt even on ambiguous failure. No retry, old-token
+fallback or second refresh is permitted; the unused replacement refresh value
+is also discarded.
+
+Only the existing committed code receipt plus the exact committed first resource
+and healthy boundary can authorize this phase. A separate read-back committed
+renewal receipt is required for epoch 2; the old code receipt alone cannot
+qualify it. Renewed health must pass before another protected resource. Earlier
+resources retain their original acquisition epoch, including after later loss.
+
+Both token responses require complete uncoded bounded JSON, an exact scope echo,
+opaque Bearer material and a refresh value. V6 refuses `id_token` or top-level
+`cnf`; unsupported hidden sender constraints remain unknown. The replacement
+refresh value must differ locally. That inequality **does not prove** the server
+revoked the old value, detects replay, authenticated an identity or implements
+all OAuth security requirements. No token is decoded or signature-verified.
+The provider-declared access lifetime may be replaced, but never extends or
+resets the immutable assessment/policy wall deadline.
+
+`security.supplied-session-audit/v6` retains value-free acquisition, scheduled
+renewal, epochs, counters and the separately labelled renewal health checkpoint.
+Three common checkpoints plus that nested health are four actual GETs, not a
+duplicate terminal checkpoint. Null unevaluated facts remain distinct from
+negative observations. JSON/CSV preserve the full typed audit; HTML/Markdown
+display both epochs and the conditional rotation meaning. Strict offline
+readers retain historical v1–v5 contracts. Compare separates methodology,
+declared context/epoch and coverage changes from vulnerability or remediation.
+
+An illustrative command uses the same flags, with the V6 policy selected:
+
+```bash
+termivar scan https://app.example.test/app/ \
+  --profile web-review \
+  --session-policy ./oauth-renewal-policy.toml \
+  --session-oauth-code-file ./oauth-transaction.secret.tsv \
+  --report-dir ./assessment-oauth-renewal
+```
+
+The example host is not a test destination. Native process tests use owned
+numeric-loopback synthetic application/IdP responses; real-provider acceptance
+uses the separately pinned disposable Keycloak controller. Neither supplies
+ordinary browser login, consent, MFA or general production-IdP qualification.
+V6 WordPress/WebSocket composition is refused before secret/output acquisition.
+The feature remains non-default, outside the curated bundle and unpublished.
 
 ## Build and invoke
 
@@ -271,7 +361,7 @@ termivar scan https://app.example.test/app/ \
 ```
 
 The policy and credential acquisition mechanism must agree, and exactly one
-credential source is required. V1/V2/V3/V4/V5 source mismatches and V3/V4/V5 combined with
+credential source is required. V1/V2/V3/V4/V5/V6 source mismatches and V3/V4/V5/V6 combined with
 `--wordpress-supplied-session` are rejected after policy validation but before
 output reservation or secret-file acquisition. There is no raw credential
 argument, cookie environment source, browser import, or cookie stdin source.

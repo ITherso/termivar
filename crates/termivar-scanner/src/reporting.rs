@@ -136,7 +136,7 @@ use crate::{
         MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
         SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
         SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
-        SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
     },
 };
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
@@ -2248,32 +2248,26 @@ code,pre{overflow-wrap:anywhere}pre{white-space:pre-wrap}.empty{font-style:itali
         }
         output.push_str("</dl><h3>Health checkpoints</h3><ol>")?;
         for checkpoint in &audit.checkpoints {
-            let status = checkpoint
-                .status
-                .map_or_else(|| "not_available".to_owned(), |status| status.to_string());
-            let evidence_reference = checkpoint
-                .evidence_reference
-                .as_deref()
-                .unwrap_or("not_available");
             output.push_str("<li><code>")?;
             write_html_text(
                 &mut output,
-                &format!(
-                    "sequence={};phase={};after_subject_count={};evidence_reference={};outcome={};status={};body_state={};predicate={};response_bytes={}",
-                    checkpoint.sequence,
-                    checkpoint.phase,
-                    checkpoint.after_subject_count,
-                    evidence_reference,
-                    checkpoint.outcome,
-                    status,
-                    checkpoint.body_state,
-                    checkpoint.predicate,
-                    checkpoint.response_bytes,
-                ),
+                &checkpoint
+                    .human_summary(audit.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA),
             )?;
             output.push_str("</code></li>")?;
         }
-        output.push_str("</ol><h3>Protected resources</h3><ol>")?;
+        output.push_str("</ol>")?;
+        if let Some(health) = audit
+            .oauth_refresh
+            .as_ref()
+            .and_then(|refresh| refresh.health())
+        {
+            output.push_str("<h3>OAuth renewal health checkpoint</h3><ol><li><code>")?;
+            let health = AssessmentSuppliedSessionCheckpointDocument::from_checkpoint(health, true);
+            write_html_text(&mut output, &health.human_summary(true))?;
+            output.push_str("</code></li></ol>")?;
+        }
+        output.push_str("<h3>Protected resources</h3><ol>")?;
         for resource in &audit.resources {
             let status = resource
                 .status
@@ -4825,29 +4819,22 @@ fn render_assessment_markdown(
         }
         output.push_str("\n#### Health checkpoints\n\n")?;
         for checkpoint in &audit.checkpoints {
-            let status = checkpoint
-                .status
-                .map_or_else(|| "not_available".to_owned(), |status| status.to_string());
-            let evidence_reference = checkpoint
-                .evidence_reference
-                .as_deref()
-                .unwrap_or("not_available");
             output.push_str("- ")?;
             write_markdown_code_span(
                 &mut output,
-                &format!(
-                    "sequence={};phase={};after_subject_count={};evidence_reference={};outcome={};status={};body_state={};predicate={};response_bytes={}",
-                    checkpoint.sequence,
-                    checkpoint.phase,
-                    checkpoint.after_subject_count,
-                    evidence_reference,
-                    checkpoint.outcome,
-                    status,
-                    checkpoint.body_state,
-                    checkpoint.predicate,
-                    checkpoint.response_bytes,
-                ),
+                &checkpoint
+                    .human_summary(audit.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA),
             )?;
+            output.push_char('\n')?;
+        }
+        if let Some(health) = audit
+            .oauth_refresh
+            .as_ref()
+            .and_then(|refresh| refresh.health())
+        {
+            output.push_str("\n#### OAuth renewal health checkpoint\n\n- ")?;
+            let health = AssessmentSuppliedSessionCheckpointDocument::from_checkpoint(health, true);
+            write_markdown_code_span(&mut output, &health.human_summary(true))?;
             output.push_char('\n')?;
         }
         output.push_str("\n#### Protected resources\n\n")?;
@@ -9882,6 +9869,8 @@ struct AssessmentSuppliedSessionAuditDocument {
     renewal: Option<AssessmentSuppliedSessionRenewalDocument>,
     #[serde(skip_serializing_if = "Option::is_none")]
     oauth_code: Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_refresh: Option<Box<crate::web_runtime::SuppliedSessionOAuthRefreshAudit>>,
     health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
     outcome: &'static str,
     coverage: &'static str,
@@ -10200,6 +10189,26 @@ struct AssessmentSuppliedSessionRenewalDocument {
 
 #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
 impl AssessmentSuppliedSessionCheckpointDocument {
+    fn human_summary(&self, include_epoch: bool) -> String {
+        let status = self
+            .status
+            .map_or_else(|| "not_available".to_owned(), |value| value.to_string());
+        let evidence = self
+            .evidence_reference
+            .as_deref()
+            .unwrap_or("not_available");
+        let summary = format!(
+            "sequence={};phase={};after_subject_count={};evidence_reference={};outcome={};status={};body_state={};predicate={};response_bytes={}",
+            self.sequence, self.phase, self.after_subject_count, evidence, self.outcome,
+            status, self.body_state, self.predicate, self.response_bytes,
+        );
+        if let Some(epoch) = self.epoch.filter(|_| include_epoch) {
+            format!("{summary};epoch={epoch}")
+        } else {
+            summary
+        }
+    }
+
     fn from_checkpoint(
         checkpoint: &WebAssessmentSuppliedSessionCheckpointAudit,
         renewal: bool,
@@ -10237,6 +10246,12 @@ impl AssessmentSuppliedSessionAuditDocument {
         if audit.exploit_execution_performed() || audit.impact_validation_performed() {
             return Err(ReportError::Serialization);
         }
+        if audit
+            .oauth_refresh()
+            .is_some_and(|refresh| !refresh.is_consistent())
+        {
+            return Err(ReportError::Serialization);
+        }
         let document = Self {
             schema: audit.schema(),
             capability_id: audit.capability_id(),
@@ -10252,10 +10267,13 @@ impl AssessmentSuppliedSessionAuditDocument {
             ),
             credential_acquisition: matches!(
                 audit.schema(),
-                SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA | SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA
+                SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA
+                    | SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA
+                    | SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
             )
             .then(|| supplied_session_credential_acquisition_token(audit.credential_acquisition())),
             oauth_code: audit.oauth_code().cloned(),
+            oauth_refresh: audit.oauth_refresh().cloned().map(Box::new),
             cookie_policy: audit.cookie_policy().map(|policy| {
                 AssessmentSuppliedSessionCookiePolicyDocument {
                     declared_count: policy.declared_count(),
@@ -10336,7 +10354,7 @@ impl AssessmentSuppliedSessionAuditDocument {
                 .map(|checkpoint| {
                     AssessmentSuppliedSessionCheckpointDocument::from_checkpoint(
                         checkpoint,
-                        audit.renewal().is_some(),
+                        audit.renewal().is_some() || audit.oauth_refresh().is_some(),
                     )
                 })
                 .collect(),
@@ -10371,6 +10389,18 @@ impl AssessmentSuppliedSessionAuditDocument {
     }
 
     fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        if self.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA {
+            if items
+                .iter()
+                .any(|item| item.capability_id == SUPPLIED_SESSION_CAPABILITY_ID)
+            {
+                return Err(ReportError::Serialization);
+            }
+            let value = serde_json::to_value(self).map_err(|_| ReportError::Serialization)?;
+            return comparison::validate_supplied_session_oauth_refresh(&value)
+                .map(|_| ())
+                .map_err(|_| ReportError::Serialization);
+        }
         if self.schema == SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA {
             if items
                 .iter()
@@ -10397,6 +10427,7 @@ impl AssessmentSuppliedSessionAuditDocument {
         }
         if self.renewal.is_some()
             || self.oauth_code.is_some()
+            || self.oauth_refresh.is_some()
             || self
                 .checkpoints
                 .iter()
@@ -10812,6 +10843,27 @@ impl AssessmentSuppliedSessionAuditDocument {
                 ("OAuth initiation / callback / state-nonce / OIDC / signature verification", "not_performed".to_owned()),
             ]);
         }
+        if let Some(refresh) = self.oauth_refresh.as_ref() {
+            metadata.extend([
+                ("OAuth renewal profile", "scheduled-public-bearer-refresh/v1".to_owned()),
+                ("OAuth renewal policy reference", refresh.refresh_policy_reference().to_owned()),
+                ("OAuth renewal outcome", refresh.outcome().as_str().to_owned()),
+                ("OAuth renewal attempted dispatches", refresh.request_attempt_count().to_string()),
+                ("OAuth renewal admitted requests", refresh.request_admitted_count().to_string()),
+                ("OAuth renewal complete responses", refresh.response_completed_count().to_string()),
+                ("OAuth renewal committed credentials", refresh.credential_commit_count().to_string()),
+                ("OAuth renewal response bytes", refresh.response_bytes().to_string()),
+                ("OAuth renewal initial epoch", refresh.initial_epoch().to_string()),
+                ("OAuth renewal final epoch", refresh.final_epoch().to_string()),
+                ("OAuth replacement refresh token returned", refresh.replacement_refresh_token_received()
+                    .map_or_else(|| "not_established".to_owned(), |value| value.to_string())),
+                ("OAuth replacement value differs", refresh.replacement_value_differs()
+                    .map_or_else(|| "not_established".to_owned(), |value| value.to_string())),
+                ("Health observations (common plus renewal)",
+                    (self.checkpoints.len() + usize::from(refresh.health().is_some())).to_string()),
+                ("OAuth renewal assurance", "Returned value inequality is a local observation, not server revocation or replay-detection proof; no OIDC identity, signature, or front-channel verification is established.".to_owned()),
+            ]);
+        }
         if let Some(policy) = self.cookie_policy.as_ref() {
             metadata.extend([
                 ("Declared cookies", policy.declared_count.to_string()),
@@ -11013,6 +11065,7 @@ const fn supplied_session_audit_outcome_token(value: SuppliedSessionAuditOutcome
         SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable => {
             "oauth_code_exchange_unavailable"
         },
+        SuppliedSessionAuditOutcome::OAuthRefreshUnavailable => "oauth_refresh_unavailable",
     }
 }
 
@@ -15309,7 +15362,8 @@ impl WordPressSuppliedSessionPageCollectionDocument {
         &self,
         session: &AssessmentSuppliedSessionAuditDocument,
     ) -> Result<(), ReportError> {
-        if self.policy_reference != session.policy_reference
+        if session.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
+            || self.policy_reference != session.policy_reference
             || self.application_reference != session.application_reference
             || self.principal_reference != session.principal_reference
             || self.credential_mechanism != session.credential_mechanism
@@ -21364,6 +21418,7 @@ mod tests {
             login: None,
             renewal: None,
             oauth_code: None,
+            oauth_refresh: None,
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: "json_boolean_true",
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),
@@ -21427,6 +21482,40 @@ mod tests {
             exploit_execution: "not_performed",
             impact_validation: "not_performed",
         }
+    }
+
+    #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]
+    #[test]
+    fn oauth_renewal_checkpoint_display_preserves_legacy_and_separate_epoch() {
+        let health = AssessmentSuppliedSessionCheckpointDocument {
+            sequence: 2,
+            phase: "renewal",
+            after_subject_count: 1,
+            evidence_reference: Some(format!(
+                "supplied-session-checkpoint-evidence-sha256:{}",
+                "e".repeat(64)
+            )),
+            outcome: "healthy",
+            status: Some(200),
+            body_state: "complete",
+            predicate: "matched",
+            response_bytes: 29,
+            epoch: Some(2),
+        };
+        assert_eq!(health.human_summary(true), format!(
+            "sequence=2;phase=renewal;after_subject_count=1;evidence_reference=supplied-session-checkpoint-evidence-sha256:{};outcome=healthy;status=200;body_state=complete;predicate=matched;response_bytes=29;epoch=2",
+            "e".repeat(64)
+        ));
+        assert!(!health.human_summary(false).contains(";epoch="));
+        let legacy = complete_supplied_session_audit_document();
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("oauth_refresh")
+            .is_none());
+        assert_eq!(legacy.checkpoints[0].human_summary(false), format!(
+            "sequence=0;phase=startup;after_subject_count=0;evidence_reference=supplied-session-checkpoint-evidence-sha256:{};outcome=healthy;status=200;body_state=complete;predicate=matched;response_bytes=17",
+            "6".repeat(64)
+        ));
     }
 
     #[cfg(all(feature = "scanning", feature = "supplied-session-review"))]

@@ -172,6 +172,7 @@ const FEATURE_OWNED_DEPENDENCIES: &[&str] = &[
     "regex",
     "ring",
     "reqwest",
+    "subtle",
     "tokio",
     "tokio-rustls",
     "tokio-util",
@@ -1187,6 +1188,12 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_code.rs"))?,
         &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_code.rs"))?,
     ));
+    violations.extend(oauth_refresh_source_contract_violations(
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/supplied_session_review/oauth_refresh.rs"))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_refresh.rs"))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_refresh.rs"))?,
+        &fs::read_to_string(workspace_root.join(SUPPLIED_SESSION_RUNTIME_SOURCE))?,
+    ));
     violations.extend(private_natural_child_module_violations(
         &web_runtime_source,
         "scan_profile",
@@ -1890,6 +1897,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "scanning",
                 "core",
                 "dep:zeroize",
+                "dep:subtle",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -2336,7 +2344,7 @@ fn oauth_code_source_contract_violations(codec: &str, runtime: &str, reader: &st
     // The runtime has exactly one external test module. Test-owned source
     // cannot supply a missing production authority predicate.
     let runtime = runtime.replace("\r\n", "\n");
-    let boundary = "#[cfg(test)]\n#[path = \"oauth_code_tests.rs\"]\nmod tests;";
+    let boundary = "#[cfg(test)]\n#[path = \"oauth_code_tests.rs\"]\npub(super) mod tests;";
     if runtime.matches(boundary).count() != 1 {
         return vec![
             "OAuth-code runtime requires its exact isolated test-module boundary".to_owned(),
@@ -2363,6 +2371,7 @@ fn oauth_code_source_contract_violations(codec: &str, runtime: &str, reader: &st
                 "MAX_JSON_DEPTH:usize=8",
                 "\"id_token\"=>returnErr(OAuthCodeInputError::UnsupportedTokenProfile)",
                 "!token_type.as_str().eq_ignore_ascii_case(\"Bearer\")",
+                "parse_token_response_fields(policy,body,RefreshTokenHandling::Discard)?",
             ][..],
         ),
         (
@@ -2409,6 +2418,171 @@ fn oauth_code_source_contract_violations(codec: &str, runtime: &str, reader: &st
         ] {
             if compact.contains(forbidden) {
                 violations.push(format!("OAuth-code {label} cannot create ambient transport/storage/authority: {forbidden}"));
+            }
+        }
+    }
+    violations
+}
+
+fn oauth_refresh_source_contract_violations(
+    codec: &str,
+    runtime: &str,
+    reader: &str,
+    parent: &str,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let codec = match exact_inline_tests_production("OAuth-refresh codec", codec) {
+        Ok(source) => source,
+        Err(errors) => return errors,
+    };
+    let parent = match exact_inline_tests_production("OAuth-refresh parent", parent) {
+        Ok(source) => source,
+        Err(errors) => return errors,
+    };
+    let codec_syntax = syn::parse_file(codec).expect("production extraction parsed the codec");
+    for (name, allowed_methods) in [
+        (
+            "OAuthRefreshToken",
+            &["matches_policy", "compose_form_body"][..],
+        ),
+        ("OAuthRefreshFormBody", &["as_bytes"][..]),
+        (
+            "OAuthRenewableTokenResponse",
+            &[
+                "expires_in_seconds",
+                "replacement_value_differs",
+                "into_parts",
+            ][..],
+        ),
+    ] {
+        let structures = codec_syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Struct(item) if item.ident == name => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let structure_is_private = matches!(structures.as_slice(), [item]
+            if item.attrs.iter().all(|attribute| attribute.path().is_ident("doc"))
+                && item.fields.iter().all(|field| matches!(field.vis, Visibility::Inherited)));
+        let mut methods = BTreeSet::new();
+        let mut traits_are_exact = true;
+        let mut debug_traits = 0_usize;
+        let mut methods_are_crate_private = true;
+        for item in &codec_syntax.items {
+            let Item::Impl(item) = item else {
+                continue;
+            };
+            let syn::Type::Path(target) = item.self_ty.as_ref() else {
+                continue;
+            };
+            if !target.path.is_ident(name) {
+                continue;
+            }
+            if let Some((_, path, _)) = &item.trait_ {
+                traits_are_exact &= reporting_path_is(path, &["fmt", "Debug"]);
+                debug_traits += usize::from(reporting_path_is(path, &["fmt", "Debug"]));
+            } else {
+                methods.extend(item.items.iter().filter_map(|item| match item {
+                    ImplItem::Fn(method) => {
+                        methods_are_crate_private &= matches!(&method.vis,
+                            Visibility::Restricted(visibility) if visibility.path.is_ident("crate"));
+                        Some(method.sig.ident.to_string())
+                    },
+                    _ => None,
+                }));
+            }
+        }
+        if !structure_is_private
+            || !traits_are_exact
+            || debug_traits != 1
+            || !methods_are_crate_private
+            || methods
+                != allowed_methods
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect::<BTreeSet<_>>()
+        {
+            violations.push(format!("OAuth-refresh secret type {name} must remain underived, private-field, move-only and expose only its exact guarded methods"));
+        }
+    }
+    let runtime = runtime.replace("\r\n", "\n");
+    let boundary = "#[cfg(test)]\n#[path = \"oauth_refresh_tests.rs\"]\nmod tests;";
+    if runtime.matches(boundary).count() != 1 {
+        return vec![
+            "OAuth-refresh runtime requires its exact private external test boundary".to_owned(),
+        ];
+    }
+    let runtime = runtime.replacen(boundary, "", 1);
+    if runtime.contains("#[cfg(test)]")
+        || syn::parse_file(&runtime).is_err()
+        || syn::parse_file(reader).is_err()
+    {
+        return vec![
+            "OAuth-refresh runtime/reader must remain valid production-only source".to_owned(),
+        ];
+    }
+    for (label, source, required) in [
+        ("codec", codec, &[
+            "MAX_REFRESH_BYTES:usize=8*1_024", "MAX_FORM_BYTES:usize=16*1_024",
+            "policy.version()!=SuppliedSessionPolicyVersion::V6",
+            "parse_token_response_fields(idp,body,RefreshTokenHandling::RetainAscii)?",
+            "previous.is_some_and(|previous|!previous.matches_policy(policy))",
+            "value.as_bytes().ct_eq(previous.value.as_bytes())",
+            "self.principal_alias==policy.principal_alias()",
+            "self.idp_reference==idp.binding_reference()",
+            "encoded_form_length(&fields).ok_or(OAuthCodeInputError::SecretTooLarge)?",
+            "iflength>MAX_FORM_BYTES",
+            "OAuthRefreshToken(<redacted>)", "OAuthRefreshFormBody(<redacted>)",
+        ][..]),
+        ("runtime", runtime.as_str(), &[
+            "context.budget.dispatched_requests!=4", "context.resource.epoch()!=1",
+            "context.health.epoch()!=1", "context.resource.outcome()!=SuppliedSessionResourceOutcome::Committed",
+            "context.health.outcome()!=SuppliedSessionHealthOutcome::Healthy",
+            "mint.is_valid_for(policy,self.knowledge)",
+            "self.knowledge_authority.is_same_as(knowledge.authority())",
+            "policy.principal_alias()==self.principal_alias",
+            "self.resource.remains_committed(knowledge)&&self.health.remains_committed(knowledge)",
+            "BoundaryEvidence::read(policy,knowledge,&self.evidence_reference,REFRESH_DOMAIN,REFRESH_PREFIX,REFRESH_PREDICATE,",
+            ".is_some_and(|expected|expected.expected==self.expected_evidence)",
+            "ifreference!=expected_reference{returnNone;}",
+            "KnowledgePredicate::new(RESOURCE_COMMIT_EVIDENCE_NAMESPACE,predicate)",
+            "EvidenceKind::Authentication", "stored==&expected",
+            "ifadmitted!=1||response.status!=200||!response.complete||!response.representation_supported",
+            "server_replay_detection_established:false", "drop(replacement_refresh);",
+        ][..]),
+        ("reader", reader, &[
+            "security.supplied-session-audit/v6",
+            "check(number(fields,\"selected_resource_count\",2)?==2)?;",
+            "check(!boolean(refresh,\"server_replay_detection_established\")?)?;",
+            "letadmitted=number(refresh,\"request_admitted_count\",attempted)?;",
+            "check(final_epoch==1+commits)?;",
+            "lettotal_requests=number(fields,\"dispatched_request_count\",8)?;",
+            "validate_supplied_session_oauth_code(&Value::Object(common),items)?;",
+        ][..]),
+        ("parent", parent, &[
+            "letsession_deadline=earliest_deadline(timing.deadline(),local_deadline);",
+            "deadline:session_deadline,budget:state.dispatch_budget()",
+            "oauth_refresh_receipt=Some(Box::new(acquired.receipt));",
+            "state.epoch=2;", "drop(old_refresh);",
+            "renewed.is_valid_for(context.policy,code,context.authority.knowledge())",
+            "binding.split(';').any(|field|field==v6_epoch_field)",
+        ][..]),
+    ] {
+        let compact = squash_ascii_whitespace(source);
+        for marker in required {
+            if !compact.contains(marker) {
+                violations.push(format!("OAuth-refresh {label} lost a reviewed private/bounded contract: {marker}"));
+            }
+        }
+        // The parent holds the existing assessment transport interfaces; the
+        // three new children may not acquire ambient execution or I/O.
+        if label != "parent" {
+            for forbidden in ["reqwest::", "std::process::", "std::fs::", "KnowledgeBase::new()", "danger_accept_invalid_certs"] {
+                if compact.contains(forbidden) {
+                    violations.push(format!("OAuth-refresh {label} cannot create ambient authority: {forbidden}"));
+                }
             }
         }
     }
@@ -2524,6 +2698,9 @@ fn supplied_session_review_source_contract_violations(
             compact_core.as_str(),
             &[
                 "security.supplied-session-policy/v4",
+                "security.supplied-session-policy/v6",
+                "wire.resources.len()!=2",
+                "wire.max_session_requests!=8",
                 "wire.max_renewal_attempts!=1",
                 "usize::from(wire.max_session_requests)!=3+2*wire.resources.len()",
                 "policy.admits_execution_target(&renewal_url)",
@@ -6640,6 +6817,10 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
                 "Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>",
             ),
             (
+                "oauth_refresh",
+                "Option<Box<crate::web_runtime::SuppliedSessionOAuthRefreshAudit>>",
+            ),
+            (
                 "health_oracle",
                 "AssessmentSuppliedSessionHealthOracleDocument",
             ),
@@ -8521,6 +8702,7 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                                     | "login"
                                     | "renewal"
                                     | "oauth_code"
+                                    | "oauth_refresh"
                             ))
                         || (name == "AssessmentSuppliedSessionLoginDocument"
                             && field_name == "form_error_code")
@@ -11178,8 +11360,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 662_210;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x3a4b_d0fe_94b0_8055_f190_30d9_2e75_a7af;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 665_493;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x60c0_1553_fd9d_9eb6_7bb7_781c_9006_0edf;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -11402,6 +11584,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
@@ -11664,6 +11847,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "AssessmentSuppliedSessionCheckpointDocument::from_checkpoint",
     "comparison::validate_supplied_session_renewal",
     "comparison::validate_supplied_session_oauth_code",
+    "comparison::validate_supplied_session_oauth_refresh",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
     "WordPressSuppliedSessionPageCollectionDocument::validate",
@@ -11793,6 +11977,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "SuppliedSessionAuditOutcome::LoginFormUnavailable",
     "SuppliedSessionAuditOutcome::LoginSubmitUnavailable",
     "SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable",
+    "SuppliedSessionAuditOutcome::OAuthRefreshUnavailable",
     "SuppliedSessionAuditOutcome::ResourceUnavailable",
     "SuppliedSessionAuditOutcome::RuntimeLimit",
     "SuppliedSessionAuditOutcome::SessionLost",
@@ -12118,6 +12303,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
@@ -12137,6 +12323,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentRestAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::SuppliedSessionOAuthCodeAudit",
+    "crate::web_runtime::SuppliedSessionOAuthRefreshAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
@@ -12312,6 +12499,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "AssessmentSuppliedSessionCheckpointDocument::from_checkpoint",
     "comparison::validate_supplied_session_renewal",
     "comparison::validate_supplied_session_oauth_code",
+    "comparison::validate_supplied_session_oauth_refresh",
     "AssessmentTlsNegotiationReviewAuditDocument::from_audit",
     "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
@@ -12577,6 +12765,11 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "oauth_code",
+    "oauth_refresh",
+    "human_summary",
+    "refresh_policy_reference",
+    "replacement_refresh_token_received",
+    "replacement_value_differs",
     "idp_reference",
     "credential_commit_count",
     "declared_token_lifetime_seconds",
@@ -13642,6 +13835,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
                     | "crate::web_runtime::SuppliedSessionAuditOutcome"
@@ -13876,6 +14070,15 @@ fn collect_reporting_import_paths(
 }
 
 impl<'ast> Visit<'ast> for ReportingSourceVisitor {
+    fn visit_field_value(&mut self, field: &'ast syn::FieldValue) {
+        if self.inside_test_module == 0 && exact_boxed_oauth_refresh_field(field) {
+            // Only the reviewed optional audit storage expression may name
+            // Box::new. Arbitrary allocation calls remain outside the facade.
+            return;
+        }
+        syn::visit::visit_field_value(self, field);
+    }
+
     fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
         let attribute_name = reporting_syn_path_key(attribute.path());
         if attribute_name == "macro_export" {
@@ -14156,6 +14359,47 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
         inspect_reporting_macro_tokens(item.tokens.clone(), &mut self.violations);
         syn::visit::visit_macro(self, item);
     }
+}
+
+fn exact_boxed_oauth_refresh_field(field: &syn::FieldValue) -> bool {
+    if !field.attrs.is_empty()
+        || !matches!(&field.member, syn::Member::Named(name) if name == "oauth_refresh")
+        || field.colon_token.is_none()
+    {
+        return false;
+    }
+    let syn::Expr::MethodCall(map) = &field.expr else {
+        return false;
+    };
+    if !map.attrs.is_empty()
+        || map.method != "map"
+        || map.turbofish.is_some()
+        || map.args.len() != 1
+        || !map.args.first().is_some_and(|argument| {
+            matches!(argument, syn::Expr::Path(path)
+                if path.attrs.is_empty() && path.qself.is_none()
+                    && reporting_path_is(&path.path, &["Box", "new"]))
+        })
+    {
+        return false;
+    }
+    let syn::Expr::MethodCall(cloned) = map.receiver.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(audit) = cloned.receiver.as_ref() else {
+        return false;
+    };
+    cloned.attrs.is_empty()
+        && cloned.method == "cloned"
+        && cloned.turbofish.is_none()
+        && cloned.args.is_empty()
+        && audit.attrs.is_empty()
+        && audit.method == "oauth_refresh"
+        && audit.turbofish.is_none()
+        && audit.args.is_empty()
+        && matches!(audit.receiver.as_ref(), syn::Expr::Path(path)
+            if path.attrs.is_empty() && path.qself.is_none()
+                && reporting_path_is(&path.path, &["audit"]))
 }
 
 fn reporting_source_violations(source: &str) -> Result<Vec<String>, syn::Error> {
@@ -14690,7 +14934,11 @@ mod tests {
         );
         features.insert(
             "supplied-session-review".to_owned(),
-            vec!["scanning".to_owned(), "dep:zeroize".to_owned()],
+            vec![
+                "scanning".to_owned(),
+                "dep:zeroize".to_owned(),
+                "dep:subtle".to_owned(),
+            ],
         );
         features.insert(
             "secret-exposure-review".to_owned(),
@@ -15399,9 +15647,24 @@ mod tests {
     fn supplied_session_review_is_isolated_non_bundled_and_in_compatibility_aggregates() {
         let mut features = valid_feature_map();
         assert!(feature_violations(&features).is_empty());
+        let mut missing_subtle = valid_feature_map();
+        missing_subtle
+            .get_mut("supplied-session-review")
+            .unwrap()
+            .retain(|member| member != "dep:subtle");
+        assert!(feature_violations(&missing_subtle)
+            .iter()
+            .any(
+                |violation| violation.contains("`supplied-session-review` raw feature closure")
+                    && violation.contains("dep:subtle")
+            ));
         assert_eq!(
             features.get("supplied-session-review").unwrap(),
-            &["scanning".to_owned(), "dep:zeroize".to_owned()]
+            &[
+                "scanning".to_owned(),
+                "dep:zeroize".to_owned(),
+                "dep:subtle".to_owned()
+            ]
         );
         assert!(!raw_feature_closure(&features, "default").contains("supplied-session-review"));
         for aggregate in ["full", "enterprise"] {
@@ -16021,6 +16284,137 @@ mod tests {
         ] {
             assert!(!oauth_code_source_contract_violations(&codec, &runtime, &reader).is_empty());
         }
+        for (from, to) in [
+            ("pub(super) mod tests;", "pub(crate) mod tests;"),
+            ("pub(super) mod tests;", "pub mod tests;"),
+            (
+                "#[path = \"oauth_code_tests.rs\"]",
+                "#[path = \"other_tests.rs\"]",
+            ),
+            (
+                "#[cfg(test)]",
+                "#[cfg(any(test, feature = \"supplied-session-review\"))]",
+            ),
+        ] {
+            let changed = runtime.replacen(from, to, 1);
+            assert_ne!(
+                changed, runtime,
+                "stale exact test-boundary mutation {from}"
+            );
+            assert!(!oauth_code_source_contract_violations(codec, &changed, reader).is_empty());
+        }
+        let changed = codec.replacen(
+            "RefreshTokenHandling::Discard",
+            "RefreshTokenHandling::RetainAscii",
+            1,
+        );
+        assert_ne!(changed, codec);
+        assert!(!oauth_code_source_contract_violations(&changed, runtime, reader).is_empty());
+    }
+
+    #[test]
+    fn oauth_refresh_children_keep_exact_epoch_proof_budget_and_privacy_contracts() {
+        let codec = include_str!(
+            "../../../crates/termivar-scanner/src/supplied_session_review/oauth_refresh.rs"
+        );
+        let runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_refresh.rs");
+        let reader = include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_refresh.rs");
+        let parent = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs"
+        );
+        let baseline = oauth_refresh_source_contract_violations(codec, runtime, reader, parent);
+        assert!(baseline.is_empty(), "{baseline:#?}");
+        for (from, to) in [
+            (
+                "MAX_REFRESH_BYTES: usize = 8 * 1_024",
+                "MAX_REFRESH_BYTES: usize = 8 * 1_025",
+            ),
+            (
+                "MAX_FORM_BYTES: usize = 16 * 1_024",
+                "MAX_FORM_BYTES: usize = 16 * 1_025",
+            ),
+            (
+                "value.as_bytes().ct_eq(previous.value.as_bytes())",
+                "value.as_bytes().ct_eq(value.as_bytes())",
+            ),
+            ("self.principal_alias == policy.principal_alias()", "true"),
+            (
+                "pub(crate) struct OAuthRefreshToken {",
+                "#[derive(Clone)]\npub(crate) struct OAuthRefreshToken {",
+            ),
+            ("pub(crate) fn matches_policy(", "pub fn matches_policy("),
+        ] {
+            let changed = codec.replacen(from, to, 1);
+            assert_ne!(changed, codec, "stale V6 codec mutation {from}");
+            assert!(
+                !oauth_refresh_source_contract_violations(&changed, runtime, reader, parent)
+                    .is_empty()
+            );
+        }
+        for (from, to) in [
+            (
+                "self.knowledge_authority.is_same_as(knowledge.authority())",
+                "true",
+            ),
+            ("context.budget.dispatched_requests != 4", "false"),
+            ("context.resource.epoch() != 1", "false"),
+            ("context.health.epoch() != 1", "false"),
+            ("expected.expected == self.expected_evidence", "true"),
+            (
+                "server_replay_detection_established: false",
+                "server_replay_detection_established: true",
+            ),
+            ("mod tests;", "pub(crate) mod tests;"),
+        ] {
+            let changed = runtime.replacen(from, to, 1);
+            assert_ne!(changed, runtime, "stale V6 proof mutation {from}");
+            assert!(
+                !oauth_refresh_source_contract_violations(codec, &changed, reader, parent)
+                    .is_empty()
+            );
+        }
+        for (spellings, to) in [
+            (
+                &["deadline:session_deadline", "deadline: session_deadline"][..],
+                "deadline: None",
+            ),
+            (
+                &[
+                    "renewed.is_valid_for(context.policy,code,context.authority.knowledge())",
+                    "renewed.is_valid_for(context.policy, code, context.authority.knowledge())",
+                ][..],
+                "true",
+            ),
+        ] {
+            let from = spellings
+                .iter()
+                .find(|from| parent.contains(**from))
+                .expect("exact reviewed V6 scheduling mutation must match production");
+            let changed = parent.replacen(from, to, 1);
+            assert_ne!(changed, parent, "stale V6 scheduling mutation {from}");
+            assert!(
+                !oauth_refresh_source_contract_violations(codec, runtime, reader, &changed)
+                    .is_empty()
+            );
+        }
+        let changed = reader.replacen(
+            "check(!boolean(refresh, \"server_replay_detection_established\")?)?;",
+            "check(boolean(refresh, \"server_replay_detection_established\")?)?;",
+            1,
+        );
+        assert_ne!(changed, reader);
+        assert!(
+            !oauth_refresh_source_contract_violations(codec, runtime, &changed, parent).is_empty()
+        );
+        let changed = format!("{codec}\nfn escaped_tail() {{ std::fs::read(\"forbidden\"); }}");
+        assert!(
+            !oauth_refresh_source_contract_violations(&changed, runtime, reader, parent).is_empty()
+        );
+        let changed = codec.replacen("#[cfg(test)]", "impl OAuthRefreshToken { pub(crate) fn unreviewed_value(&self) -> &str { self.value.as_str() } }\n#[cfg(test)]", 1);
+        assert_ne!(changed, codec);
+        assert!(
+            !oauth_refresh_source_contract_violations(&changed, runtime, reader, parent).is_empty()
+        );
     }
 
     #[test]
@@ -18874,6 +19268,7 @@ mod tests {
                     SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+                    SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
                 },
             };
@@ -19220,6 +19615,27 @@ mod tests {
                 && violations.contains("WordPressExternalVersionEvidenceStatus"),
             "{violations}"
         );
+    }
+
+    #[test]
+    fn reporting_box_allocation_is_only_the_exact_optional_refresh_audit_field() {
+        let source = "fn project(audit: &Audit) { let _ = Self { oauth_refresh: audit.oauth_refresh().cloned().map(Box::new) }; }";
+        assert!(reporting_source_violations(source).unwrap().is_empty());
+        for (from, to) in [
+            ("oauth_refresh:", "unreviewed_field:"),
+            ("audit.oauth_refresh()", "other.oauth_refresh()"),
+            (".cloned()", ".clone()"),
+            ("Box::new", "Box::leak"),
+        ] {
+            let changed = source.replacen(from, to, 1);
+            assert_ne!(changed, source);
+            assert!(
+                !reporting_source_violations(&changed).unwrap().is_empty(),
+                "{from}"
+            );
+        }
+        let changed = format!("{source}\nfn unreviewed() {{ Box::new(1); }}");
+        assert!(!reporting_source_violations(&changed).unwrap().is_empty());
     }
 
     #[test]
@@ -20103,6 +20519,8 @@ mod tests {
                 renewal: Option<AssessmentSuppliedSessionRenewalDocument>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 oauth_code: Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                oauth_refresh: Option<Box<crate::web_runtime::SuppliedSessionOAuthRefreshAudit>>,
                 health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
                 outcome: &'static str,
                 coverage: &'static str,

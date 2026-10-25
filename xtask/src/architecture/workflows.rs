@@ -313,10 +313,13 @@ const OAUTH_CODE_SMOKE_GATE: &str = r#"      - name: Exercise imported OAuth-cod
           TERMIVAR_NATIVE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,secret-exposure-review --test supplied_session_oauth_code_cli --test capabilities_cli -- --nocapture
+          cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,secret-exposure-review --test supplied_session_oauth_code_cli --test supplied_session_oauth_refresh_cli --test capabilities_cli -- --nocapture
           python -c 'import hashlib,json,os,pathlib,platform; e=os.environ; p=pathlib.Path("target/release/termivar"+(".exe" if os.name=="nt" else "")); assert p.is_file() and not p.is_symlink(); n=p.stat().st_size; assert 0<n<=2**27; print(json.dumps(dict(schema="native-oauth-executable/v1",source=e["TERMIVAR_NATIVE_SOURCE"],run_id=e["GITHUB_RUN_ID"],run_attempt=e["GITHUB_RUN_ATTEMPT"],host=platform.system(),arch=platform.machine(),features="supplied-session-review,secret-exposure-review",profile="release",bytes=n,sha256=hashlib.file_digest(p.open("rb"),"sha256").hexdigest(),assurance="self_reported_hash_not_attestation"),sort_keys=True))'
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_code::tests:: -- --nocapture
-          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_code_saved_reader_ -- --nocapture"#;
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_refresh::tests:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::web_assessment::tests::normal_runtime_oauth_refresh_central_reports_all_formats_without_private_values -- --exact --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_code_saved_reader_ -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_refresh_saved_ -- --nocapture"#;
 const OAUTH_CODE_LAB_JOB: &str = r#"  oauth-code-lab:
     name: OAuth Code Session Lab
     runs-on: ubuntu-latest
@@ -3357,6 +3360,16 @@ mod tests {
             OAUTH_CODE_SMOKE_GATE.replace("--release --locked", "--locked"),
             OAUTH_CODE_SMOKE_GATE.replace("secret-exposure-review", "wordpress-review"),
             OAUTH_CODE_SMOKE_GATE.replace("oauth_code::tests::", "nonexistent_filter::"),
+            OAUTH_CODE_SMOKE_GATE.replace("--test supplied_session_oauth_refresh_cli ", ""),
+            OAUTH_CODE_SMOKE_GATE.replace("oauth_refresh::tests::", "nonexistent_filter::"),
+            OAUTH_CODE_SMOKE_GATE.replace(
+                "normal_runtime_oauth_refresh_central_reports_all_formats_without_private_values",
+                "nonexistent_reporting_filter",
+            ),
+            OAUTH_CODE_SMOKE_GATE.replace(
+                "--features reporting supplied_session_oauth_refresh_saved_",
+                "--features supplied-session-review supplied_session_oauth_refresh_saved_",
+            ),
             OAUTH_CODE_SMOKE_GATE.replace(
                 "--features reporting supplied_session_oauth_code_saved_reader_",
                 "--features supplied-session-review supplied_session_oauth_code_saved_reader_",

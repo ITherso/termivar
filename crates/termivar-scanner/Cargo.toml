@@ -37,6 +37,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
 thiserror = { workspace = true }
 toml = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
@@ -89,7 +90,7 @@ authorization-review = ["scanning"]
 
 # Explicitly enabled, bounded assessment using one caller-supplied Authorization
 # session. Secret ownership and transport remain inside the web-assessment host.
-supplied-session-review = ["scanning", "dep:zeroize"]
+supplied-session-review = ["scanning", "dep:zeroize", "dep:subtle"]
 
 # Explicitly enabled, zero-additional-request review of complete anonymous
 # textual response bodies already acquired by the assessment runtime. The

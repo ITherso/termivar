@@ -2,6 +2,420 @@ use super::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+mod oauth_refresh_tests {
+    //! Synthetic literal saved wires, independent of the runtime and reader.
+
+    use super::*;
+
+    fn complete_refresh_audit() -> Value {
+        let mut audit = supplied_session_oauth_code_audit();
+        audit["schema"] = json!("security.supplied-session-audit/v6");
+        audit["selected_resource_count"] = json!(2);
+        audit["dispatched_resource_count"] = json!(2);
+        audit["committed_resource_count"] = json!(2);
+        audit["dispatched_request_count"] = json!(8);
+        audit["response_bytes"] = json!(316);
+        audit["refresh_performed"] = json!(true);
+        audit["oauth_code"]["refresh_token_returned"] = json!(true);
+        audit["checkpoints"] = json!([
+            {"sequence":0,"phase":"startup","after_subject_count":0,
+                "evidence_reference":format!("supplied-session-checkpoint-evidence-sha256:{}","7".repeat(64)),
+                "outcome":"healthy","status":200,"body_state":"complete","predicate":"matched","response_bytes":17,"epoch":1},
+            {"sequence":1,"phase":"subject_boundary","after_subject_count":1,
+                "evidence_reference":format!("supplied-session-checkpoint-evidence-sha256:{}","8".repeat(64)),
+                "outcome":"healthy","status":200,"body_state":"complete","predicate":"matched","response_bytes":19,"epoch":1},
+            {"sequence":2,"phase":"terminal","after_subject_count":2,
+                "evidence_reference":format!("supplied-session-checkpoint-evidence-sha256:{}","9".repeat(64)),
+                "outcome":"healthy","status":200,"body_state":"complete","predicate":"matched","response_bytes":23,"epoch":2}
+        ]);
+        audit["resources"] = json!([
+            {"sequence":0,"resource_reference":format!("supplied-session-resource-sha256:{}","5".repeat(64)),
+                "evidence_reference":format!("supplied-session-resource-evidence-sha256:{}","6".repeat(64)),
+                "outcome":"committed","status":200,"response_bytes":31,"epoch":1},
+            {"sequence":1,"resource_reference":format!("supplied-session-resource-sha256:{}","c".repeat(64)),
+                "evidence_reference":format!("supplied-session-resource-evidence-sha256:{}","d".repeat(64)),
+                "outcome":"committed","status":200,"response_bytes":37,"epoch":2}
+        ]);
+        audit["oauth_refresh"] = json!({
+            "profile":"scheduled-public-bearer-refresh/v1",
+            "idp_reference":format!("oauth-code-policy-sha256:{}","a".repeat(64)),
+            "refresh_policy_reference":format!("oauth-refresh-policy-sha256:{}","3".repeat(64)),
+            "after_resource_count":1,"max_attempts":1,
+            "token_interpretation":"opaque_bearer_not_oidc_identity",
+            "rotation_assurance":"replacement_value_observed_not_server_revocation",
+            "server_replay_detection_established":false,
+            "initial_epoch":1,"final_epoch":2,
+            "request_attempt_count":1,"request_admitted_count":1,
+            "response_completed_count":1,"credential_commit_count":1,
+            "status":200,"body_state":"complete","response_bytes":70,
+            "configured_token_response_byte_limit":8192,"token_response_validated":true,
+            "response_scope_matched":true,"declared_token_lifetime_seconds":120,
+            "replacement_refresh_token_received":true,"replacement_value_differs":true,
+            "prior_credential_evidence_reference":format!("supplied-session-oauth-code-evidence-sha256:{}","b".repeat(64)),
+            "boundary_resource_evidence_reference":format!("supplied-session-resource-evidence-sha256:{}","6".repeat(64)),
+            "boundary_health_evidence_reference":format!("supplied-session-checkpoint-evidence-sha256:{}","8".repeat(64)),
+            "evidence_reference":format!("supplied-session-oauth-refresh-evidence-sha256:{}","f".repeat(64)),
+            "health":{"sequence":2,"phase":"renewal","after_subject_count":1,
+                "evidence_reference":format!("supplied-session-checkpoint-evidence-sha256:{}","e".repeat(64)),
+                "outcome":"healthy","status":200,"body_state":"complete","predicate":"matched","response_bytes":29,"epoch":2},
+            "outcome":"credential_committed"
+        });
+        audit
+    }
+
+    fn undispatched_resource(resource: &mut Value, epoch: u64) {
+        resource["evidence_reference"] = Value::Null;
+        resource["status"] = Value::Null;
+        resource["response_bytes"] = json!(0);
+        resource["outcome"] = json!("not_dispatched");
+        resource["epoch"] = json!(epoch);
+    }
+
+    fn empty_refresh_audit() -> Value {
+        let mut audit = complete_refresh_audit();
+        audit["oauth_code"] = supplied_session_oauth_code_failure_audit()["oauth_code"].clone();
+        audit["outcome"] = json!("oauth_code_exchange_unavailable");
+        audit["coverage"] = json!("none");
+        audit["checkpoints"] = json!([]);
+        audit["dispatched_resource_count"] = json!(0);
+        audit["committed_resource_count"] = json!(0);
+        audit["dispatched_request_count"] = json!(1);
+        audit["response_bytes"] = json!(41);
+        audit["refresh_performed"] = json!(false);
+        for row in audit["resources"].as_array_mut().unwrap() {
+            undispatched_resource(row, 1);
+        }
+        let refresh = &mut audit["oauth_refresh"];
+        for field in [
+            "request_attempt_count",
+            "request_admitted_count",
+            "response_completed_count",
+            "credential_commit_count",
+            "response_bytes",
+        ] {
+            refresh[field] = json!(0);
+        }
+        for field in [
+            "status",
+            "response_scope_matched",
+            "declared_token_lifetime_seconds",
+            "replacement_refresh_token_received",
+            "replacement_value_differs",
+            "prior_credential_evidence_reference",
+            "boundary_resource_evidence_reference",
+            "boundary_health_evidence_reference",
+            "evidence_reference",
+            "health",
+        ] {
+            refresh[field] = Value::Null;
+        }
+        refresh["final_epoch"] = json!(1);
+        refresh["token_response_validated"] = json!(false);
+        refresh["body_state"] = json!("unavailable");
+        refresh["outcome"] = json!("not_reached");
+        audit
+    }
+
+    fn rejected_refresh_audit() -> Value {
+        let mut audit = complete_refresh_audit();
+        audit["outcome"] = json!("oauth_refresh_unavailable");
+        audit["coverage"] = json!("partial");
+        audit["dispatched_resource_count"] = json!(1);
+        audit["committed_resource_count"] = json!(1);
+        audit["dispatched_request_count"] = json!(5);
+        audit["response_bytes"] = json!(200);
+        audit["refresh_performed"] = json!(false);
+        audit["checkpoints"].as_array_mut().unwrap().truncate(2);
+        undispatched_resource(&mut audit["resources"][1], 1);
+        let refresh = &mut audit["oauth_refresh"];
+        refresh["credential_commit_count"] = json!(0);
+        refresh["final_epoch"] = json!(1);
+        refresh["status"] = json!(400);
+        refresh["response_bytes"] = json!(43);
+        refresh["token_response_validated"] = json!(false);
+        for field in [
+            "response_scope_matched",
+            "declared_token_lifetime_seconds",
+            "replacement_refresh_token_received",
+            "replacement_value_differs",
+            "evidence_reference",
+            "health",
+        ] {
+            refresh[field] = Value::Null;
+        }
+        refresh["outcome"] = json!("response_rejected");
+        audit
+    }
+
+    fn unhealthy_refresh_audit() -> Value {
+        let mut audit = complete_refresh_audit();
+        audit["outcome"] = json!("session_lost");
+        audit["coverage"] = json!("partial");
+        audit["dispatched_resource_count"] = json!(1);
+        audit["committed_resource_count"] = json!(1);
+        audit["dispatched_request_count"] = json!(6);
+        audit["response_bytes"] = json!(256);
+        audit["checkpoints"].as_array_mut().unwrap().truncate(2);
+        undispatched_resource(&mut audit["resources"][1], 2);
+        audit["oauth_refresh"]["health"]["outcome"] = json!("unhealthy");
+        audit["oauth_refresh"]["health"]["predicate"] = json!("not_matched");
+        audit
+    }
+
+    #[test]
+    fn supplied_session_oauth_refresh_saved_reader_accepts_complete_and_empty_coverage() {
+        for audit in [complete_refresh_audit(), empty_refresh_audit()] {
+            let mut document = report(Vec::new());
+            document["supplied_session"] = audit.clone();
+            assert!(import_assessment_summary(&bytes(&document)).is_ok());
+            let compared = compare(&document, &document);
+            let session = &compared["supplied_session_comparison"];
+            assert_eq!(session["status"], "compared_within_same_declared_context");
+            assert_eq!(session["health_and_coverage"]["status"], "unchanged");
+            assert_eq!(session["accounting"]["status"], "unchanged");
+            assert_eq!(
+                session["health_and_coverage"]["before"]["oauth_refresh"],
+                audit["oauth_refresh"]
+            );
+            assert_eq!(audit["resources"].as_array().unwrap().len(), 2);
+            for name in ["only_in_before", "only_in_after", "changed", "unchanged"] {
+                assert!(group(&compared, name).is_empty());
+            }
+        }
+        let audit = complete_refresh_audit();
+        let mut document = report(Vec::new());
+        document["supplied_session"] = audit;
+        let imported = import::parse(&bytes(&document)).unwrap();
+        let session = imported.supplied_session.unwrap();
+        assert_eq!(session.context["session_epoch"], 2);
+        assert_eq!(
+            session
+                .resources
+                .values()
+                .map(|row| row.epoch)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn supplied_session_oauth_refresh_saved_reader_preserves_partial_context_and_health() {
+        for audit in [rejected_refresh_audit(), unhealthy_refresh_audit()] {
+            let mut document = report(Vec::new());
+            document["supplied_session"] = audit.clone();
+            assert!(import_assessment_summary(&bytes(&document)).is_ok());
+            let compared = compare(&document, &document);
+            assert_eq!(
+                compared["supplied_session_comparison"]["health_and_coverage"]["status"],
+                "unchanged"
+            );
+            assert_eq!(audit["committed_resource_count"], 1);
+            assert_eq!(audit["resources"].as_array().unwrap().len(), 2);
+        }
+        let mut complete = report(vec![item(1)]);
+        complete["supplied_session"] = complete_refresh_audit();
+        let mut health_lost = complete.clone();
+        health_lost["supplied_session"] = unhealthy_refresh_audit();
+        let compared = compare(&complete, &health_lost);
+        assert_eq!(
+            compared["supplied_session_comparison"]["status"],
+            "compared_within_same_declared_context"
+        );
+        assert_eq!(
+            compared["supplied_session_comparison"]["health_and_coverage"]["status"],
+            "changed"
+        );
+        assert_eq!(group(&compared, "unchanged").len(), 1);
+        let mut rejected = complete.clone();
+        rejected["supplied_session"] = rejected_refresh_audit();
+        let compared = compare(&complete, &rejected);
+        assert_eq!(
+            compared["supplied_session_comparison"]["reason"],
+            "session_epoch_changed"
+        );
+        assert_eq!(group(&compared, "only_in_before").len(), 1);
+        assert_eq!(group(&compared, "only_in_after").len(), 1);
+    }
+
+    #[test]
+    fn supplied_session_oauth_refresh_saved_reader_rejects_forged_wire_and_accounting() {
+        let audit = complete_refresh_audit();
+        let reject = |candidate: Value| {
+            let mut document = report(Vec::new());
+            document["supplied_session"] = candidate;
+            assert!(import_assessment_summary(&bytes(&document)).is_err());
+        };
+        for (pointer, replacement) in [
+            ("/schema", json!("security.supplied-session-audit/v5")),
+            ("/oauth_refresh", Value::Null),
+            ("/oauth_refresh", json!([])),
+            ("/oauth_refresh/profile", json!("automatic-refresh/v1")),
+            (
+                "/oauth_refresh/server_replay_detection_established",
+                json!(true),
+            ),
+            (
+                "/oauth_refresh/token_interpretation",
+                json!("verified_oidc_identity"),
+            ),
+            (
+                "/oauth_refresh/rotation_assurance",
+                json!("old_refresh_token_revoked"),
+            ),
+            (
+                "/oauth_refresh/idp_reference",
+                json!(format!("oauth-code-policy-sha256:{}", "0".repeat(64))),
+            ),
+            ("/oauth_refresh/after_resource_count", json!(0)),
+            ("/oauth_refresh/max_attempts", json!(2)),
+            ("/oauth_refresh/request_attempt_count", json!(true)),
+            ("/oauth_refresh/request_attempt_count", json!(2)),
+            ("/oauth_refresh/request_admitted_count", json!(0)),
+            ("/oauth_refresh/response_completed_count", json!(0)),
+            ("/oauth_refresh/credential_commit_count", json!(0)),
+            (
+                "/oauth_refresh/configured_token_response_byte_limit",
+                json!(8193),
+            ),
+            ("/oauth_refresh/status", json!(302)),
+            ("/oauth_refresh/body_state", json!("incomplete")),
+            ("/oauth_refresh/replacement_value_differs", json!(false)),
+            (
+                "/oauth_refresh/prior_credential_evidence_reference",
+                json!(format!(
+                    "supplied-session-oauth-code-evidence-sha256:{}",
+                    "0".repeat(64)
+                )),
+            ),
+            (
+                "/oauth_refresh/boundary_resource_evidence_reference",
+                Value::Null,
+            ),
+            (
+                "/oauth_refresh/boundary_health_evidence_reference",
+                Value::Null,
+            ),
+            ("/oauth_refresh/evidence_reference", Value::Null),
+            ("/oauth_refresh/health", Value::Null),
+            ("/oauth_refresh/health/epoch", json!(1)),
+            ("/oauth_refresh/health/phase", json!("terminal")),
+            ("/oauth_refresh/health/sequence", json!(1)),
+            ("/oauth_refresh/health/after_subject_count", json!(2)),
+            (
+                "/oauth_refresh/health/evidence_reference",
+                audit["checkpoints"][1]["evidence_reference"].clone(),
+            ),
+            ("/oauth_code/refresh_token_returned", json!(false)),
+            ("/oauth_code/authorization_initiated", json!(true)),
+            ("/resources/0/epoch", json!(2)),
+            ("/resources/1/epoch", json!(1)),
+            ("/checkpoints/1/epoch", json!(2)),
+            ("/checkpoints/2/epoch", json!(1)),
+            ("/selected_resource_count", json!(3)),
+            ("/committed_resource_count", json!(true)),
+            ("/dispatched_request_count", json!(7)),
+            ("/dispatched_request_count", json!(9)),
+            ("/response_bytes", json!(287)),
+            ("/response_bytes", json!(345)),
+            ("/response_bytes", json!(u64::MAX)),
+            ("/refresh_performed", json!(false)),
+        ] {
+            let mut candidate = audit.clone();
+            *candidate.pointer_mut(pointer).unwrap() = replacement;
+            let mut document = report(Vec::new());
+            document["supplied_session"] = candidate;
+            assert!(
+                import_assessment_summary(&bytes(&document)).is_err(),
+                "mutation {pointer}"
+            );
+        }
+        for key in audit.as_object().unwrap().keys() {
+            let mut candidate = audit.clone();
+            candidate.as_object_mut().unwrap().remove(key);
+            reject(candidate);
+        }
+        for key in audit["oauth_refresh"].as_object().unwrap().keys() {
+            let mut candidate = audit.clone();
+            candidate["oauth_refresh"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            reject(candidate);
+        }
+        for forbidden in [
+            "cookie_policy",
+            "cookie_lifecycle",
+            "login",
+            "renewal",
+            "unexpected",
+        ] {
+            let mut candidate = audit.clone();
+            candidate[forbidden] = Value::Null;
+            reject(candidate);
+        }
+        let mut candidate = audit.clone();
+        candidate["oauth_refresh"]["unexpected"] = json!(0);
+        reject(candidate);
+        let mut candidate = audit;
+        let extra = candidate["oauth_refresh"]["health"].clone();
+        candidate["checkpoints"].as_array_mut().unwrap().push(extra);
+        reject(candidate);
+        let mut candidate = unhealthy_refresh_audit();
+        candidate["resources"][1] = complete_refresh_audit()["resources"][1].clone();
+        reject(candidate);
+    }
+
+    #[test]
+    fn supplied_session_oauth_refresh_saved_compare_keeps_methodology_and_scope_separate() {
+        let mut old = report(vec![item(1)]);
+        old["supplied_session"] = supplied_session_oauth_code_audit();
+        let mut new = report(vec![item(1)]);
+        new["supplied_session"] = complete_refresh_audit();
+        let compared = compare(&old, &new);
+        assert_eq!(
+            compared["supplied_session_comparison"]["reason"],
+            "session_methodology_changed"
+        );
+        assert_eq!(group(&compared, "changed").len(), 0);
+        assert_eq!(group(&compared, "only_in_before").len(), 1);
+        assert_eq!(group(&compared, "only_in_after").len(), 1);
+        for (field, value, reason) in [
+            (
+                "application_reference",
+                json!(format!(
+                    "supplied-session-application-sha256:{}",
+                    "0".repeat(64)
+                )),
+                "application_scope_changed",
+            ),
+            (
+                "policy_reference",
+                json!(format!("supplied-session-policy-sha256:{}", "0".repeat(64))),
+                "session_policy_changed",
+            ),
+            (
+                "principal_alias",
+                json!("other-user"),
+                "operator_declared_principal_changed",
+            ),
+        ] {
+            let mut changed = new.clone();
+            changed["supplied_session"][field] = value;
+            let compared = compare(&new, &changed);
+            assert_eq!(compared["supplied_session_comparison"]["reason"], reason);
+        }
+        for format in [ComparisonFormat::Html, ComparisonFormat::Markdown] {
+            let rendered = compare_reports(&bytes(&new), &bytes(&new), format).unwrap();
+            assert!(rendered.contains("replacement_value_observed_not_server_revocation"));
+            assert!(!rendered.contains("installed_version"));
+        }
+        // Adding the V6 field, including null, is not permitted in historical V5.
+        let mut invalid_old = old;
+        invalid_old["supplied_session"]["oauth_refresh"] = Value::Null;
+        assert!(import_assessment_summary(&bytes(&invalid_old)).is_err());
+    }
+}
+
 const SAMPLE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/examples/first-use/assessment.json"

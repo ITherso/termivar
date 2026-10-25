@@ -422,6 +422,7 @@ SUPPLIED_SESSION_PREREQUISITES = (
     "V3: --session-login-file FILE",
     "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
     "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
+    "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
     "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
@@ -454,7 +455,7 @@ SUPPLIED_SESSION_LIMITATION = (
     "expiry applicability is intersected with operator application authority; Domain never "
     "expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. "
     "Application-defined GET handling and the explicitly authorized login POST can have "
-    "server-side effects. V5 alone accepts --session-oauth-code-file under an explicit imported "
+    "server-side effects. V5 accepts --session-oauth-code-file under an explicit imported "
     "public-code S256 policy. It makes at most one separately authorized IdP token POST through "
     "a fresh no-proxy, no-cookie, no-retry, no-redirect child of the existing broker before startup "
     "health, sharing the same parent and nine-request session allowance. Its exact schedule is "
@@ -467,10 +468,22 @@ SUPPLIED_SESSION_LIMITATION = (
     "profile; a token response alone never establishes target session health. Credential use "
     "requires the exact committed private acquisition receipt; failed or ambiguous exchange "
     "is not retried. HTTPS with standard certificate validation is required; "
-    "owned-numeric-loopback-http/v1 is an explicit development-only exception. No browser-profile "
+    "owned-numeric-loopback-http/v1 is an explicit development-only exception. "
+    "V6 uses the same imported code file with an explicit scheduled-public-bearer-refresh/v1 policy. "
+    "It requires exactly two selected resources and eight session requests: initial token exchange, "
+    "startup health, first resource and health, one refresh-token POST, immediate new-epoch health, "
+    "second resource and terminal health. Both IdP phases share the same broker, parent and local "
+    "deadline; renewal never resets accounting. Only a retained guarded refresh value and exact "
+    "committed acquisition/resource/health evidence authorize the separate once-only refresh phase. "
+    "Complete uncoded bounded token JSON must contain a replacement refresh value different from "
+    "the prior value; this local inequality does not establish revocation or server replay detection. "
+    "Access lifetime may change only inside the immutable assessment deadline. Failed or ambiguous "
+    "renewal stops without retry or old-token fallback. V6 performs no interactive authorization, "
+    "OIDC identity or token signature validation and admits no WordPress or WebSocket composition. "
+    "No browser-profile "
     "import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass, "
     "exploit, or impact validation occurs. WordPress supplied-session composition remains "
-    "limited to V1/V2; V3/V4/V5 are rejected before their secret files are read."
+    "limited to V1/V2; V3/V4/V5/V6 are rejected before their secret files are read."
 )
 WORDPRESS_OPTIONS = (
     "--wordpress-review",

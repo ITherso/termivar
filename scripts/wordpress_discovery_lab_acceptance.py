@@ -7454,6 +7454,7 @@ def _validate_discovery_capability(document: Any) -> None:
             "V3: --session-login-file FILE",
             "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
             "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
+            "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
             "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
         ],
@@ -7467,7 +7468,7 @@ def _validate_discovery_capability(document: Any) -> None:
         and "credential is not sent to metadata or fingerprint requests" in limitation
         and "authenticated-page fingerprint acquisition is not selected" in limitation
         and "WordPress supplied-session composition remains limited to V1/V2" in limitation
-        and "V3/V4/V5 are rejected before their secret files are read" in limitation,
+        and "V3/V4/V5/V6 are rejected before their secret files are read" in limitation,
         "capabilities omit the supplied-session WordPress authority boundary",
     )
 

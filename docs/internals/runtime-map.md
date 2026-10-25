@@ -83,6 +83,19 @@ refresh and interactive OAuth/OIDC login are unsupported. The feature and
 curated bundle composition do not change. See the complete V5 limitations in
 `docs/internals/supplied-session-review.md`.
 
+V6 additionally selects one scheduled opaque-Bearer refresh after the first
+committed resource and healthy boundary. Its separate sealed purpose requires
+the same assessment's exact committed code/resource/health evidence; a new
+read-back renewal receipt plus immediate epoch-2 health qualifies later work.
+Exactly two resources use eight shared requests, four health checkpoints and
+one IdP pool. The immutable parent/policy deadline is never reset by a new access
+lifetime. Refresh values stay guarded and leave no public secret-derived digest;
+one local replacement-value inequality does not establish server revocation or
+replay detection. V5 remains refresh-discarding. V6 audit/readers and contextual
+Compare preserve original resource epochs without installed-version, OIDC or
+signature authority. WordPress/WebSocket composition is initially unsupported;
+there is no new flag, feature or curated-bundle promotion.
+
 ## OpenAPI surface review
 
 The non-default `openapi-review` scanner/CLI feature adds no work by itself.

@@ -991,7 +991,11 @@ pub(crate) struct OAuthCodeRequestDescriptor {
 #[cfg(feature = "supplied-session-review")]
 impl OAuthCodeRequestDescriptor {
     pub(crate) fn from_policy(policy: &SuppliedSessionPolicy) -> Option<Self> {
-        if policy.version() != crate::supplied_session_review::SuppliedSessionPolicyVersion::V5 {
+        if !matches!(
+            policy.version(),
+            crate::supplied_session_review::SuppliedSessionPolicyVersion::V5
+                | crate::supplied_session_review::SuppliedSessionPolicyVersion::V6
+        ) {
             return None;
         }
         let idp = policy.oauth_code_policy()?;
@@ -1006,7 +1010,54 @@ impl OAuthCodeRequestDescriptor {
     }
 
     pub(crate) fn validate_against(&self, policy: &SuppliedSessionPolicy) -> bool {
-        policy.version() == crate::supplied_session_review::SuppliedSessionPolicyVersion::V5
+        matches!(
+            policy.version(),
+            crate::supplied_session_review::SuppliedSessionPolicyVersion::V5
+                | crate::supplied_session_review::SuppliedSessionPolicyVersion::V6
+        ) && policy.application_url() == &self.application
+            && policy.policy_reference() == self.policy_reference
+            && policy.principal_alias() == self.principal_alias
+            && policy.oauth_code_policy().is_some_and(|idp| {
+                idp.is_valid_for_application(&self.application)
+                    && idp.token_endpoint() == &self.target
+                    && idp.binding_reference() == self.idp_reference
+            })
+    }
+}
+
+/// Closed V6 refresh target. It cannot be constructed from a token, URI or
+/// saved report and has no authority without the separately committed permit.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct OAuthRefreshRequestDescriptor {
+    application: url::Url,
+    target: url::Url,
+    policy_reference: String,
+    idp_reference: String,
+    refresh_reference: String,
+    principal_alias: String,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl OAuthRefreshRequestDescriptor {
+    pub(crate) fn from_policy(policy: &SuppliedSessionPolicy) -> Option<Self> {
+        if policy.version() != crate::supplied_session_review::SuppliedSessionPolicyVersion::V6 {
+            return None;
+        }
+        let idp = policy.oauth_code_policy()?;
+        let refresh = policy.oauth_refresh_policy()?;
+        let descriptor = Self {
+            application: policy.application_url().clone(),
+            target: idp.token_endpoint().clone(),
+            policy_reference: policy.policy_reference().to_owned(),
+            idp_reference: idp.binding_reference().to_owned(),
+            refresh_reference: refresh.binding_reference().to_owned(),
+            principal_alias: policy.principal_alias().to_owned(),
+        };
+        descriptor.validate_against(policy).then_some(descriptor)
+    }
+
+    pub(crate) fn validate_against(&self, policy: &SuppliedSessionPolicy) -> bool {
+        policy.version() == crate::supplied_session_review::SuppliedSessionPolicyVersion::V6
             && policy.application_url() == &self.application
             && policy.policy_reference() == self.policy_reference
             && policy.principal_alias() == self.principal_alias
@@ -1014,6 +1065,11 @@ impl OAuthCodeRequestDescriptor {
                 idp.is_valid_for_application(&self.application)
                     && idp.token_endpoint() == &self.target
                     && idp.binding_reference() == self.idp_reference
+            })
+            && policy.oauth_refresh_policy().is_some_and(|refresh| {
+                refresh.binding_reference() == self.refresh_reference
+                    && refresh.after_resource_count() == 1
+                    && refresh.max_attempts() == 1
             })
     }
 }
@@ -1044,10 +1100,91 @@ pub(crate) struct OAuthCodeRequestBroker {
     broker: HttpRequestBroker,
     mint: crate::web_runtime::OAuthCodeMintToken,
     attempted: std::sync::atomic::AtomicBool,
+    refresh: Option<Box<OAuthRefreshRequestAuthority>>,
+}
+
+#[cfg(feature = "supplied-session-review")]
+struct OAuthRefreshRequestAuthority {
+    mint: crate::web_runtime::OAuthRefreshMintToken,
+    attempted: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "supplied-session-review")]
 impl OAuthCodeRequestBroker {
+    pub(crate) async fn collect_refresh(
+        &self,
+        descriptor: &OAuthRefreshRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+        permit: &crate::web_runtime::OAuthRefreshDispatchPermit<'_>,
+        limits: DecisionExecutionLimits,
+    ) -> Result<OAuthCodeTransportResponse, OAuthCodeRequestError> {
+        let phase = self
+            .refresh
+            .as_ref()
+            .ok_or(OAuthCodeRequestError::InvalidDescriptor)?;
+        if !self.attempted.load(std::sync::atomic::Ordering::SeqCst)
+            || !self.mint.is_valid_for(policy)
+            || !descriptor.validate_against(policy)
+            || !permit.is_valid_for(policy, &phase.mint)
+            || self.broker.validate_target(&descriptor.target).is_err()
+        {
+            return Err(OAuthCodeRequestError::InvalidDescriptor);
+        }
+        // This distinct phase can be spent only once. It never resets the
+        // original code-redemption bit or creates another response allowance.
+        if phase
+            .attempted
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err(OAuthCodeRequestError::AlreadyAttempted);
+        }
+        let body = permit
+            .compose_form_body(policy)
+            .map_err(|_| OAuthCodeRequestError::InvalidDescriptor)?;
+        let request = self
+            .broker
+            .client
+            .post(descriptor.target.clone())
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(ACCEPT, "application/json")
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .body(body.as_bytes().to_vec())
+            .build()
+            .map_err(|_| OAuthCodeRequestError::Http)?;
+        let mut response = self
+            .broker
+            .collect_built_request(
+                &self.broker.client,
+                crate::supplied_session_review::SUPPLIED_SESSION_OAUTH_REFRESH_ACTION_ID,
+                DecisionExecutionStage::Active,
+                None,
+                limits,
+                request,
+            )
+            .await
+            .map_err(|error| match error {
+                HttpRequestBrokerError::Http(_) => OAuthCodeRequestError::Http,
+                HttpRequestBrokerError::RuntimeLimit(_) => OAuthCodeRequestError::RuntimeLimit,
+            })?;
+        let complete = response.final_url() == &descriptor.target
+            && response.body_complete()
+            && oauth_content_length_matches(&response);
+        let representation_supported = oauth_json_representation(&response);
+        let body = Zeroizing::new(std::mem::take(&mut response.body));
+        Ok(OAuthCodeTransportResponse {
+            status: response.status(),
+            complete,
+            representation_supported,
+            body,
+        })
+    }
+
     pub(crate) async fn collect(
         &self,
         descriptor: &OAuthCodeRequestDescriptor,
@@ -1600,8 +1737,15 @@ impl HttpRequestBroker {
         &self,
         policy: &SuppliedSessionPolicy,
         mint: crate::web_runtime::OAuthCodeMintToken,
+        refresh_mint: Option<crate::web_runtime::OAuthRefreshMintToken>,
     ) -> Result<OAuthCodeRequestBroker, SuppliedSessionRequestError> {
-        if !mint.is_valid_for(policy) || self.validate_target(policy.application_url()).is_err() {
+        if !mint.is_valid_for(policy)
+            || self.validate_target(policy.application_url()).is_err()
+            || (policy.oauth_refresh_policy().is_some() != refresh_mint.is_some())
+            || refresh_mint
+                .as_ref()
+                .is_some_and(|refresh| !refresh.matches_policy(policy))
+        {
             return Err(SuppliedSessionRequestError::InvalidDescriptor);
         }
         let idp = policy
@@ -1649,6 +1793,12 @@ impl HttpRequestBroker {
             broker,
             mint,
             attempted: std::sync::atomic::AtomicBool::new(false),
+            refresh: refresh_mint.map(|mint| {
+                Box::new(OAuthRefreshRequestAuthority {
+                    mint,
+                    attempted: std::sync::atomic::AtomicBool::new(false),
+                })
+            }),
         })
     }
 

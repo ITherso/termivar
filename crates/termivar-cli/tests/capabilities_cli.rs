@@ -753,6 +753,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "V3: --session-login-file FILE",
             "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
             "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
+            "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
             "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
@@ -795,7 +796,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "Domain never expands it",
         "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
         "explicitly authorized login POST can have server-side effects",
-        "V5 alone accepts --session-oauth-code-file",
+        "V5 accepts --session-oauth-code-file",
         "at most one separately authorized IdP token POST",
         "same parent and nine-request session allowance",
         "2 + 2 * resource_count",
@@ -806,7 +807,17 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass",
         "exploit, or impact validation",
         "WordPress supplied-session composition remains limited to V1/V2",
-        "V3/V4/V5 are rejected before their secret files are read",
+        "V3/V4/V5/V6 are rejected before their secret files are read",
+        "scheduled-public-bearer-refresh/v1",
+        "exactly two selected resources and eight session requests",
+        "one refresh-token POST, immediate new-epoch health",
+        "renewal never resets accounting",
+        "exact committed acquisition/resource/health evidence",
+        "local inequality does not establish revocation or server replay detection",
+        "immutable assessment deadline",
+        "without retry or old-token fallback",
+        "V6 performs no interactive authorization, OIDC identity or token signature validation",
+        "no WordPress or WebSocket composition",
     ] {
         assert!(
             session_limit.contains(required),

@@ -10442,6 +10442,169 @@ async fn jwt_target_acceptance_failure_after_accounted_bytes_preserves_uncommitt
     assert_no_secret(&debug, &[VALID, "accepted", TARGET_PATH]);
 }
 
+/// Actual normal construction through the established central-report test seam.
+/// Literal harmless HTTP is synthetic, not real-provider/OIDC qualification.
+#[cfg(all(feature = "reporting", feature = "supplied-session-review"))]
+#[tokio::test]
+async fn normal_runtime_oauth_refresh_central_reports_all_formats_without_private_values() {
+    use crate::supplied_session_review::{SuppliedSessionOAuthGrant, SuppliedSessionPolicy};
+    const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    const CODE: &str = "SYNTHETIC-RENDER-CODE";
+    let health_calls = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&health_calls);
+    let target = serve(move |request| {
+        let expected = match request.path() {
+            "/app/health" => {
+                let index = calls.fetch_add(1, Ordering::SeqCst);
+                assert!(index < 4, "fixed health observation bound");
+                Some(if index < 2 {
+                    "Bearer SYNTHETIC-RENDER-A"
+                } else {
+                    "Bearer SYNTHETIC-RENDER-B"
+                })
+            },
+            "/app/private/one" => Some("Bearer SYNTHETIC-RENDER-A"),
+            "/app/private/two" => Some("Bearer SYNTHETIC-RENDER-B"),
+            "/" => None,
+            _ => panic!("unplanned owned target resource"),
+        };
+        assert_eq!(request.method, "GET");
+        assert!(
+            request.headers.get("authorization").map(String::as_str) == expected,
+            "context-bound credential must stay on its exact owned resource"
+        );
+        assert!(!request.headers.contains_key("cookie"));
+        FixtureReply::Response(if request.path() == "/app/health" {
+            FixtureResponse::new(
+                "200 OK",
+                Some("application/json"),
+                br#"{"authenticated":true}"#.to_vec(),
+            )
+        } else {
+            FixtureResponse::html(b"<!doctype html><p>Owned renderer fixture.</p>".to_vec())
+        })
+    })
+    .await;
+    let token_calls = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&token_calls);
+    let idp = serve(move |request| {
+        assert_eq!(request.path(),"/issuer/token");
+        assert_eq!(request.method,"POST");
+        assert!(!request.headers.contains_key("authorization") && !request.headers.contains_key("cookie"));
+        let index = calls.fetch_add(1,Ordering::SeqCst);
+        let expected = if index == 0 {
+            "grant_type=authorization_code&client_id=owned-render-public&redirect_uri=http%3A%2F%2F127.0.0.1%3A1%2Fcallback&code=SYNTHETIC-RENDER-CODE&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        } else {
+            assert_eq!(index,1,"one code and one separately selected refresh");
+            "grant_type=refresh_token&client_id=owned-render-public&refresh_token=SYNTHETIC-RENDER-RT-A&scope=canary-read"
+        };
+        assert!(request.body() == expected.as_bytes(),"literal form oracle");
+        let body = if index == 0 {
+            br#"{"access_token":"SYNTHETIC-RENDER-A","token_type":"Bearer","expires_in":180,"scope":"canary-read","refresh_token":"SYNTHETIC-RENDER-RT-A"}"#.to_vec()
+        } else {
+            br#"{"access_token":"SYNTHETIC-RENDER-B","token_type":"Bearer","expires_in":180,"scope":"canary-read","refresh_token":"SYNTHETIC-RENDER-RT-B"}"#.to_vec()
+        };
+        FixtureReply::Response(FixtureResponse::new("200 OK",Some("application/json"),body))
+    }).await;
+    let issuer = idp.origin.join("issuer").unwrap();
+    let policy = format!(
+        r#"schema = "security.supplied-session-policy/v6"
+principal_alias = "owned-render-principal"
+credential_mechanism = "authorization_header"
+credential_acquisition = "imported_oauth_code_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 8
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 5000
+[oauth_code]
+profile = "external-public-code-s256-bearer/v1"
+transport_profile = "owned-numeric-loopback-http/v1"
+issuer = "{issuer}"
+token_endpoint = "{issuer}/token"
+client_id = "owned-render-public"
+redirect_uri = "http://127.0.0.1:1/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+[oauth_refresh]
+profile = "scheduled-public-bearer-refresh/v1"
+after_resource_count = 1
+max_attempts = 1
+"#
+    );
+    let policy = SuppliedSessionPolicy::parse_toml(&target.origin, policy.as_bytes()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let transaction = format!("authorization_code\t{CODE}\ncode_verifier\t{VERIFIER}\ncode_challenge\t{CHALLENGE}\nissuer\t{issuer}\nclient_id\towned-render-public\nredirect_uri\thttp://127.0.0.1:1/callback\nscope\tcanary-read\nreceived_unix_seconds\t{now}\n");
+    let grant = SuppliedSessionOAuthGrant::parse_tsv(
+        &policy,
+        transaction.into_bytes(),
+        i64::try_from(now).unwrap(),
+    )
+    .unwrap();
+    let mut runtime = WebAssessmentRuntimeBuilder::new(target.origin.clone())
+        .with_supplied_session_review(policy, grant)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let audit = report.supplied_session_audit().unwrap();
+    assert_eq!(
+        audit.outcome(),
+        crate::web_runtime::SuppliedSessionAuditOutcome::Complete
+    );
+    assert_eq!(audit.dispatched_request_count(), 8);
+    assert_eq!(audit.committed_resource_count(), 2);
+    assert_eq!(
+        audit
+            .resources()
+            .iter()
+            .map(|row| row.epoch())
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(health_calls.load(Ordering::SeqCst), 4);
+    assert_eq!(token_calls.load(Ordering::SeqCst), 2);
+    let target_count = target.requests().await.len();
+    let idp_count = idp.requests().await.len();
+    assert_eq!(
+        report.usage().total_requests() as usize,
+        target_count + idp_count
+    );
+    let composed =
+        ReportGenerator::compose_assessment(report, ScanProfileV1::web_review().unwrap())
+            .expect("normal V6 runtime must pass central composition");
+    for format in [
+        ReportFormat::Json,
+        ReportFormat::Html,
+        ReportFormat::Markdown,
+        ReportFormat::Csv,
+    ] {
+        let rendered = ReportGenerator::generate_assessment(&composed, format)
+            .expect("normal V6 runtime must render all supported formats");
+        for private in [
+            CODE,
+            VERIFIER,
+            "SYNTHETIC-RENDER-A",
+            "SYNTHETIC-RENDER-B",
+            "SYNTHETIC-RENDER-RT-A",
+            "SYNTHETIC-RENDER-RT-B",
+        ] {
+            assert!(
+                !rendered.contains(private),
+                "private synthetic material entered central output"
+            );
+        }
+        assert!(rendered.contains("scheduled-public-bearer-refresh/v1"));
+    }
+    assert_eq!(target.requests().await.len(), target_count);
+    assert_eq!(idp.requests().await.len(), idp_count);
+}
+
 impl RecordedRequest {
     fn path(&self) -> &str {
         self.target.split('?').next().unwrap_or(&self.target)

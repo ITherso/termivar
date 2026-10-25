@@ -25,6 +25,8 @@ const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const CODE: &str = "SYNTHETIC-IMPORTED-CODE-CANARY";
 const ACCESS: &str = "SYNTHETIC-OAUTH-BEARER-CANARY";
 const TOKEN_BODY: &str = r#"{"access_token":"SYNTHETIC-OAUTH-BEARER-CANARY","token_type":"Bearer","expires_in":180,"scope":"canary-read"}"#;
+const RENEWABLE_BODY: &str = r#"{"access_token":"SYNTHETIC-OAUTH-BEARER-CANARY","token_type":"Bearer","expires_in":180,"scope":"canary-read","refresh_token":"SYNTHETIC-REFRESH-A WITH SPACE+"}"#;
+const RENEWED_BODY: &str = r#"{"access_token":"SYNTHETIC-OAUTH-BEARER-RENEWED","token_type":"Bearer","expires_in":180,"scope":"canary-read","refresh_token":"SYNTHETIC-REFRESH-B"}"#;
 
 #[derive(Clone, Copy)]
 enum TokenMode {
@@ -32,6 +34,22 @@ enum TokenMode {
     Hold,
     Partial,
     ShortLifetime,
+    Renewable,
+    RefreshHold,
+    RefreshOutlivesOldAccess,
+    RenewedResourceSlow,
+}
+
+impl TokenMode {
+    fn renewable(self) -> bool {
+        matches!(
+            self,
+            Self::Renewable
+                | Self::RefreshHold
+                | Self::RefreshOutlivesOldAccess
+                | Self::RenewedResourceSlow
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,12 +91,15 @@ impl Fixture {
         .unwrap();
         let trace = Arc::new(Mutex::new(Vec::new()));
         let token_seen = Arc::new(Notify::new());
+        let epoch = Arc::new(std::sync::atomic::AtomicU8::new(1));
         let mut tasks = Vec::new();
         for (listener, is_idp) in [(app_listener, false), (idp_listener, true)] {
             let trace = Arc::clone(&trace);
             let token_seen = Arc::clone(&token_seen);
             let redirect = application.join("callback").unwrap().to_string();
+            let epoch = Arc::clone(&epoch);
             tasks.push(tokio::spawn(async move {
+                let mut idp_request_count = 0;
                 loop {
                     let Ok((mut stream, _)) = listener.accept().await else { return };
                     let request = tokio::time::timeout(Duration::from_secs(2), read_request(&mut stream))
@@ -93,12 +114,16 @@ impl Fixture {
                         let (name, value) = line.split_once(':')?;
                         name.eq_ignore_ascii_case("authorization").then(|| value.trim())
                     });
-                    let expected_bearer = authorization == Some("Bearer SYNTHETIC-OAUTH-BEARER-CANARY");
+                    let expected = if epoch.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+                        "Bearer SYNTHETIC-OAUTH-BEARER-RENEWED"
+                    } else { "Bearer SYNTHETIC-OAUTH-BEARER-CANARY" };
+                    let expected_bearer = authorization == Some(expected);
                     let cookie = headers.lines().any(|line| line.split_once(':')
                         .is_some_and(|(name, _)| name.eq_ignore_ascii_case("cookie")));
                     let role = if is_idp {
+                        idp_request_count += 1;
                         assert_eq!(path, "/issuer/token", "IdP path must remain literal");
-                        "idp"
+                        if idp_request_count == 1 { "idp" } else { "refresh" }
                     } else {
                         match path {
                             "/app/health" => "health",
@@ -110,13 +135,15 @@ impl Fixture {
                     };
                     let exact_code_form = if is_idp {
                         let fields: Vec<_> = url::form_urlencoded::parse(body).into_owned().collect();
-                        fields.len() == 5
+                        if role == "refresh" {
+                            body == b"grant_type=refresh_token&client_id=owned-runtime-public&refresh_token=SYNTHETIC-REFRESH-A+WITH+SPACE%2B&scope=canary-read"
+                        } else { fields.len() == 5
                             && fields.iter().filter(|(key, _)| key == "grant_type").count() == 1
                             && fields.iter().any(|(key, value)| key == "grant_type" && value == "authorization_code")
                             && fields.iter().any(|(key, value)| key == "client_id" && value == "owned-runtime-public")
                             && fields.iter().any(|(key, value)| key == "redirect_uri" && value == &redirect)
                             && fields.iter().any(|(key, value)| key == "code" && value == CODE)
-                            && fields.iter().any(|(key, value)| key == "code_verifier" && value == VERIFIER)
+                            && fields.iter().any(|(key, value)| key == "code_verifier" && value == VERIFIER) }
                     } else { body.is_empty() };
                     {
                         let mut trace = trace.lock().await;
@@ -128,7 +155,27 @@ impl Fixture {
                         });
                     }
                     if is_idp {
+                        if role == "refresh" {
+                            assert!(mode.renewable(), "legacy policy must never refresh");
+                            token_seen.notify_one();
+                            if matches!(mode, TokenMode::RefreshHold) {
+                                tokio::time::sleep(Duration::from_secs(10)).await;
+                                continue;
+                            }
+                            if matches!(mode, TokenMode::RefreshOutlivesOldAccess) {
+                                tokio::time::sleep(Duration::from_millis(1200)).await;
+                            }
+                            epoch.store(2, std::sync::atomic::Ordering::SeqCst);
+                            write_response(&mut stream,"application/json",RENEWED_BODY).await;
+                            continue;
+                        }
                         match mode {
+                            TokenMode::Renewable | TokenMode::RefreshHold | TokenMode::RenewedResourceSlow | TokenMode::RefreshOutlivesOldAccess => {
+                                let body = if matches!(mode,TokenMode::RefreshOutlivesOldAccess) {
+                                    RENEWABLE_BODY.replace("\"expires_in\":180", "\"expires_in\":1")
+                                } else { RENEWABLE_BODY.to_owned() };
+                                write_response(&mut stream,"application/json",&body).await;
+                            },
                             TokenMode::Complete | TokenMode::ShortLifetime => {
                                 let body = if matches!(mode, TokenMode::ShortLifetime) {
                                     r#"{"access_token":"SYNTHETIC-OAUTH-BEARER-CANARY","token_type":"Bearer","expires_in":1,"scope":"canary-read"}"#
@@ -149,6 +196,9 @@ impl Fixture {
                             },
                         }
                     } else {
+                        if role == "resource-two" && matches!(mode,TokenMode::RenewedResourceSlow) {
+                            tokio::time::sleep(Duration::from_millis(1200)).await;
+                        }
                         if role == "resource-one" && matches!(mode, TokenMode::ShortLifetime) {
                             // This server never expires tokens: only the
                             // client's declared-lifetime bound is under test.
@@ -245,6 +295,255 @@ fn grant(policy: &SuppliedSessionPolicy) -> SuppliedSessionOAuthGrant {
         .unwrap()
         .as_secs();
     grant_at(policy, now, now)
+}
+
+fn refresh_policy(application: &Url, issuer: &Url, wall_ms: u64) -> SuppliedSessionPolicy {
+    let source = format!(
+        r#"schema = "security.supplied-session-policy/v6"
+principal_alias = "owned-a"
+credential_mechanism = "authorization_header"
+credential_acquisition = "imported_oauth_code_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 8
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = {wall_ms}
+[oauth_code]
+profile = "external-public-code-s256-bearer/v1"
+transport_profile = "owned-numeric-loopback-http/v1"
+issuer = "{issuer}"
+token_endpoint = "{issuer}/token"
+client_id = "owned-runtime-public"
+redirect_uri = "{}"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+[oauth_refresh]
+profile = "scheduled-public-bearer-refresh/v1"
+after_resource_count = 1
+max_attempts = 1
+"#,
+        application.join("callback").unwrap()
+    );
+    SuppliedSessionPolicy::parse_toml(application, source.as_bytes()).unwrap()
+}
+
+fn assert_refresh_private(audit: &super::super::WebAssessmentSuppliedSessionAudit) {
+    assert_value_safe(audit);
+    let saved = serde_json::to_string(audit).unwrap();
+    for secret in [
+        "SYNTHETIC-OAUTH-BEARER-RENEWED",
+        "SYNTHETIC-REFRESH-A WITH SPACE+",
+        "SYNTHETIC-REFRESH-A+WITH+SPACE%2B",
+        "SYNTHETIC-REFRESH-B",
+        RENEWABLE_BODY,
+        RENEWED_BODY,
+    ] {
+        assert!(
+            !saved.contains(secret),
+            "renewal private value entered audit"
+        );
+        assert!(
+            !saved.contains(&format!("{:x}", Sha256::digest(secret.as_bytes()))),
+            "renewal private-value hash entered audit"
+        );
+    }
+    assert!(audit.oauth_code().unwrap().is_consistent());
+    assert!(audit.oauth_refresh().unwrap().is_consistent());
+}
+
+fn safe_refresh_checkpoint(audit: &super::super::WebAssessmentSuppliedSessionAudit) {
+    // Deliberately no credential, target, response body or raw saved report.
+    eprintln!("synthetic V6: outcome={:?} requests={} committed={} refresh={:?} refresh_commit={:?} checkpoints={:?} resources={:?}",
+        audit.outcome(),audit.dispatched_request_count(),audit.committed_resource_count(),
+        audit.oauth_refresh().map(|r|r.outcome()),audit.oauth_refresh().map(|r|r.credential_commit_count()),
+        audit.checkpoints().iter().map(|r|(r.phase(),r.epoch(),r.status(),r.outcome())).collect::<Vec<_>>(),
+        audit.resources().iter().map(|r|(r.sequence(),r.epoch(),r.status(),r.outcome())).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn normal_runtime_refresh_uses_one_shared_phase_and_commits_two_epochs() {
+    let fixture = Fixture::start(TokenMode::Renewable).await;
+    let policy = refresh_policy(&fixture.application, &fixture.issuer, 5000);
+    let input = grant(&policy);
+    let mut runtime = WebAssessmentRuntimeBuilder::new(fixture.application.clone())
+        .with_supplied_session_review(policy, input)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let audit = report.supplied_session_audit().unwrap();
+    safe_refresh_checkpoint(audit);
+    assert_eq!(audit.schema(), "security.supplied-session-audit/v6");
+    assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::Complete);
+    assert_eq!(audit.selected_resource_count(), 2);
+    assert_eq!(audit.committed_resource_count(), 2);
+    assert_eq!(audit.dispatched_request_count(), 8);
+    assert_eq!(
+        audit
+            .checkpoints()
+            .iter()
+            .map(|r| r.epoch())
+            .collect::<Vec<_>>(),
+        [1, 1, 2]
+    );
+    assert_eq!(
+        audit
+            .resources()
+            .iter()
+            .map(|r| r.epoch())
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    let refresh = audit.oauth_refresh().unwrap();
+    assert_eq!(refresh.outcome().as_str(), "credential_committed");
+    assert_eq!(refresh.request_admitted_count(), 1);
+    assert_eq!(refresh.credential_commit_count(), 1);
+    assert_eq!(refresh.health().unwrap().epoch(), 2);
+    assert_eq!(
+        refresh.health().unwrap().phase(),
+        super::super::SuppliedSessionHealthCheckpointPhase::Renewal
+    );
+    assert_eq!(
+        audit.response_bytes(),
+        RENEWABLE_BODY.len() as u64
+            + RENEWED_BODY.len() as u64
+            + 4 * r#"{"authenticated":true}"#.len() as u64
+            + 2 * "PRIVATE-OAUTH-RESOURCE-CANARY".len() as u64
+    );
+    let trace = fixture.trace.lock().await.clone();
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|r| r.role != "ordinary")
+            .map(|r| r.role)
+            .collect::<Vec<_>>(),
+        [
+            "idp",
+            "health",
+            "resource-one",
+            "health",
+            "refresh",
+            "health",
+            "resource-two",
+            "health"
+        ]
+    );
+    assert!(trace
+        .iter()
+        .all(|r| r.exact_code_form && !r.cookie && !r.unexpected_authorization));
+    assert_eq!(report.usage().total_requests() as usize, trace.len());
+    assert_refresh_private(audit);
+}
+
+#[tokio::test]
+async fn normal_runtime_refresh_cancellation_is_spent_without_fallback_or_tail() {
+    let fixture = Fixture::start(TokenMode::RefreshHold).await;
+    let policy = refresh_policy(&fixture.application, &fixture.issuer, 5000);
+    let input = grant(&policy);
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let seen = Arc::clone(&fixture.token_seen);
+    let task = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(2), seen.notified())
+            .await
+            .unwrap();
+        cancel.cancel();
+    });
+    let mut runtime = WebAssessmentRuntimeBuilder::new(fixture.application.clone())
+        .cancellation_token(cancellation)
+        .with_supplied_session_review(policy, input)
+        .build()
+        .unwrap();
+    let report = tokio::time::timeout(Duration::from_secs(3), runtime.analyze())
+        .await
+        .unwrap()
+        .unwrap();
+    task.await.unwrap();
+    let audit = report.supplied_session_audit().unwrap();
+    assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::Cancelled);
+    assert_eq!(audit.dispatched_request_count(), 5);
+    assert_eq!(audit.committed_resource_count(), 1);
+    assert_eq!(audit.oauth_refresh().unwrap().request_admitted_count(), 1);
+    assert_eq!(audit.oauth_refresh().unwrap().credential_commit_count(), 0);
+    assert!(audit.oauth_refresh().unwrap().health().is_none());
+    let trace = fixture.trace.lock().await;
+    assert_eq!(
+        trace.iter().map(|r| r.role).collect::<Vec<_>>(),
+        ["idp", "health", "resource-one", "health", "refresh"]
+    );
+    assert_refresh_private(audit);
+}
+
+#[tokio::test]
+async fn normal_runtime_refresh_cannot_reset_parent_request_allowance() {
+    let fixture = Fixture::start(TokenMode::Renewable).await;
+    let policy = refresh_policy(&fixture.application, &fixture.issuer, 5000);
+    let input = grant(&policy);
+    let mut runtime = WebAssessmentRuntimeBuilder::new(fixture.application.clone())
+        .limits(
+            WebAssessmentLimits::default()
+                .with_max_total_requests(4)
+                .unwrap(),
+        )
+        .with_supplied_session_review(policy, input)
+        .build()
+        .unwrap();
+    let report = runtime.analyze().await.unwrap();
+    let audit = report.supplied_session_audit().unwrap();
+    assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::RuntimeLimit);
+    assert_eq!(audit.dispatched_request_count(), 4);
+    assert_eq!(audit.committed_resource_count(), 1);
+    assert_eq!(audit.oauth_refresh().unwrap().request_admitted_count(), 0);
+    assert_eq!(
+        fixture
+            .trace
+            .lock()
+            .await
+            .iter()
+            .map(|r| r.role)
+            .collect::<Vec<_>>(),
+        ["idp", "health", "resource-one", "health"]
+    );
+    assert_refresh_private(audit);
+}
+
+#[tokio::test]
+async fn normal_runtime_refresh_replaces_only_access_lifetime_not_session_wall() {
+    for (mode, wall, complete) in [
+        (TokenMode::RefreshOutlivesOldAccess, 5000, true),
+        (TokenMode::RenewedResourceSlow, 1000, false),
+    ] {
+        let fixture = Fixture::start(mode).await;
+        let policy = refresh_policy(&fixture.application, &fixture.issuer, wall);
+        let input = grant(&policy);
+        let mut runtime = WebAssessmentRuntimeBuilder::new(fixture.application.clone())
+            .with_supplied_session_review(policy, input)
+            .build()
+            .unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(4), runtime.analyze())
+            .await
+            .unwrap()
+            .unwrap();
+        let audit = report.supplied_session_audit().unwrap();
+        safe_refresh_checkpoint(audit);
+        assert_eq!(audit.oauth_refresh().unwrap().credential_commit_count(), 1);
+        if complete {
+            assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::Complete);
+            assert_eq!(audit.dispatched_request_count(), 8);
+            assert_eq!(audit.committed_resource_count(), 2);
+        } else {
+            assert_eq!(audit.outcome(), SuppliedSessionAuditOutcome::RuntimeLimit);
+            assert_eq!(audit.dispatched_request_count(), 7);
+            assert_eq!(audit.committed_resource_count(), 1);
+            assert_eq!(
+                audit.resources()[1].epoch(),
+                2,
+                "failed dispatched resource retains actual epoch"
+            );
+        }
+        assert_refresh_private(audit);
+    }
 }
 
 fn grant_at(
@@ -589,6 +888,36 @@ fn receipt_fixture() -> (
         expected_evidence,
     };
     (policy, knowledge, receipt)
+}
+
+// Original transport-free proof fixture, never compiled into the product.
+// Its narrow test-only module visibility does not expose receipt constructors.
+pub(in super::super) fn synthetic_refresh_code_receipt(
+    policy: &SuppliedSessionPolicy,
+    knowledge: &KnowledgeBase,
+) -> CommittedOAuthCodeReceipt {
+    let idp = policy.oauth_code_policy().unwrap();
+    let reference = commit_value_safe_evidence(
+        policy,
+        idp.binding_reference(),
+        b"security.synthetic.oauth-refresh-proof-fixture.v1\0",
+        "supplied-session-oauth-code-evidence-sha256",
+        ACQUISITION_PREDICATE,
+        "synthetic-code-proof-fixture",
+        "original synthetic code proof".to_owned(),
+        knowledge,
+    )
+    .unwrap();
+    let id = EvidenceId::parse(&reference).unwrap();
+    CommittedOAuthCodeReceipt {
+        knowledge_authority: knowledge.authority().clone(),
+        policy_reference: policy.policy_reference().to_owned(),
+        application_reference: policy.application_reference().to_owned(),
+        idp_reference: idp.binding_reference().to_owned(),
+        principal_alias: policy.principal_alias().to_owned(),
+        evidence_reference: reference,
+        expected_evidence: knowledge.inspect_evidence(&id, Clone::clone).unwrap(),
+    }
 }
 
 #[test]

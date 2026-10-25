@@ -316,7 +316,11 @@ fn scan_wordpress_supplied_session_policy_conflict(
     version: termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,
 ) -> Option<&'static str> {
     if selected
-        && version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5
+        && matches!(
+            version,
+            termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5
+                | termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6
+        )
     {
         Some("`--wordpress-supplied-session` does not support imported OAuth code policies")
     } else if selected
@@ -1176,11 +1180,12 @@ struct ScanArgs {
         ]
     )]
     session_login_file: Option<PathBuf>,
-    /// Read a bounded V5 external authorization-code/PKCE transaction from one
+    /// Read a bounded V5/V6 external authorization-code/PKCE transaction from one
     /// explicit regular file. Performs at most one separately authorized IdP
     /// token POST, then uses the existing Bearer health/resource loop. It does
     /// not initiate authorization, receive a browser callback, validate OIDC
-    /// identity, refresh tokens, or prove the imported S256/state context.
+    /// identity or prove the imported S256/state context. V5 never refreshes;
+    /// V6 additionally permits one explicitly scheduled, evidence-bound refresh.
     #[cfg(feature = "supplied-session-review")]
     #[arg(long, value_name = "FILE", requires = "session_policy", conflicts_with_all = [
         "session_auth_env", "session_auth_file", "session_auth_stdin",

@@ -799,10 +799,11 @@ fn surfaces() -> Vec<SurfaceDescriptor> {
                 "V3: --session-login-file FILE",
                 "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
                 "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
+                "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
                 "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
                 "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ],
-            "One explicitly supplied principal and strict local V1 authorization_header, V2 supplied cookie_jar, or V3 bounded_form_login policy authorizes a context-isolated, no-proxy child of the existing assessment broker. V1 and V2 perform only bounded bodyless application GETs. V3 performs one anonymous exact-application login-page GET and at most one explicit application/x-www-form-urlencoded POST with credentials from --session-login-file and one exact hidden CSRF field; redirects and retries are disabled, and an ambiguous POST outcome is not resubmitted. V3 has no pre-session cookie and admits only the policy-declared host-only session cookies from that login response. The structured startup JSON health predicate is the sole login-success oracle; status, response text, or receiving a cookie alone is insufficient. V3 permits at most three resources while the unchanged total remains at most nine supplied-session requests. Health checkpoints qualify bounded coverage rather than authenticate the principal. When a V1/V2 policy, both review features, and --wordpress-supplied-session are selected, complete health-qualified session-resource HTML may nominate public WordPress metadata that the WordPress broker retrieves anonymously; the credential is not sent to metadata or fingerprint requests, and authenticated-page fingerprint acquisition is not selected. Session loss, a selected post-login response-cookie update, or an unusable response-cookie classification stops later session work without anonymous fallback. V1/V2/V3 never apply post-establishment response cookie updates or automatically renew. V4 alone accepts ready host-only nonpersistent cookies and one explicitly scheduled bodyless same-application POST renewal, followed immediately by new-epoch health. V4 selects at most three resources, shares the same nine-request/five-checkpoint ceilings, never retries or replays a failed resource, and stops after failed renewal without restoring the old credential. Cookie host/domain/path/Secure/expiry applicability is intersected with operator application authority; Domain never expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. Application-defined GET handling and the explicitly authorized login POST can have server-side effects. V5 alone accepts --session-oauth-code-file under an explicit imported public-code S256 policy. It makes at most one separately authorized IdP token POST through a fresh no-proxy, no-cookie, no-retry, no-redirect child of the existing broker before startup health, sharing the same parent and nine-request session allowance. Its exact schedule is 2 + 2 * resource_count with at most three resources; complete uncoded JSON is bounded to 32 KiB and all smaller parent/body limits. An imported transaction and S256 context are operator assertions, not proof this client initiated authorization, secured state/nonce, or observed remote PKCE enforcement. The access token remains opaque bearer material: no OIDC identity or token signature validation, browser callback, discovery, refresh or installed-version authority is established. Explicit token-scope echo is required by this profile; a token response alone never establishes target session health. Credential use requires the exact committed private acquisition receipt; failed or ambiguous exchange is not retried. HTTPS with standard certificate validation is required; owned-numeric-loopback-http/v1 is an explicit development-only exception. No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass, exploit, or impact validation occurs. WordPress supplied-session composition remains limited to V1/V2; V3/V4/V5 are rejected before their secret files are read.",
+            "One explicitly supplied principal and strict local V1 authorization_header, V2 supplied cookie_jar, or V3 bounded_form_login policy authorizes a context-isolated, no-proxy child of the existing assessment broker. V1 and V2 perform only bounded bodyless application GETs. V3 performs one anonymous exact-application login-page GET and at most one explicit application/x-www-form-urlencoded POST with credentials from --session-login-file and one exact hidden CSRF field; redirects and retries are disabled, and an ambiguous POST outcome is not resubmitted. V3 has no pre-session cookie and admits only the policy-declared host-only session cookies from that login response. The structured startup JSON health predicate is the sole login-success oracle; status, response text, or receiving a cookie alone is insufficient. V3 permits at most three resources while the unchanged total remains at most nine supplied-session requests. Health checkpoints qualify bounded coverage rather than authenticate the principal. When a V1/V2 policy, both review features, and --wordpress-supplied-session are selected, complete health-qualified session-resource HTML may nominate public WordPress metadata that the WordPress broker retrieves anonymously; the credential is not sent to metadata or fingerprint requests, and authenticated-page fingerprint acquisition is not selected. Session loss, a selected post-login response-cookie update, or an unusable response-cookie classification stops later session work without anonymous fallback. V1/V2/V3 never apply post-establishment response cookie updates or automatically renew. V4 alone accepts ready host-only nonpersistent cookies and one explicitly scheduled bodyless same-application POST renewal, followed immediately by new-epoch health. V4 selects at most three resources, shares the same nine-request/five-checkpoint ceilings, never retries or replays a failed resource, and stops after failed renewal without restoring the old credential. Cookie host/domain/path/Secure/expiry applicability is intersected with operator application authority; Domain never expands it. HttpOnly and SameSite are preserved facts, not browser CSRF emulation. Application-defined GET handling and the explicitly authorized login POST can have server-side effects. V5 accepts --session-oauth-code-file under an explicit imported public-code S256 policy. It makes at most one separately authorized IdP token POST through a fresh no-proxy, no-cookie, no-retry, no-redirect child of the existing broker before startup health, sharing the same parent and nine-request session allowance. Its exact schedule is 2 + 2 * resource_count with at most three resources; complete uncoded JSON is bounded to 32 KiB and all smaller parent/body limits. An imported transaction and S256 context are operator assertions, not proof this client initiated authorization, secured state/nonce, or observed remote PKCE enforcement. The access token remains opaque bearer material: no OIDC identity or token signature validation, browser callback, discovery, refresh or installed-version authority is established. Explicit token-scope echo is required by this profile; a token response alone never establishes target session health. Credential use requires the exact committed private acquisition receipt; failed or ambiguous exchange is not retried. HTTPS with standard certificate validation is required; owned-numeric-loopback-http/v1 is an explicit development-only exception. V6 uses the same imported code file with an explicit scheduled-public-bearer-refresh/v1 policy. It requires exactly two selected resources and eight session requests: initial token exchange, startup health, first resource and health, one refresh-token POST, immediate new-epoch health, second resource and terminal health. Both IdP phases share the same broker, parent and local deadline; renewal never resets accounting. Only a retained guarded refresh value and exact committed acquisition/resource/health evidence authorize the separate once-only refresh phase. Complete uncoded bounded token JSON must contain a replacement refresh value different from the prior value; this local inequality does not establish revocation or server replay detection. Access lifetime may change only inside the immutable assessment deadline. Failed or ambiguous renewal stops without retry or old-token fallback. V6 performs no interactive authorization, OIDC identity or token signature validation and admits no WordPress or WebSocket composition. No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass, exploit, or impact validation occurs. WordPress supplied-session composition remains limited to V1/V2; V3/V4/V5/V6 are rejected before their secret files are read.",
             "docs/internals/supplied-session-review.md",
         ),
         surface!(
@@ -1888,6 +1889,7 @@ mod tests {
                 "V3: --session-login-file FILE",
                 "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
                 "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
+                "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
                 "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
                 "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ]
@@ -1926,7 +1928,7 @@ mod tests {
             "host/domain/path/Secure/expiry",
             "Domain never expands it",
             "HttpOnly and SameSite are preserved facts, not browser CSRF emulation",
-            "V5 alone accepts --session-oauth-code-file",
+            "V5 accepts --session-oauth-code-file",
             "at most one separately authorized IdP token POST",
             "same parent and nine-request session allowance",
             "2 + 2 * resource_count",
@@ -1934,9 +1936,20 @@ mod tests {
             "no OIDC identity or token signature validation",
             "exact committed private acquisition receipt",
             "owned-numeric-loopback-http/v1",
+            "scheduled-public-bearer-refresh/v1",
+            "exactly two selected resources and eight session requests",
+            "Both IdP phases share the same broker, parent and local deadline",
+            "renewal never resets accounting",
+            "exact committed acquisition/resource/health evidence",
+            "replacement refresh value different from the prior value",
+            "local inequality does not establish revocation or server replay detection",
+            "immutable assessment deadline",
+            "Failed or ambiguous renewal stops without retry or old-token fallback",
+            "V6 performs no interactive authorization, OIDC identity or token signature validation",
+            "no WordPress or WebSocket composition",
             "No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass",
             "WordPress supplied-session composition remains limited to V1/V2",
-            "V3/V4/V5 are rejected before their secret files are read",
+            "V3/V4/V5/V6 are rejected before their secret files are read",
         ] {
             assert!(
                 session.limitation.contains(required),
@@ -2131,6 +2144,12 @@ mod tests {
     fn render_contains_no_host_or_runtime_metadata() {
         let json = String::from_utf8(render(&build_document(), CapabilitiesFormat::Json).unwrap())
             .unwrap();
+        // This one reviewed, static prerequisite names a protocol mechanism,
+        // not an Authorization value. Every other Bearer-space occurrence
+        // remains forbidden; do not allow arbitrary token-shaped prose.
+        let public_mechanism = "scheduled Bearer refresh policy";
+        assert_eq!(json.matches(public_mechanism).count(), 1);
+        let privacy_view = json.replacen(public_mechanism, "scheduled Bearer-refresh policy", 1);
         for forbidden in [
             "CARGO_FEATURE_",
             "target_triple",
@@ -2144,7 +2163,7 @@ mod tests {
             "Bearer ",
             "Basic ",
         ] {
-            assert!(!json.contains(forbidden), "leaked {forbidden}");
+            assert!(!privacy_view.contains(forbidden), "leaked {forbidden}");
         }
         assert!(json.contains(INVENTORY_NOTICE));
         assert!(json.contains(BUILD_ORIGIN_LIMITATION));

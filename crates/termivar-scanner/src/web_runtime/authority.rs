@@ -37,13 +37,67 @@ impl OAuthCodeMintToken {
         &self,
         policy: &crate::supplied_session_review::SuppliedSessionPolicy,
     ) -> bool {
-        policy.application_url() == &self.application
+        (match policy.version() {
+            crate::supplied_session_review::SuppliedSessionPolicyVersion::V5 => {
+                policy.oauth_refresh_policy().is_none()
+            },
+            crate::supplied_session_review::SuppliedSessionPolicyVersion::V6 => {
+                policy.oauth_refresh_policy().is_some()
+            },
+            _ => false,
+        }) && policy.application_url() == &self.application
             && policy.policy_reference() == self.policy_reference
             && policy.principal_alias() == self.principal_alias
             && policy.oauth_code_policy().is_some_and(|idp| {
                 idp.is_valid_for_application(&self.application)
                     && idp.binding_reference() == self.idp_reference
             })
+    }
+}
+
+#[cfg(feature = "supplied-session-review")]
+struct OAuthRefreshMintSeal;
+
+/// A separate once-only phase in the same IdP pool/accounting authority. The
+/// knowledge identity binds dispatch to this assessment's committed boundary.
+#[cfg(feature = "supplied-session-review")]
+pub(crate) struct OAuthRefreshMintToken {
+    application: Url,
+    policy_reference: String,
+    idp_reference: String,
+    refresh_reference: String,
+    principal_alias: String,
+    knowledge_authority: crate::knowledge::KnowledgeAuthority,
+    _seal: OAuthRefreshMintSeal,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl OAuthRefreshMintToken {
+    pub(crate) fn matches_policy(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+    ) -> bool {
+        policy.version() == crate::supplied_session_review::SuppliedSessionPolicyVersion::V6
+            && policy.application_url() == &self.application
+            && policy.policy_reference() == self.policy_reference
+            && policy.principal_alias() == self.principal_alias
+            && policy.oauth_code_policy().is_some_and(|idp| {
+                idp.is_valid_for_application(&self.application)
+                    && idp.binding_reference() == self.idp_reference
+            })
+            && policy.oauth_refresh_policy().is_some_and(|refresh| {
+                refresh.binding_reference() == self.refresh_reference
+                    && refresh.after_resource_count() == 1
+                    && refresh.max_attempts() == 1
+            })
+    }
+
+    pub(crate) fn is_valid_for(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+        knowledge: &KnowledgeBase,
+    ) -> bool {
+        self.matches_policy(policy) && self.knowledge_authority.is_same_as(knowledge.authority())
     }
 }
 
@@ -389,8 +443,10 @@ impl SharedWebRuntimeAuthority {
         policy: &crate::supplied_session_review::SuppliedSessionPolicy,
     ) -> Result<crate::http_evidence::OAuthCodeRequestBroker, ()> {
         use crate::supplied_session_review::SuppliedSessionPolicyVersion;
-        if policy.version() != SuppliedSessionPolicyVersion::V5
-            || policy.application_url() != &self.selected_target
+        if !matches!(
+            policy.version(),
+            SuppliedSessionPolicyVersion::V5 | SuppliedSessionPolicyVersion::V6
+        ) || policy.application_url() != &self.selected_target
         {
             return Err(());
         }
@@ -405,8 +461,19 @@ impl SharedWebRuntimeAuthority {
             principal_alias: policy.principal_alias().to_owned(),
             _seal: OAuthCodeMintSeal,
         };
+        let refresh_mint = policy
+            .oauth_refresh_policy()
+            .map(|refresh| OAuthRefreshMintToken {
+                application: self.selected_target.clone(),
+                policy_reference: policy.policy_reference().to_owned(),
+                idp_reference: idp.binding_reference().to_owned(),
+                refresh_reference: refresh.binding_reference().to_owned(),
+                principal_alias: policy.principal_alias().to_owned(),
+                knowledge_authority: self.knowledge.authority().clone(),
+                _seal: OAuthRefreshMintSeal,
+            });
         self.requests
-            .isolated_oauth_code(policy, mint)
+            .isolated_oauth_code(policy, mint, refresh_mint)
             .map_err(|_| ())
     }
 

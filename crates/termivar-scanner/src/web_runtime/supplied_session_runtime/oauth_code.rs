@@ -22,7 +22,7 @@ use crate::{
 
 #[cfg(test)]
 #[path = "oauth_code_tests.rs"]
-mod tests;
+pub(super) mod tests;
 
 const ACQUISITION_PREDICATE: &str = "oauth-code-credential-acquisition-committed";
 
@@ -267,13 +267,20 @@ pub(super) struct CommittedOAuthCodeReceipt {
 }
 
 impl CommittedOAuthCodeReceipt {
+    pub(super) fn evidence_reference(&self) -> &str {
+        &self.evidence_reference
+    }
+
     pub(super) fn is_valid_for(
         &self,
         policy: &SuppliedSessionPolicy,
         knowledge: &KnowledgeBase,
     ) -> bool {
         self.knowledge_authority.is_same_as(knowledge.authority())
-            && policy.version() == SuppliedSessionPolicyVersion::V5
+            && matches!(
+                policy.version(),
+                SuppliedSessionPolicyVersion::V5 | SuppliedSessionPolicyVersion::V6
+            )
             && policy.policy_reference() == self.policy_reference
             && policy.application_reference() == self.application_reference
             && policy.principal_alias() == self.principal_alias
@@ -296,6 +303,8 @@ pub(super) struct AcquiredOAuthCodeCredential {
     pub(super) credential: SuppliedSessionCredential,
     pub(super) receipt: CommittedOAuthCodeReceipt,
     pub(super) declared_lifetime: Duration,
+    pub(super) refresh_token:
+        Option<crate::supplied_session_review::oauth_refresh::OAuthRefreshToken>,
 }
 
 pub(super) struct OAuthCodeAcquisitionContext<'a> {
@@ -430,19 +439,26 @@ pub(super) async fn acquire(
         .policy
         .oauth_code_policy()
         .expect("validated V5 IdP binding");
-    let parsed = match parse_token_response(idp, response.body) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            audit.outcome = SuppliedSessionOAuthCodeOutcome::ResponseRejected;
-            return (
-                audit,
-                Err(SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable),
-            );
-        },
+    let parsed = if context.policy.version() == SuppliedSessionPolicyVersion::V6 {
+        crate::supplied_session_review::oauth_refresh::parse_renewable_token_response(
+            context.policy,
+            response.body,
+            None,
+        )
+        .and_then(|parsed| {
+            let lifetime = parsed.expires_in_seconds();
+            let (authorization, refresh_token) = parsed.into_parts()?;
+            Ok((authorization, lifetime, true, Some(refresh_token)))
+        })
+    } else {
+        parse_token_response(idp, response.body).and_then(|parsed| {
+            let lifetime = parsed.expires_in_seconds();
+            let refresh_returned = parsed.refresh_token_returned();
+            let authorization = parsed.into_authorization()?;
+            Ok((authorization, lifetime, refresh_returned, None))
+        })
     };
-    let lifetime = parsed.expires_in_seconds();
-    let refresh_returned = parsed.refresh_token_returned();
-    let authorization = match parsed.into_authorization() {
+    let (authorization, lifetime, refresh_returned, refresh_token) = match parsed {
         Ok(value) => value,
         Err(_) => {
             audit.outcome = SuppliedSessionOAuthCodeOutcome::ResponseRejected;
@@ -506,6 +522,7 @@ pub(super) async fn acquire(
             credential: SuppliedSessionCredential::Authorization(authorization),
             receipt,
             declared_lifetime: Duration::from_secs(lifetime),
+            refresh_token,
         }),
     )
 }

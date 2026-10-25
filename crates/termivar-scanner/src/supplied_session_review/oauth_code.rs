@@ -320,6 +320,9 @@ impl SuppliedSessionOAuthGrant {
         if backing.len() > HARD_MAX_SUPPLIED_SESSION_OAUTH_CODE_SECRET_BYTES {
             return Err(OAuthCodeInputError::SecretTooLarge);
         }
+        if !admits_imported_code(policy) {
+            return Err(OAuthCodeInputError::PolicyMismatch);
+        }
         let oauth = policy
             .oauth_code_policy()
             .ok_or(OAuthCodeInputError::PolicyMismatch)?;
@@ -436,7 +439,8 @@ impl SuppliedSessionOAuthGrant {
     }
 
     pub(crate) fn matches_policy(&self, policy: &SuppliedSessionPolicy) -> bool {
-        self.policy_reference == policy.policy_reference()
+        admits_imported_code(policy)
+            && self.policy_reference == policy.policy_reference()
             && self.principal_alias == policy.principal_alias()
             && policy
                 .oauth_code_policy()
@@ -475,6 +479,19 @@ impl SuppliedSessionOAuthGrant {
             return Err(OAuthCodeInputError::SecretTooLarge);
         }
         Ok(OAuthCodeFormBody { value: body })
+    }
+}
+
+fn admits_imported_code(policy: &SuppliedSessionPolicy) -> bool {
+    use super::SuppliedSessionPolicyVersion;
+    match policy.version() {
+        SuppliedSessionPolicyVersion::V5 => policy.oauth_refresh_policy().is_none(),
+        SuppliedSessionPolicyVersion::V6 => policy.oauth_refresh_policy().is_some_and(|refresh| {
+            refresh.profile() == "scheduled-public-bearer-refresh/v1"
+                && refresh.after_resource_count() == 1
+                && refresh.max_attempts() == 1
+        }),
+        _ => false,
     }
 }
 
@@ -522,11 +539,7 @@ impl OAuthCodeTokenResponse {
     pub(crate) fn into_authorization(
         self,
     ) -> Result<SuppliedSessionAuthorization, OAuthCodeInputError> {
-        let mut header = Zeroizing::new(Vec::with_capacity(7 + self.access_token.len()));
-        header.extend_from_slice(b"Bearer ");
-        header.extend_from_slice(self.access_token.as_bytes());
-        SuppliedSessionAuthorization::new(std::mem::take(&mut *header))
-            .map_err(|_| OAuthCodeInputError::InvalidTokenResponse)
+        authorization_from_token(self.access_token)
     }
 
     pub(crate) const fn expires_in_seconds(&self) -> u64 {
@@ -550,6 +563,35 @@ pub(crate) fn parse_token_response(
     policy: &OAuthCodePolicy,
     body: Zeroizing<Vec<u8>>,
 ) -> Result<OAuthCodeTokenResponse, OAuthCodeInputError> {
+    let fields = parse_token_response_fields(policy, body, RefreshTokenHandling::Discard)?;
+    Ok(OAuthCodeTokenResponse {
+        access_token: fields.access_token,
+        expires_in_seconds: fields.expires_in_seconds,
+        refresh_token_returned: fields.refresh_token_returned,
+    })
+}
+
+/// Private reduction modes; retaining refresh material is not network authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefreshTokenHandling {
+    Discard,
+    RetainAscii,
+}
+
+pub(super) struct ParsedOAuthTokenResponse {
+    pub(super) access_token: Zeroizing<String>,
+    pub(super) expires_in_seconds: u64,
+    pub(super) refresh_token_returned: bool,
+    pub(super) retained_refresh_token: Option<Zeroizing<String>>,
+}
+
+/// Both profiles use this one bounded JSON parser. Legacy V5 still drops a
+/// returned refresh value immediately and retains only its presence boolean.
+pub(super) fn parse_token_response_fields(
+    policy: &OAuthCodePolicy,
+    body: Zeroizing<Vec<u8>>,
+    refresh_handling: RefreshTokenHandling,
+) -> Result<ParsedOAuthTokenResponse, OAuthCodeInputError> {
     if body.is_empty()
         || body.len() > policy.max_token_response_bytes
         || body.len() > MAX_SUPPLIED_SESSION_OAUTH_TOKEN_RESPONSE_BYTES
@@ -575,9 +617,13 @@ pub(crate) fn parse_token_response(
     let mut expires = None;
     let mut scope = None;
     let mut refresh_token_returned = false;
+    let mut retained_refresh_token = None;
     for (key, value) in entries {
         match key.as_str() {
             "id_token" => return Err(OAuthCodeInputError::UnsupportedTokenProfile),
+            "cnf" if refresh_handling == RefreshTokenHandling::RetainAscii => {
+                return Err(OAuthCodeInputError::UnsupportedTokenProfile);
+            },
             "error" | "error_description" | "error_uri" => {
                 return Err(OAuthCodeInputError::InvalidTokenResponse);
             },
@@ -595,8 +641,18 @@ pub(crate) fn parse_token_response(
                 if token.as_str().is_empty() {
                     return Err(OAuthCodeInputError::InvalidTokenResponse);
                 }
-                // The guarded string drops here. It is never retained for use.
                 refresh_token_returned = true;
+                if refresh_handling == RefreshTokenHandling::RetainAscii {
+                    if !token
+                        .as_str()
+                        .bytes()
+                        .all(|byte| matches!(byte, 0x20..=0x7e))
+                    {
+                        return Err(OAuthCodeInputError::InvalidTokenResponse);
+                    }
+                    retained_refresh_token = Some(token.value);
+                }
+                // Discard mode drops the guarded string here, as before V6.
             },
             _ => {}, // RFC 6749 section 5.1 extension values remain inert.
         }
@@ -610,11 +666,22 @@ pub(crate) fn parse_token_response(
     if !valid_bearer(access_token.as_str()) || !scope_matches(scope.as_str(), policy) {
         return Err(OAuthCodeInputError::InvalidTokenResponse);
     }
-    Ok(OAuthCodeTokenResponse {
+    Ok(ParsedOAuthTokenResponse {
         access_token: access_token.value,
         expires_in_seconds: expires.ok_or(OAuthCodeInputError::InvalidTokenResponse)?,
         refresh_token_returned,
+        retained_refresh_token,
     })
+}
+
+pub(super) fn authorization_from_token(
+    access_token: Zeroizing<String>,
+) -> Result<SuppliedSessionAuthorization, OAuthCodeInputError> {
+    let mut header = Zeroizing::new(Vec::with_capacity(7 + access_token.len()));
+    header.extend_from_slice(b"Bearer ");
+    header.extend_from_slice(access_token.as_bytes());
+    SuppliedSessionAuthorization::new(std::mem::take(&mut *header))
+        .map_err(|_| OAuthCodeInputError::InvalidTokenResponse)
 }
 
 fn valid_bearer(value: &str) -> bool {

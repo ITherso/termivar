@@ -1902,10 +1902,10 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
-    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5{Some(\"`--wordpress-supplied-session`doesnotsupportimportedOAuthcodepolicies\")}elseifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\",)}}";
+    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&matches!(version,termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5|termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6){Some(\"`--wordpress-supplied-session`doesnotsupportimportedOAuthcodepolicies\")}elseifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\",)}}";
     if compact.matches(wordpress_v3_preflight).count() != 1 {
         violations.push(
-            "CLI must reject WordPress composition with prepared V3/V4/V5 policies before output reservation or acquisition-secret reads"
+            "CLI must reject WordPress composition with prepared V3/V4/V5/V6 policies before output reservation or acquisition-secret reads"
                 .to_owned(),
         );
     }
@@ -4386,12 +4386,12 @@ mod tests {
             (
                 "SuppliedSessionPolicyVersion::V3)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
                 "SuppliedSessionPolicyVersion::V2)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
-                "reject WordPress composition with prepared V3/V4/V5 policies",
+                "reject WordPress composition with prepared V3/V4/V5/V6 policies",
             ),
             (
                 "SuppliedSessionPolicyVersion::V4\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
                 "SuppliedSessionPolicyVersion::V2\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
-                "reject WordPress composition with prepared V3/V4/V5 policies",
+                "reject WordPress composition with prepared V3/V4/V5/V6 policies",
             ),
             (
                 "conflicts_with_all = [\"report_format\", \"report_output\"]",
@@ -4607,6 +4607,23 @@ mod tests {
             let mutated = AUTH_INPUT.replacen(from, to, 1);
             assert!(!inspect_auth_input_contract(&mutated).unwrap().is_empty(), "accepted V5 acquisition boundary mutation {from}");
         }
+    }
+
+    #[test]
+    fn oauth_refresh_wordpress_refusal_stays_before_secret_acquisition() {
+        assert!(inspect_cli_auth_surface(CLI_MAIN).unwrap().is_empty());
+        let from = "| termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6";
+        assert!(
+            CLI_MAIN.contains(from),
+            "stale V6 composition refusal mutation"
+        );
+        let changed = CLI_MAIN.replacen(from, "", 1);
+        assert_ne!(changed, CLI_MAIN);
+        let violations = inspect_cli_auth_surface(&changed).unwrap().join("\n");
+        assert!(
+            violations.contains("prepared V3/V4/V5/V6 policies"),
+            "{violations}"
+        );
     }
 
     #[test]

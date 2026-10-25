@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
@@ -19,12 +20,18 @@ lab = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = lab
 SPEC.loader.exec_module(lab)
 
-NAMES = ("option-off", "valid-a", "replayed-code", "wrong-verifier", "wrong-b-health", "valid-b-context")
+NAMES = ("option-off", "valid-a", "replayed-code", "wrong-verifier", "wrong-b-health", "valid-b-context",
+         "refresh-a", "refresh-b-context", "refresh-health-loss")
+REFRESH_NAMES = ("refresh-a", "refresh-b-context", "refresh-health-loss")
 ROLES = {
     "option-off": (), "valid-a": ("health", "resource-one", "health", "resource-two", "health"),
     "replayed-code": (), "wrong-verifier": (), "wrong-b-health": ("health",),
     "valid-b-context": ("health", "resource-one", "health", "resource-two", "health"),
+    "refresh-a": ("health", "resource-one", "health", "health", "resource-two", "health"),
+    "refresh-b-context": ("health", "resource-one", "health", "health", "resource-two", "health"),
+    "refresh-health-loss": ("health", "resource-one", "health", "health"),
 }
+CONTROLS = ("a-to-b-context", "refresh-a-to-b-context", "code-to-refresh-policy", "refresh-health-loss")
 
 
 def literal_image_inspection(profile="legacy"):
@@ -67,11 +74,14 @@ def synthetic_audit(name="valid-a"):
     """Literal reviewed V5 subset consumed by the helper, not a product export."""
     if name == "option-off":
         return None
+    if name in REFRESH_NAMES:
+        return synthetic_refresh_audit(name)
     successful = name in ("valid-a", "wrong-b-health", "valid-b-context")
     resources = 2 if name in ("valid-a", "valid-b-context") else 0
     phases = ["startup", "subject_boundary", "terminal"] if resources else (["startup"] if successful else [])
     return {
         "schema": "security.supplied-session-audit/v5",
+        "policy_reference": "supplied-session-policy-sha256:" + ("b" if name == "valid-b-context" else "a") * 64,
         "principal_alias": "canary-b" if name == "valid-b-context" else "canary-a",
         "credential_acquisition": "imported_oauth_code_pkce",
         "outcome": "startup_unhealthy" if name == "wrong-b-health" else (
@@ -116,19 +126,76 @@ def synthetic_audit(name="valid-a"):
     }
 
 
+def synthetic_refresh_audit(name="refresh-a"):
+    """Independent literal V6 wire, never produced by a product/helper matcher."""
+    audit = synthetic_audit("valid-a")
+    healthy = name != "refresh-health-loss"
+    audit.update({"schema": "security.supplied-session-audit/v6",
+                  "principal_alias": "canary-b" if name == "refresh-b-context" else "canary-a",
+                  "policy_reference": "supplied-session-policy-sha256:" + ("d" if name == "refresh-b-context" else "c") * 64,
+                  "outcome": "complete" if healthy else "session_lost", "coverage": "complete" if healthy else "partial",
+                  "dispatched_request_count": 8 if healthy else 6, "dispatched_resource_count": 2 if healthy else 1,
+                  "committed_resource_count": 2 if healthy else 1, "response_bytes": 1032 if healthy else 992,
+                  "response_byte_limit": 65536, "refresh_performed": True})
+    audit["oauth_code"]["refresh_token_returned"] = True
+    for index, row in enumerate(audit["checkpoints"]):
+        row["epoch"] = 2 if index == 2 else 1
+    audit["resources"][1]["epoch"] = 2
+    audit["oauth_refresh"] = {
+        "profile": "scheduled-public-bearer-refresh/v1", "idp_reference": "oauth-code-policy-sha256:" + "1" * 64,
+        "refresh_policy_reference": "oauth-refresh-policy-sha256:" + "a" * 64,
+        "after_resource_count": 1, "max_attempts": 1, "token_interpretation": "opaque_bearer_not_oidc_identity",
+        "rotation_assurance": "replacement_value_observed_not_server_revocation", "server_replay_detection_established": False,
+        "initial_epoch": 1, "final_epoch": 2, "request_attempt_count": 1, "request_admitted_count": 1,
+        "response_completed_count": 1, "credential_commit_count": 1, "status": 200, "body_state": "complete",
+        "response_bytes": 400, "configured_token_response_byte_limit": 8192, "token_response_validated": True,
+        "response_scope_matched": True, "declared_token_lifetime_seconds": 180,
+        "replacement_refresh_token_received": True, "replacement_value_differs": True,
+        "prior_credential_evidence_reference": "supplied-session-oauth-code-evidence-sha256:" + "2" * 64,
+        "boundary_resource_evidence_reference": "supplied-session-resource-evidence-sha256:" + "3" * 64,
+        "boundary_health_evidence_reference": "supplied-session-checkpoint-evidence-sha256:" + "6" * 64,
+        "evidence_reference": "supplied-session-oauth-refresh-evidence-sha256:" + "9" * 64,
+        "health": {"sequence": 2, "phase": "renewal", "after_subject_count": 1, "epoch": 2,
+                   "evidence_reference": "supplied-session-checkpoint-evidence-sha256:" + "8" * 64,
+                   "outcome": "healthy" if healthy else "unhealthy", "status": 200, "body_state": "complete",
+                   "predicate": "matched" if healthy else "not_matched", "response_bytes": 20},
+        "outcome": "credential_committed",
+    }
+    if not healthy:
+        audit["checkpoints"].pop()
+        audit["resources"][1].update({"outcome": "not_dispatched", "status": None,
+                                      "evidence_reference": None, "response_bytes": 0})
+    return audit
+
+
 def synthetic_trace(name):
     ordinary = [{"phase": name, "role": "ordinary", "method": "GET", "credential_present": False,
                  "accepted": False, "entry_path": True} for _ in range(3)]
     session = [{"phase": name, "role": role, "method": "GET", "credential_present": True,
-                "accepted": name != "wrong-b-health", "entry_path": False, "response_bytes": 20} for role in ROLES[name]]
+                "accepted": name != "wrong-b-health" and not (name == "refresh-health-loss" and index == 3),
+                "provider_active": True, "application_gate_denied": name == "refresh-health-loss" and index == 3,
+                "entry_path": False, "response_bytes": 20} for index, role in enumerate(ROLES[name])]
     idp = [] if name == "option-off" else [{"phase": name, "role": "token-exchange", "method": "POST",
                  "request_bytes": 200, "status": 400 if name in ("replayed-code", "wrong-verifier") else 200,
                  "response_bytes": 64 if name in ("replayed-code", "wrong-verifier") else 512,
-                 "error_class": "invalid_grant" if name in ("replayed-code", "wrong-verifier") else None}]
+                 "error_class": "invalid_grant" if name in ("replayed-code", "wrong-verifier") else None,
+                 "grant_type": "authorization_code", "credential_header_present": False, "cookie_present": False,
+                 "public_form_valid": True, "identity_requested": True,
+                 "refresh_token_present": True if name in REFRESH_NAMES else None, "replacement_value_differs": None}]
+    for index in range(len(session)):
+        idp.append({"phase": name, "role": "backend-introspection", "method": "POST", "response_bytes": 40})
+        if name in REFRESH_NAMES and index == 2:
+            idp.append({"phase": name, "role": "token-exchange", "method": "POST", "request_bytes": 180,
+                        "status": 200, "response_bytes": 400, "error_class": None, "grant_type": "refresh_token",
+                        "credential_header_present": False, "cookie_present": False,
+                        "public_form_valid": True, "identity_requested": True,
+                        "refresh_token_present": True, "replacement_value_differs": True})
     return ordinary + session, idp
 
 
 def synthetic_item(name):
+    if name == "refresh-health-loss":
+        name = "refresh-a"
     return {"capability_id": "session.supplied-context-observed@1", "fingerprint": "sha256:" + hashlib.sha256(name.encode()).hexdigest()}
 
 
@@ -173,13 +240,15 @@ class FakeRunner:
     These are synthetic, not native executable or provider acceptance.
     """
 
-    def __init__(self, mutation=None, publish_failures=True):
+    def __init__(self, mutation=None, publish_failures=True, replay_status=400):
         self.private = lab.PrivateValues()
         self.records = []
         self.sources = {}
         self.mutation = mutation
         self.publish_failures = publish_failures
         self.scanner_arguments = []
+        self.controller_replays = []
+        self.replay_status = replay_status
 
     def run(self, args, *, label, **kwargs):
         self.records.append({"id": label, "exit_code": 0, "elapsed_seconds": 0.01})
@@ -195,6 +264,12 @@ class FakeRunner:
             rows, idp = synthetic_trace(name)
             target.trace.extend(rows)
             fixture.relay.trace.extend(idp)
+            if name in REFRESH_NAMES:
+                refresh = "synthetic-private-old-refresh-" + name
+                self.private.add(refresh)
+                fixture.relay._refresh_captures[name] = lab._RefreshCapture(
+                    initial_refresh=refresh, initial_returned=True, refresh_responses=1,
+                    replacement_returned=True, replacement_value_differs=True)
             source = synthetic_source(name)
             if self.mutation is not None:
                 self.mutation(name, source)
@@ -217,13 +292,20 @@ class FakeRunner:
         elif label.endswith("-self-compare"):
             path = Path(args[args.index("--before") + 1]).parent
             value = synthetic_self_comparison(self.sources[path])
-        elif label == "a-to-b-context-compare":
+        elif label in ("a-to-b-context-compare", "refresh-a-to-b-context-compare", "code-to-refresh-policy-compare"):
             before = self.sources[Path(args[args.index("--before") + 1]).parent]
             after = self.sources[Path(args[args.index("--after") + 1]).parent]
             value = {"schema": "termivar-report-comparison/v1", "only_in_after": after["items"],
                      "only_in_before": before["items"], "changed": [], "unchanged": [],
                      "supplied_session_comparison": {"status": "not_compared", "context": {"status": "session_policy_changed"},
                          "health_and_coverage": {"status": "not_comparable"}, "accounting": {"status": "not_comparable"}}}
+        elif label == "refresh-health-loss-compare":
+            before = self.sources[Path(args[args.index("--before") + 1]).parent]
+            value = {"schema": "termivar-report-comparison/v1", "only_in_after": [], "only_in_before": [],
+                     "changed": [], "unchanged": before["items"],
+                     "supplied_session_comparison": {"status": "compared_within_same_declared_context",
+                         "context": {"status": "same_declared_context"}, "health_and_coverage": {"status": "changed"},
+                         "accounting": {"status": "changed"}}}
         else:
             raise AssertionError("unexpected process path " + label)
         return lab.Result(json.dumps(value).encode(), b"", 0, 0.01)
@@ -264,7 +346,25 @@ class AcceptanceTests(unittest.TestCase):
         patches = (mock.patch.object(lab, "KeycloakLab", FakeLab),
                    mock.patch.object(lab, "TargetApplication", TargetCapture),
                    mock.patch.object(lab, "obtain_code", side_effect=synthetic_grant))
-        with patches[0], patches[1], patches[2]:
+        def replay_request(url, method, body=None, headers=None, **kwargs):
+            fixture = FakeLab.instances[-1]
+            self.assertEqual(len(runner.scanner_arguments), 9, "controller replay preceded mandatory scanner cases")
+            self.assertFalse(fixture.closed)
+            self.assertFalse(TargetCapture.instances[-1].stopped)
+            self.assertTrue(fixture.relay.phase in ("controller-old-refresh-refresh-a", "controller-old-refresh-refresh-b-context"))
+            self.assertEqual(url, fixture.relay.origin + "/realms/termivar-owned-code/protocol/openid-connect/token")
+            self.assertEqual(method, "POST")
+            fields = dict(urllib.parse.parse_qsl(body.decode(), strict_parsing=True))
+            name = fixture.relay.phase.removeprefix("controller-old-refresh-")
+            self.assertTrue(fields == {"grant_type": "refresh_token", "client_id": "termivar-owned-public",
+                                       "refresh_token": "synthetic-private-old-refresh-" + name, "scope": "canary-read"})
+            self.assertEqual(set(headers), {"Content-Type", "Accept-Encoding"})
+            runner.controller_replays.append({"scenario": name, "scanner_cases_already_executed": 9})
+            if runner.replay_status == 400:
+                return 400, [], b'{"error":"invalid_grant"}'
+            return 200, [], b'{"access_token":"synthetic-accepted-old-refresh-access","refresh_token":"synthetic-accepted-new-refresh-value"}'
+
+        with patches[0], patches[1], patches[2], mock.patch.object(lab, "request_bytes", side_effect=replay_request):
             result = lab.execute(binary, output, "a" * 40, "0.10.0-alpha.3", runner)
         return result, runner, output
 
@@ -294,7 +394,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(value["oauth_code"]["max_token_response_bytes"], 8192)
         self.assertLessEqual(value["oauth_code"]["max_token_response_bytes"], value["max_response_body_bytes"])
 
-    def test_owned_matrix_requires_zero_exit_and_all_six_emitted_bundles(self):
+    def test_owned_matrix_requires_zero_exit_and_all_nine_emitted_bundles(self):
         with self.assertRaisesRegex(lab.LabError, "scan_exit_contract|expected_completed_bundle"):
             self.execute_fake(FakeRunner(publish_failures=False))
 
@@ -323,15 +423,66 @@ max_token_response_bytes = 8192
         self.assertTrue(all(not row["directAccessGrantsEnabled"] for row in clients.values()))
         self.assertEqual(document["users"][-1]["clientRoles"], {"realm-management": ["impersonation"]})
         self.assertEqual([user["credentials"] for user in document["users"][:2]], [[], []])
+        self.assertIs(document["revokeRefreshToken"], True)
+        self.assertIs(type(document["refreshTokenMaxReuse"]), int)
+        self.assertEqual(document["refreshTokenMaxReuse"], 0)
+
+    def test_v5_policy_literal_and_v6_schedule_have_independent_oracles(self):
+        import tomllib
+        literal = b'''schema = "security.supplied-session-policy/v5"
+principal_alias = "canary-a"
+credential_mechanism = "authorization_header"
+credential_acquisition = "imported_oauth_code_pkce"
+health_path = "/app/health"
+health_json_field = "canary_a"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 6
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+
+[oauth_code]
+profile = "external-public-code-s256-bearer/v1"
+transport_profile = "owned-numeric-loopback-http/v1"
+issuer = "http://127.0.0.1:1234/realms/termivar-owned-code"
+token_endpoint = "http://127.0.0.1:1234/realms/termivar-owned-code/protocol/openid-connect/token"
+client_id = "termivar-owned-public"
+redirect_uri = "http://127.0.0.1:5678/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+'''
+        args = ("http://127.0.0.1:1234/realms/termivar-owned-code", "http://127.0.0.1:5678/callback", "canary-a")
+        self.assertTrue(lab.policy_source(*args) == literal, "historical V5 fixture policy bytes changed")
+        source = lab.policy_source(*args, renewable=True)
+        document = tomllib.loads(source.decode())
+        self.assertEqual(document["schema"], "security.supplied-session-policy/v6")
+        self.assertEqual(document["max_session_requests"], 8)
+        self.assertEqual(document["oauth_refresh"], {"profile": "scheduled-public-bearer-refresh/v1",
+                                                    "after_resource_count": 1, "max_attempts": 1})
+        lab.validate_fixture_policy(source)
+        for bad in (source.replace(b"max_attempts = 1", b"max_attempts = 2"),
+                    source.replace(b"after_resource_count = 1", b"after_resource_count = true"),
+                    source.replace(b"max_session_requests = 8", b"max_session_requests = 9"),
+                    source.replace(b"scheduled-public-bearer-refresh/v1", b"automatic-refresh/v1")):
+            with self.subTest(mutation=bad is source), self.assertRaisesRegex(lab.LabError, "fixture_refresh_schedule"):
+                lab.validate_fixture_policy(bad)
 
     def test_complete_execute_loop_and_every_offline_path(self):
         document, runner, output = self.execute_fake()
         self.assertEqual(document["status"], "passed")
         self.assertEqual(tuple(document["scenarios"]), NAMES)
         self.assertEqual(set(document["offline"]["bundles"]), set(NAMES))
-        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-verify")]), 6)
-        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-self-compare")]), 6)
-        self.assertEqual(runner.records[-1]["id"], "a-to-b-context-compare")
+        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-verify")]), 9)
+        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-self-compare")]), 9)
+        self.assertEqual(tuple(document["offline"]["controlled_comparisons"]), CONTROLS)
+        self.assertEqual(runner.records[-1]["id"], "refresh-health-loss-compare")
+        self.assertEqual(len(runner.records), 32)
+        self.assertEqual(runner.controller_replays,
+                         [{"scenario": "refresh-a", "scanner_cases_already_executed": 9},
+                          {"scenario": "refresh-b-context", "scanner_cases_already_executed": 9}])
+        self.assertEqual(document["controller_refresh_replay"]["status"], "passed")
+        self.assertTrue(document["controller_refresh_replay"]["all_scanner_scenarios_completed_before_controls"])
+        self.assertTrue(document["offline"]["selected_input_bytes_preserved"])
         self.assertTrue(document["offline"]["fixtures_stopped_before_execution"])
         self.assertTrue(document["cleanup"]["idp"]["container_removed"])
         self.assertEqual(document["interactive_login_qualification"], "not_performed")
@@ -580,8 +731,273 @@ max_token_response_bytes = 8192
             self.assertEqual(lab.main(["--validate-only"]), 0)
             self.assertEqual(json.loads(output.getvalue())["execution_class"], "static_only")
 
+    def test_v6_positive_and_application_loss_match_literal_independent_traces(self):
+        baseline = [{"method": "GET", "role": "ordinary", "entry_path": True} for _ in range(3)]
+        for name in REFRESH_NAMES:
+            target, idp = synthetic_trace(name)
+            result = lab.validate_case(name, synthetic_refresh_audit(name), target, idp, baseline)
+            self.assertEqual(result["resource_epochs"], [1, 2])
+            self.assertEqual(result["health_request_count"], 3 if name == "refresh-health-loss" else 4)
+            self.assertEqual(result["application_health_refusal_not_provider_expiry"], name == "refresh-health-loss")
+
+    def test_v6_claim_nullability_epoch_and_commit_mutations_fail(self):
+        for key, value in (("server_replay_detection_established", True), ("initial_epoch", True),
+                           ("final_epoch", 1), ("max_attempts", 2), ("credential_commit_count", 0),
+                           ("replacement_value_differs", False), ("health", None),
+                           ("prior_credential_evidence_reference", None),
+                           ("boundary_health_evidence_reference", "supplied-session-checkpoint-evidence-sha256:" + "0" * 64)):
+            audit = synthetic_refresh_audit()
+            audit["oauth_refresh"][key] = value
+            target, idp = synthetic_trace("refresh-a")
+            with self.subTest(key=key), self.assertRaises(lab.LabError):
+                lab.validate_case("refresh-a", audit, target, idp, None)
+        for key in synthetic_refresh_audit()["oauth_refresh"]:
+            audit = synthetic_refresh_audit()
+            del audit["oauth_refresh"][key]
+            target, idp = synthetic_trace("refresh-a")
+            with self.subTest(missing=key), self.assertRaisesRegex(lab.LabError, "refresh_closed_fields"):
+                lab.validate_case("refresh-a", audit, target, idp, None)
+        for key, value in (("response_bytes", True), ("committed_resource_count", 1), ("dispatched_request_count", 7)):
+            audit = synthetic_refresh_audit()
+            audit[key] = value
+            target, idp = synthetic_trace("refresh-a")
+            with self.subTest(key=key), self.assertRaises(lab.LabError):
+                lab.validate_case("refresh-a", audit, target, idp, None)
+        audit = synthetic_refresh_audit("refresh-health-loss")
+        audit["resources"][1].pop("status")
+        target, idp = synthetic_trace("refresh-health-loss")
+        with self.assertRaisesRegex(lab.LabError, "refresh_entity_fields"):
+            lab.validate_case("refresh-health-loss", audit, target, idp, None)
+
+    def test_v6_wire_order_and_private_context_cannot_be_replaced_by_counts(self):
+        for mutation in ("extra-refresh", "wrong-order", "missing-introspection", "credential-header", "cookie", "false-difference", "bool-byte"):
+            target, idp = synthetic_trace("refresh-a")
+            if mutation == "extra-refresh":
+                idp.append(copy.deepcopy(idp[4]))
+            elif mutation == "wrong-order":
+                idp[3], idp[4] = idp[4], idp[3]
+            elif mutation == "missing-introspection":
+                idp.pop()
+            elif mutation in ("credential-header", "cookie"):
+                idp[4]["credential_header_present" if mutation == "credential-header" else "cookie_present"] = True
+            elif mutation == "false-difference":
+                idp[4]["replacement_value_differs"] = False
+            else:
+                idp[4]["response_bytes"] = True
+            with self.subTest(mutation=mutation), self.assertRaises(lab.LabError):
+                lab.validate_case("refresh-a", synthetic_refresh_audit(), target, idp, None)
+        target, idp = synthetic_trace("refresh-a")
+        target.append({"role": "health", "credential_present": None})
+        with self.assertRaisesRegex(lab.LabError, "case_trace_shape"):
+            lab.validate_case("refresh-a", synthetic_refresh_audit(), target, idp, None)
+
+    def test_v6_accounting_failure_retains_safe_diagnostic_and_cleanup(self):
+        def mutate(name, source):
+            if name == "refresh-a":
+                source["supplied_session"]["oauth_refresh"]["credential_commit_count"] = 0
+        with tempfile.TemporaryDirectory(prefix="test-owned-oauth-", dir=ROOT) as directory:
+            output = Path(directory) / "evidence"
+            with self.assertRaisesRegex(lab.LabError, "refresh_exchange_accounting"):
+                self.execute_fake(FakeRunner(mutate), output)
+            evidence = json.loads((output / "oauth-code-lab-acceptance.json").read_bytes())
+            self.assertEqual(evidence["failure"]["diagnostic"]["scenario"], "refresh-a")
+            self.assertEqual(evidence["failure"]["diagnostic"]["actual"]["oauth_refresh"]["credential_commit_count"], 0)
+            self.assertEqual(evidence["offline"]["status"], "not_run")
+            self.assertTrue(evidence["cleanup"]["direct_refresh_capture_references_cleared"])
+
+    def test_controller_replay_acceptance_is_a_failure_but_all_offline_checks_still_execute(self):
+        runner = FakeRunner(replay_status=200)
+        with tempfile.TemporaryDirectory(prefix="test-owned-oauth-", dir=ROOT) as directory:
+            output = Path(directory) / "evidence"
+            with self.assertRaisesRegex(lab.LabError, "refresh_control_provider_result"):
+                self.execute_fake(runner, output)
+            payload = (output / "oauth-code-lab-acceptance.json").read_bytes()
+            evidence = json.loads(payload)
+            self.assertEqual(evidence["status"], "failed")
+            self.assertEqual(evidence["controller_refresh_replay"]["status"], "failed_or_not_run")
+            self.assertEqual(set(evidence["scenarios"]), set(NAMES))
+            self.assertEqual(evidence["offline"]["status"], "passed")
+            self.assertEqual(set(evidence["offline"]["bundles"]), set(NAMES))
+            self.assertEqual(set(evidence["offline"]["controlled_comparisons"]), set(CONTROLS))
+            self.assertEqual(len(runner.records), 32)
+            self.assertNotIn(b"synthetic-accepted-old-refresh-access", payload)
+            self.assertNotIn(b"synthetic-accepted-new-refresh-value", payload)
+
+    def test_selected_empty_v6_still_self_compares_without_fictitious_counts(self):
+        audit = synthetic_refresh_audit()
+        audit["oauth_code"] = synthetic_audit("wrong-verifier")["oauth_code"]
+        audit.update({"outcome": "oauth_code_exchange_unavailable", "coverage": "none", "checkpoints": [],
+                      "dispatched_resource_count": 0, "committed_resource_count": 0,
+                      "dispatched_request_count": 1, "response_bytes": 64, "refresh_performed": False})
+        for row in audit["resources"]:
+            row.update({"epoch": 1, "outcome": "not_dispatched", "status": None, "evidence_reference": None, "response_bytes": 0})
+        refresh = audit["oauth_refresh"]
+        refresh.update({"final_epoch": 1, "request_attempt_count": 0, "request_admitted_count": 0,
+                        "response_completed_count": 0, "credential_commit_count": 0, "response_bytes": 0,
+                        "body_state": "unavailable", "token_response_validated": False, "outcome": "not_reached"})
+        for key in ("status", "response_scope_matched", "declared_token_lifetime_seconds", "replacement_refresh_token_received",
+                    "replacement_value_differs", "prior_credential_evidence_reference", "boundary_resource_evidence_reference",
+                    "boundary_health_evidence_reference", "evidence_reference", "health"):
+            refresh[key] = None
+        source = {"schema": "venom-rendered-assessment/v1", "item_count": 0, "items": [], "supplied_session": audit}
+        compared = synthetic_self_comparison(source)
+        self.assertEqual(lab._self_compare(compared, source),
+                         {"only_in_after": 0, "only_in_before": 0, "changed": 0, "unchanged": 0})
+        compared["supplied_session_comparison"]["accounting"]["status"] = "not_comparable"
+        with self.assertRaisesRegex(lab.LabError, "self_compare_session"):
+            lab._self_compare(compared, source)
+
+    def test_selected_policy_and_grant_bytes_are_checked_after_every_offline_control(self):
+        class MutatedAfterOffline(FakeRunner):
+            def run(inner, args, *, label, **kwargs):
+                result = super().run(args, label=label, **kwargs)
+                if label == "refresh-health-loss-compare":
+                    selected = next(row for row in inner.scanner_arguments if "--session-policy" in row)
+                    path = Path(selected[selected.index("--session-policy") + 1])
+                    path.write_bytes(path.read_bytes() + b"# unexpected mutation\n")
+                return result
+        runner = MutatedAfterOffline()
+        with self.assertRaisesRegex(lab.LabError, "offline_selected_input_modified"):
+            self.execute_fake(runner)
+        self.assertEqual(len(runner.records), 32)
+        self.assertEqual(runner.records[-1]["id"], "refresh-health-loss-compare")
+
 
 class ControllerTests(unittest.TestCase):
+    def test_public_code_and_refresh_forms_are_closed_and_keep_distinct_encoding(self):
+        code = (b"grant_type=authorization_code&client_id=termivar-owned-public&redirect_uri="
+                b"http%3A%2F%2F127.0.0.1%3A1234%2Fcallback&code=original-synthetic-code&code_verifier=" + b"v" * 64)
+        refresh = (b"grant_type=refresh_token&client_id=termivar-owned-public&refresh_token="
+                   b"SYNTHETIC+RT%2BVALUE&scope=canary-read")
+        self.assertEqual(lab.public_token_grant(code, "http://127.0.0.1:1234/callback"), "authorization_code")
+        self.assertEqual(lab.public_token_grant(refresh, None), "refresh_token")
+        for body in (refresh + b"&code=unseen", refresh + b"&refresh_token=duplicate",
+                     refresh.replace(b"canary-read", b"openid"), refresh.replace(b"termivar-owned-public", b"other-client"),
+                     refresh.replace(b"SYNTHETIC+RT%2BVALUE", b"bad%0Avalue"),
+                     code.replace(b"%3A1234", b"%3A1235")):
+            with self.subTest(length=len(body)), self.assertRaises(lab.LabError):
+                lab.public_token_grant(body, "http://127.0.0.1:1234/callback")
+
+    def test_refresh_capture_is_bounded_private_and_never_proves_server_revocation(self):
+        relay = lab.TokenRelay(lab.PrivateValues())
+        self.addCleanup(relay.server.server_close)
+        relay.phase = "refresh-a"
+        original, replacement = "synthetic-private-refresh-value-one", "synthetic-private-refresh-value-two"
+        self.assertEqual(relay._capture_refresh("authorization_code", 200, {"refresh_token": original}),
+                         {"refresh_token_present": True, "replacement_value_differs": None})
+        self.assertEqual(relay._capture_refresh("refresh_token", 200, {"refresh_token": replacement}),
+                         {"refresh_token_present": True, "replacement_value_differs": True})
+        self.assertTrue(relay.refresh_completed("refresh-a"))
+        self.assertTrue(original not in repr(relay._refresh_captures["refresh-a"]))
+        with self.assertRaisesRegex(lab.LabError, "refresh_capture_duplicate"):
+            relay._capture_refresh("refresh_token", 200, {"refresh_token": replacement})
+        relay.phase = "foreign-scenario"
+        with self.assertRaisesRegex(lab.LabError, "refresh_capture_scope"):
+            relay._capture_refresh("authorization_code", 200, {"refresh_token": original})
+        self.assertEqual(len(relay._refresh_captures), 1)
+        relay.clear_refresh_values()
+        self.assertIsNone(relay._refresh_captures["refresh-a"].initial_refresh)
+
+    def test_controller_replay_is_after_all_scans_once_and_preserves_privacy_bound(self):
+        relay = lab.TokenRelay(lab.PrivateValues())
+        self.addCleanup(relay.server.server_close)
+        original = "synthetic-private-controller-old-refresh"
+        relay.private.add(original)
+        relay._refresh_captures["refresh-a"] = lab._RefreshCapture(original, True, 1, True, True)
+        relay.phase = "refresh-health-loss"
+        with mock.patch.object(lab, "request_bytes") as request:
+            with self.assertRaisesRegex(lab.LabError, "refresh_control_phase"):
+                relay.replay_initial_after_completed_flow("refresh-a")
+            request.assert_not_called()
+        relay.scanner_scenarios_complete = True
+
+        def send(url, method, body, headers, **kwargs):
+            self.assertEqual(relay.phase, "controller-old-refresh-refresh-a")
+            self.assertEqual(url, relay.origin + "/realms/termivar-owned-code/protocol/openid-connect/token")
+            self.assertEqual(method, "POST")
+            fields = dict(urllib.parse.parse_qsl(body.decode(), strict_parsing=True))
+            self.assertTrue(fields == {"grant_type": "refresh_token", "client_id": "termivar-owned-public",
+                                       "refresh_token": original, "scope": "canary-read"})
+            self.assertEqual(set(headers), {"Content-Type", "Accept-Encoding"})
+            return 400, [], b'{"error":"invalid_grant"}'
+        with mock.patch.object(lab, "request_bytes", side_effect=send) as request:
+            result = relay.replay_initial_after_completed_flow("refresh-a")
+            request.assert_called_once()
+        self.assertEqual(result["status"], 400)
+        self.assertEqual(result["error_class"], "invalid_grant")
+        self.assertIs(result["product_server_replay_detection_established"], False)
+        self.assertEqual(relay.phase, "refresh-health-loss")
+        self.assertIsNone(relay._refresh_captures["refresh-a"].initial_refresh)
+        relay.private.check(json.dumps(result).encode())
+        relay._refresh_captures["refresh-a"].initial_refresh = original
+        while len(relay.private._values) < 94:
+            relay.private.add("synthetic-private-capacity-" + str(len(relay.private._values)))
+        with mock.patch.object(lab, "request_bytes") as request:
+            with self.assertRaisesRegex(lab.LabError, "refresh_control_not_run") as raised:
+                relay.replay_initial_after_completed_flow("refresh-a")
+            request.assert_not_called()
+        self.assertEqual(raised.exception.diagnostic["status"], "not_run")
+        relay.clear_refresh_values()
+
+    def test_actual_owned_application_gate_is_distinct_from_active_provider_identity(self):
+        relay = lab.TokenRelay(lab.PrivateValues())
+        self.addCleanup(relay.server.server_close)
+        target = lab.TargetApplication(relay, "synthetic-private-resource-client-secret")
+        target.phase = "refresh-health-loss"
+        target.deny_renewed_health = True
+        relay._refresh_captures[target.phase] = lab._RefreshCapture("synthetic-private-old-refresh", True)
+        provider = {"active": True, "username": "canary-a", "aud": ["termivar-owned-resource"],
+                    "scope": "canary-read", "client_id": "termivar-owned-public"}
+        target.start()
+        def get_health():
+            connection = http.client.HTTPConnection("127.0.0.1", target.server.server_port, timeout=2)
+            try:
+                connection.request("GET", "/app/health", headers={"Authorization": "Bearer synthetic-owned-app-access-value"})
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                return json.loads(response.read(4097))
+            finally:
+                connection.close()
+        try:
+            with mock.patch.object(lab, "request_bytes", return_value=(200, [], json.dumps(provider).encode())) as introspection:
+                self.assertIs(get_health()["canary_a"], True)
+                capture = relay._refresh_captures[target.phase]
+                capture.refresh_responses, capture.replacement_returned, capture.replacement_value_differs = 1, True, True
+                self.assertIs(get_health()["canary_a"], False)
+                self.assertEqual(introspection.call_count, 2)
+            self.assertTrue(all(row["provider_active"] is True for row in target.trace))
+            self.assertIs(target.trace[-1]["application_gate_denied"], True)
+            self.assertIs(target.trace[-1]["accepted"], False)
+        finally:
+            target.stop()
+            relay.clear_refresh_values()
+
+    def test_private_registry_failure_is_not_swallowed_as_malformed_provider_json(self):
+        private = lab.PrivateValues()
+        relay = lab.TokenRelay(private)
+        owner, name, container, network = literal_owned_provider_boundary()
+        binding = lab.owned_idp_upstream(container, network, owner, name, relay.origin)
+        relay.bind_upstream(binding)
+        secret = b"synthetic-private-unregistered-provider-access"
+        body = b'{"access_token":"' + secret + b'"}'
+        relay.start()
+        try:
+            with mock.patch.object(lab._OwnedIdpUpstream, "request", return_value=(200, [("Content-Type", "application/json")], body)), \
+                 mock.patch.object(private, "add", side_effect=lab.LabError("private_registry_limit")):
+                connection = http.client.HTTPConnection("127.0.0.1", relay.server.server_port, timeout=2)
+                try:
+                    connection.request("POST", "/realms/termivar-owned-code/protocol/openid-connect/token",
+                                       b"grant_type=client_credentials", {"Content-Type": "application/x-www-form-urlencoded"})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 502)
+                    received = response.read(4097)
+                    self.assertTrue(secret not in received, "private registry failure leaked provider bytes")
+                finally:
+                    connection.close()
+            self.assertEqual(relay.errors, ["relay_failure"])
+        finally:
+            relay.stop()
+
     def test_owned_private_factory_requires_exact_independent_network_and_container_facts(self):
         owner, name, container, network = literal_owned_provider_boundary()
         binding = lab.owned_idp_upstream(container, network, owner, name, "http://127.0.0.1:1234")

@@ -2203,6 +2203,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "tempfile",
  "termivar-core",
  "termivar-oast",

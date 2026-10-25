@@ -2749,8 +2749,10 @@ impl WebAssessmentRuntimeBuilder {
                 .supplied_session_review
                 .as_ref()
                 .is_some_and(|(policy, _)| {
-                    policy.version() == SuppliedSessionPolicyVersion::V3
-                        || policy.version() == SuppliedSessionPolicyVersion::V4
+                    !matches!(
+                        policy.version(),
+                        SuppliedSessionPolicyVersion::V1 | SuppliedSessionPolicyVersion::V2
+                    )
                 })
         {
             return Err(WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy);

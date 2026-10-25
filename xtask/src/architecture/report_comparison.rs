@@ -14,6 +14,7 @@ pub(super) const SCANNER_SOURCES: &[&str] = &[
     "reporting/comparison/import.rs",
     "reporting/comparison/import/audits.rs",
     "reporting/comparison/import/audits/supplied_session_oauth_code.rs",
+    "reporting/comparison/import/audits/supplied_session_oauth_refresh.rs",
     "reporting/comparison/html.rs",
     "reporting/comparison_tests.rs",
 ];
@@ -28,8 +29,9 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         .map(|value| (*value).to_owned())
         .collect();
     if actual != expected {
-        violations
-            .push("comparison source ownership must remain the exact six audited files".to_owned());
+        violations.push(
+            "comparison source ownership must remain the exact seven audited files".to_owned(),
+        );
     }
     for relative in SCANNER_SOURCES
         .iter()
@@ -401,7 +403,7 @@ impl<'ast> Visit<'ast> for CliVisitor {
             relative: "CLI macro",
             violations: BTreeSet::new(),
             deserialize_impls: 0,
-            oauth_publication_wrapper_is_exact: false,
+            oauth_publication_wrappers_exact: BTreeSet::new(),
         };
         guard.inspect_tokens(mac.tokens.clone());
         self.violations.extend(guard.violations);
@@ -437,9 +439,14 @@ fn source_violations(relative: &str, source: &str) -> Result<Vec<String>, syn::E
         relative,
         violations: BTreeSet::new(),
         deserialize_impls: 0,
-        oauth_publication_wrapper_is_exact: oauth_publication_wrapper_is_exact(
-            relative, source, &syntax,
-        ),
+        oauth_publication_wrappers_exact: [
+            "validate_supplied_session_oauth_code",
+            "validate_supplied_session_oauth_refresh",
+        ]
+        .into_iter()
+        .filter(|name| oauth_publication_wrapper_is_exact(relative, source, &syntax, name))
+        .map(str::to_owned)
+        .collect(),
     };
     visitor.visit_file(&syntax);
     let expected_deserialize = usize::from(relative.ends_with("/import.rs"));
@@ -635,14 +642,20 @@ struct ComparisonVisitor<'a> {
     relative: &'a str,
     violations: BTreeSet<String>,
     deserialize_impls: usize,
-    oauth_publication_wrapper_is_exact: bool,
+    oauth_publication_wrappers_exact: BTreeSet<String>,
 }
 
-fn oauth_publication_wrapper_is_exact(relative: &str, source: &str, syntax: &syn::File) -> bool {
-    let name = "validate_supplied_session_oauth_code";
-    let expected = match relative {
-        "reporting/comparison.rs" => "fn validate_supplied_session_oauth_code(value: &Value,) -> Result<ImportedSuppliedSessionAudit, ComparisonError> { import::validate_supplied_session_oauth_code(value) }",
-        "reporting/comparison/import.rs" => "fn validate_supplied_session_oauth_code(value: &Value,) -> Result<super::ImportedSuppliedSessionAudit, ComparisonError> { audits::validate_supplied_session_oauth_code(value, &BTreeMap::new()) }",
+fn oauth_publication_wrapper_is_exact(
+    relative: &str,
+    source: &str,
+    syntax: &syn::File,
+    name: &str,
+) -> bool {
+    let expected = match (relative, name) {
+        ("reporting/comparison.rs", "validate_supplied_session_oauth_code") => "fn validate_supplied_session_oauth_code(value: &Value,) -> Result<ImportedSuppliedSessionAudit, ComparisonError> { import::validate_supplied_session_oauth_code(value) }",
+        ("reporting/comparison/import.rs", "validate_supplied_session_oauth_code") => "fn validate_supplied_session_oauth_code(value: &Value,) -> Result<super::ImportedSuppliedSessionAudit, ComparisonError> { audits::validate_supplied_session_oauth_code(value, &BTreeMap::new()) }",
+        ("reporting/comparison.rs", "validate_supplied_session_oauth_refresh") => "fn validate_supplied_session_oauth_refresh(value: &Value,) -> Result<ImportedSuppliedSessionAudit, ComparisonError> { import::validate_supplied_session_oauth_refresh(value) }",
+        ("reporting/comparison/import.rs", "validate_supplied_session_oauth_refresh") => "fn validate_supplied_session_oauth_refresh(value: &Value,) -> Result<super::ImportedSuppliedSessionAudit, ComparisonError> { audits::validate_supplied_session_oauth_refresh(value, &BTreeMap::new()) }",
         _ => return false,
     };
     syntax
@@ -818,6 +831,31 @@ impl ComparisonVisitor<'_> {
                     "super::MAX_IDENTIFIER_BYTES",
                     "super::SUPPLIED_SESSION_CAPABILITY",
                 ][..],
+                "reporting/comparison/import/audits/supplied_session_oauth_refresh.rs" => &[
+                    "super::array",
+                    "super::boolean",
+                    "super::check",
+                    "super::digest",
+                    "super::keys",
+                    "super::number",
+                    "super::object",
+                    "super::optional_boolean",
+                    "super::optional_http_status",
+                    "super::optional_text",
+                    "super::required",
+                    "super::selected_object",
+                    "super::string",
+                    "super::token",
+                    "super::validate_supplied_session_oauth_code",
+                    "super::validate_supplied_session_checkpoint",
+                    "super::BTreeMap",
+                    "super::BTreeSet",
+                    "super::ComparisonError",
+                    "super::ImportedItem",
+                    "super::ImportedSuppliedSessionAudit",
+                    "super::Value",
+                    "super::MAX_IDENTIFIER_BYTES",
+                ][..],
                 "reporting/comparison/html.rs" => &[
                     "super::ComparisonDocument",
                     "super::ComparisonError",
@@ -969,7 +1007,10 @@ impl<'ast> Visit<'ast> for ComparisonVisitor<'_> {
             return;
         }
         if self.relative == "reporting/comparison/import/audits.rs"
-            && item.ident == "supplied_session_oauth_code"
+            && matches!(
+                item.ident.to_string().as_str(),
+                "supplied_session_oauth_code" | "supplied_session_oauth_refresh"
+            )
             && item.content.is_none()
             && item.attrs.is_empty()
             && matches!(item.vis, Visibility::Inherited)
@@ -980,12 +1021,13 @@ impl<'ast> Visit<'ast> for ComparisonVisitor<'_> {
     }
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
-        if item.sig.ident == "validate_supplied_session_oauth_code"
-            && matches!(
-                self.relative,
-                "reporting/comparison.rs" | "reporting/comparison/import.rs"
-            )
-        {
+        if matches!(
+            item.sig.ident.to_string().as_str(),
+            "validate_supplied_session_oauth_code" | "validate_supplied_session_oauth_refresh"
+        ) && matches!(
+            self.relative,
+            "reporting/comparison.rs" | "reporting/comparison/import.rs"
+        ) {
             let attributes: Vec<_> = item
                 .attrs
                 .iter()
@@ -994,7 +1036,9 @@ impl<'ast> Visit<'ast> for ComparisonVisitor<'_> {
             if matches!(&item.vis, Visibility::Restricted(visibility) if visibility.path.is_ident("super"))
                 && attributes.len() == 1
                 && matches!(&attributes[0].meta, syn::Meta::List(meta) if meta.path.is_ident("cfg") && meta.tokens.to_string() == "feature = \"supplied-session-review\"")
-                && self.oauth_publication_wrapper_is_exact
+                && self
+                    .oauth_publication_wrappers_exact
+                    .contains(&item.sig.ident.to_string())
             {
                 // Only this exact pure publication delegate is feature-gated.
                 // All nested reader code remains feature-independent.
@@ -1002,7 +1046,7 @@ impl<'ast> Visit<'ast> for ComparisonVisitor<'_> {
                 self.visit_block(&item.block);
                 return;
             }
-            self.reject("V5 publication delegates must retain only the exact feature gate, parent visibility, byte-free signature, and pure closed-reader call");
+            self.reject("V5/V6 publication delegates must retain only the exact feature gate, parent visibility, byte-free signature, and per-name pure closed-reader call");
         }
         syn::visit::visit_item_fn(self, item);
     }
@@ -1126,6 +1170,7 @@ mod tests {
     const AUDITS: &str =
         include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits.rs");
     const OAUTH_CODE_AUDIT: &str = include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_code.rs");
+    const OAUTH_REFRESH_AUDIT: &str = include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_refresh.rs");
     const WORDPRESS_VERSION: &str =
         include_str!("../../../crates/termivar-scanner/src/wordpress_version.rs");
     const HTML: &str =
@@ -1187,6 +1232,10 @@ mod tests {
                 "reporting/comparison/import/audits/supplied_session_oauth_code.rs",
                 OAUTH_CODE_AUDIT,
             ),
+            (
+                "reporting/comparison/import/audits/supplied_session_oauth_refresh.rs",
+                OAUTH_REFRESH_AUDIT,
+            ),
         ] {
             let violations = source_violations(path, source).unwrap();
             assert!(violations.is_empty(), "{path}: {violations:?}");
@@ -1221,6 +1270,60 @@ mod tests {
             .unwrap()
             .is_empty());
         }
+    }
+
+    #[test]
+    fn oauth_refresh_publication_is_per_name_and_reader_remains_authority_free() {
+        for (path, source, correct, wrong) in [
+            (
+                "reporting/comparison.rs",
+                ROOT,
+                "import::validate_supplied_session_oauth_refresh(value)",
+                "import::validate_supplied_session_oauth_code(value)",
+            ),
+            (
+                "reporting/comparison/import.rs",
+                IMPORT,
+                "audits::validate_supplied_session_oauth_refresh(value, &BTreeMap::new())",
+                "audits::validate_supplied_session_oauth_code(value, &BTreeMap::new())",
+            ),
+        ] {
+            for (from, to) in [
+                (correct, wrong),
+                (
+                    "fn validate_supplied_session_oauth_refresh(",
+                    "fn unreviewed_refresh_publication(",
+                ),
+            ] {
+                let changed = source.replace(from, to);
+                assert_ne!(changed, source, "stale V6 publication mutation {from}");
+                assert!(!source_violations(path, &changed).unwrap().is_empty());
+            }
+        }
+        for addition in [
+            "#[cfg(feature = \"supplied-session-review\")] fn hidden_reader() {}",
+            "use reqwest::Client;",
+            "mod alternate_reader;",
+            "fn wrong_authority() { super::super::super::WebAssessmentRunReport::new(); }",
+        ] {
+            let changed = format!("{OAUTH_REFRESH_AUDIT}\n{addition}");
+            assert!(!source_violations(
+                "reporting/comparison/import/audits/supplied_session_oauth_refresh.rs",
+                &changed
+            )
+            .unwrap()
+            .is_empty());
+        }
+        let changed = AUDITS.replace(
+            "mod supplied_session_oauth_refresh;",
+            "pub(crate) mod supplied_session_oauth_refresh;",
+        );
+        assert_ne!(changed, AUDITS);
+        assert!(
+            !source_violations("reporting/comparison/import/audits.rs", &changed)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

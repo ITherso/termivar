@@ -143,7 +143,8 @@ use super::{
     MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
     MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
     SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
@@ -1793,6 +1794,7 @@ const fn valid_v1_supplied_session_outcome(outcome: SuppliedSessionAuditOutcome)
             | SuppliedSessionAuditOutcome::LoginSubmitUnavailable
             | SuppliedSessionAuditOutcome::LoginCookieUnavailable
             | SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable
+            | SuppliedSessionAuditOutcome::OAuthRefreshUnavailable
     )
 }
 
@@ -2182,12 +2184,28 @@ fn validate_supplied_session_audit(
         return Ok(());
     };
     let oauth_code = audit.oauth_code();
-    let oauth_schema = audit.schema() == SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA;
+    let oauth_refresh_schema = audit.schema() == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA;
+    let oauth_refresh = audit.oauth_refresh();
+    if oauth_refresh_schema != oauth_refresh.is_some()
+        || oauth_refresh.is_some_and(|refresh| !refresh.is_consistent_for(audit))
+    {
+        return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
+    }
+    let oauth_schema = matches!(
+        audit.schema(),
+        SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA | SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
+    );
     if oauth_schema != oauth_code.is_some() {
         return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
     }
     let oauth_request_count =
         oauth_code.map_or(0, |code| usize::from(code.request_admitted_count()));
+    let oauth_refresh_health = oauth_refresh.and_then(|refresh| refresh.health());
+    let oauth_refresh_requests = oauth_refresh.map_or(0, |refresh| {
+        usize::from(refresh.request_admitted_count()) + usize::from(refresh.health().is_some())
+    });
+    let oauth_refresh_applied =
+        oauth_refresh.is_some_and(|refresh| refresh.credential_commit_count() == 1);
     let renewal = audit.renewal();
     let renewal_schema = audit.schema() == SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA;
     if renewal_schema != renewal.is_some() {
@@ -2237,7 +2255,13 @@ fn validate_supplied_session_audit(
                 })
         });
     let child_response_bytes = child_response_bytes
-        .and_then(|bytes| bytes.checked_add(oauth_code.map_or(0, |code| code.response_bytes())));
+        .and_then(|bytes| bytes.checked_add(oauth_code.map_or(0, |code| code.response_bytes())))
+        .and_then(|bytes| {
+            bytes.checked_add(oauth_refresh.map_or(0, |refresh| refresh.response_bytes()))
+        })
+        .and_then(|bytes| {
+            bytes.checked_add(oauth_refresh_health.map_or(0, |health| health.response_bytes()))
+        });
     let login_request_count = audit.login().map_or(0_u8, |login| {
         u8::from(login.page_dispatched()).saturating_add(u8::from(login.submit_dispatched()))
     });
@@ -2248,7 +2272,7 @@ fn validate_supplied_session_audit(
         audit.cookie_lifecycle(),
     ) {
         (
-            SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+            SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA | SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
             SuppliedSessionCredentialMechanism::AuthorizationHeader,
             None,
             None,
@@ -2257,22 +2281,29 @@ fn validate_supplied_session_audit(
                 == SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce
                 && audit.login().is_none()
                 && renewal.is_none()
-                && (1..=3).contains(&selected_resource_count)
+                && if oauth_refresh_schema {
+                    selected_resource_count == 2
+                } else {
+                    (1..=3).contains(&selected_resource_count)
+                }
                 && oauth_code.is_some_and(|code| {
                     code.is_consistent()
                         && code.configured_token_response_byte_limit()
                             <= audit.response_byte_limit()
                         && audit.checkpoints().len() <= selected_resource_count + 1
                         && if code.credential_commit_count() == 1 {
-                            matches!(
-                                audit.outcome(),
-                                SuppliedSessionAuditOutcome::Complete
-                                    | SuppliedSessionAuditOutcome::StartupUnhealthy
-                                    | SuppliedSessionAuditOutcome::SessionLost
-                                    | SuppliedSessionAuditOutcome::ResourceUnavailable
-                                    | SuppliedSessionAuditOutcome::RuntimeLimit
-                                    | SuppliedSessionAuditOutcome::Cancelled
-                            )
+                            (oauth_refresh_schema
+                                && audit.outcome()
+                                    == SuppliedSessionAuditOutcome::OAuthRefreshUnavailable)
+                                || matches!(
+                                    audit.outcome(),
+                                    SuppliedSessionAuditOutcome::Complete
+                                        | SuppliedSessionAuditOutcome::StartupUnhealthy
+                                        | SuppliedSessionAuditOutcome::SessionLost
+                                        | SuppliedSessionAuditOutcome::ResourceUnavailable
+                                        | SuppliedSessionAuditOutcome::RuntimeLimit
+                                        | SuppliedSessionAuditOutcome::Cancelled
+                                )
                         } else {
                             audit.checkpoints().is_empty()
                             && audit.resources().iter().all(|resource| {
@@ -2492,7 +2523,9 @@ fn validate_supplied_session_audit(
         || !valid_supplied_session_principal_alias(audit.principal_alias())
         || audit.resources().is_empty()
         || audit.resources().len() > MAX_SUPPLIED_SESSION_RESOURCES
-        || audit.checkpoints().len() + usize::from(renewal_health.is_some())
+        || audit.checkpoints().len()
+            + usize::from(renewal_health.is_some())
+            + usize::from(oauth_refresh_health.is_some())
             > MAX_SUPPLIED_SESSION_CHECKPOINTS
         || selected_resource_count != audit.resources().len()
         || dispatched_resource_count != actual_dispatched_resource_count
@@ -2508,6 +2541,7 @@ fn validate_supplied_session_audit(
                 .and_then(|count| count.checked_add(usize::from(login_request_count)))
                 .and_then(|count| count.checked_add(renewal_request_count))
                 .and_then(|count| count.checked_add(oauth_request_count))
+                .and_then(|count| count.checked_add(oauth_refresh_requests))
                 .ok_or(AssessmentRunReportError::SuppliedSessionAuditMismatch)?
         || child_response_bytes != Some(audit.response_bytes())
         || !valid_supplied_session_response_limit(
@@ -2560,10 +2594,11 @@ fn validate_supplied_session_audit(
             .any(|(index, resource)| {
                 usize::from(resource.sequence()) != index
                     || resource.epoch()
-                        != if renewal_applied
-                            && renewal.is_some_and(|renewal| {
-                                resource.sequence() >= renewal.after_resource_count()
-                            })
+                        != if oauth_refresh_applied && resource.sequence() >= 1
+                            || renewal_applied
+                                && renewal.is_some_and(|renewal| {
+                                    resource.sequence() >= renewal.after_resource_count()
+                                })
                         {
                             2
                         } else {
@@ -2574,7 +2609,7 @@ fn validate_supplied_session_audit(
                         "supplied-session-resource-sha256:",
                     )
             })
-        || audit.refresh_performed() != renewal_applied
+        || audit.refresh_performed() != (renewal_applied || oauth_refresh_applied)
         || audit.anonymous_fallback_performed()
         || audit.continuous_authentication_established()
         || (matches!(

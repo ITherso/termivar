@@ -84,6 +84,7 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     XML_EXTERNAL_ENTITY_RUNTIME_SOURCE,
     SUPPLIED_SESSION_RUNTIME_SOURCE,
     SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE,
+    SUPPLIED_SESSION_OAUTH_REFRESH_RUNTIME_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
     WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
     WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
@@ -145,6 +146,8 @@ const SUPPLIED_SESSION_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs";
 const SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_code.rs";
+const SUPPLIED_SESSION_OAUTH_REFRESH_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_refresh.rs";
 const WORDPRESS_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
 const WORDPRESS_DISCOVERY_RUNTIME_SOURCE: &str =
@@ -1991,7 +1994,35 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
         .split_once("impl OAuthCodeRequestBroker {")
         .and_then(|(_, tail)| tail.split_once("fn oauth_content_length_matches("))
         .map(|(body, _)| body);
+    let code_dispatch = oauth_dispatch
+        .and_then(|body| body.split_once("    pub(crate) async fn collect("))
+        .map(|(_, body)| body);
+    let refresh_dispatch = oauth_dispatch
+        .and_then(|body| body.split_once("    pub(crate) async fn collect_refresh("))
+        .and_then(|(_, tail)| tail.split_once("    pub(crate) async fn collect("))
+        .map(|(body, _)| body);
+    let private_post_is_exact = |body: &str| {
+        body.matches(".post(").count() == 1
+            && body.matches(".header(").count() == 3
+            && body.matches(".collect_built_request(").count() == 1
+            && body.contains(".header(CONTENT_TYPE, \"application/x-www-form-urlencoded\")")
+            && body.contains(".header(ACCEPT, \"application/json\")")
+            && body.contains(".header(reqwest::header::ACCEPT_ENCODING, \"identity\")")
+            && ![
+                ".get(",
+                ".put(",
+                ".delete(",
+                ".patch(",
+                ".head(",
+                ".send(",
+                ".header(AUTHORIZATION",
+                ".header(COOKIE",
+            ]
+            .iter()
+            .any(|marker| body.contains(marker))
+    };
     if oauth_isolation.is_none_or(|body| {
+        let compact = body.split_whitespace().collect::<String>();
         body.matches("Client::builder()").count() != 1
             || body.matches(".redirect(RedirectPolicy::none())").count() != 1
             || body.matches(".retry(reqwest::retry::never())").count() != 1
@@ -2006,10 +2037,18 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             || !body.contains("tls_observation: None")
             || !body.contains("owned_xml_https_test_profile: None")
             || !body.contains("attempted: std::sync::atomic::AtomicBool::new(false)")
+            || !compact.contains("(policy.oauth_refresh_policy().is_some()!=refresh_mint.is_some())")
+            || !compact.contains("refresh_mint.as_ref().is_some_and(|refresh|!refresh.matches_policy(policy))")
             || body.contains(".tls_built_in_root_certs(")
             || body.contains(".add_root_certificate(")
             || body.contains(".cookie_store(")
     }) || oauth_dispatch.is_none_or(|body| {
+        body.matches("    pub(crate) async fn collect(").count() != 1
+            || body.matches("    pub(crate) async fn collect_refresh(").count() != 1
+            || body.matches(".post(").count() != 2
+            || body.matches(".header(").count() != 6
+            || body.matches(".collect_built_request(").count() != 2
+    }) || code_dispatch.is_none_or(|body| {
         let compact = body.split_whitespace().collect::<String>();
         ["!self.mint.is_valid_for(policy)", "!descriptor.validate_against(policy)",
          "!grant.matches_policy(policy)", "self.broker.validate_target(&descriptor.target).is_err()",
@@ -2021,17 +2060,26 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
          "DecisionExecutionStage::Active", "oauth_content_length_matches(&response)",
          "oauth_json_representation(&response)", "Zeroizing::new(std::mem::take(&mutresponse.body))"]
             .iter().any(|marker| !compact.contains(marker))
-            || body.matches(".post(").count() != 1
-            || body.matches(".header(").count() != 3
-            || body.matches(".collect_built_request(").count() != 1
-            || !body.contains(".header(CONTENT_TYPE, \"application/x-www-form-urlencoded\")")
-            || !body.contains(".header(ACCEPT, \"application/json\")")
-            || !body.contains(".header(reqwest::header::ACCEPT_ENCODING, \"identity\")")
-            || [".get(", ".put(", ".delete(", ".patch(", ".head(", ".send(",
-                ".header(AUTHORIZATION", ".header(COOKIE"]
-                .iter().any(|marker| body.contains(marker))
+            || !private_post_is_exact(body)
+    }) || refresh_dispatch.is_none_or(|body| {
+        let compact = body.split_whitespace().collect::<String>();
+        [
+            "self.refresh.as_ref().ok_or(OAuthCodeRequestError::InvalidDescriptor)?",
+            "!self.attempted.load(std::sync::atomic::Ordering::SeqCst)",
+            "!self.mint.is_valid_for(policy)", "!descriptor.validate_against(policy)",
+            "!permit.is_valid_for(policy,&phase.mint)",
+            "self.broker.validate_target(&descriptor.target).is_err()",
+            "if!self.attempted.load(std::sync::atomic::Ordering::SeqCst)||!self.mint.is_valid_for(policy)||!descriptor.validate_against(policy)||!permit.is_valid_for(policy,&phase.mint)||self.broker.validate_target(&descriptor.target).is_err(){returnErr(OAuthCodeRequestError::InvalidDescriptor);}",
+            "phase.attempted.compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst,)",
+            "ifphase.attempted.compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst,).is_err(){returnErr(OAuthCodeRequestError::AlreadyAttempted);}",
+            "returnErr(OAuthCodeRequestError::AlreadyAttempted)",
+            "permit.compose_form_body(policy)", "SUPPLIED_SESSION_OAUTH_REFRESH_ACTION_ID",
+            "DecisionExecutionStage::Active", "oauth_content_length_matches(&response)",
+            "oauth_json_representation(&response)", "Zeroizing::new(std::mem::take(&mutresponse.body))",
+        ].iter().any(|marker| !compact.contains(marker))
+            || !private_post_is_exact(body)
     }) {
-        violations.push("the imported OAuth-code child must remain one sealed exact-IdP, identity-coded, anonymous, no-proxy, normal-TLS, once-attempted POST under shared parent accounting with descriptor/grant/freshness checks and a private guarded response".to_owned());
+        violations.push("the imported OAuth-code child must remain one sealed exact-IdP shared-accounting client with separately sealed once-only code/refresh POST phases, exact descriptors, committed renewal permit, identity bytes and private guarded responses".to_owned());
     }
     if !http_evidence.contains("complete_response_observer_seal::Sealed")
         || !http_evidence
@@ -2802,6 +2850,7 @@ fn authority_prelude_is_closed(
 ) -> bool {
     struct PreludeVisitor {
         allowed_format_macros: usize,
+        allowed_fixed_session_policy_macros: usize,
         forbidden_macro_invocations: usize,
         critical_assignments: usize,
         block_items: usize,
@@ -2833,6 +2882,14 @@ fn authority_prelude_is_closed(
                 && normalized_token_text(&expression.tokens) == "\"endpoint:{}\",root.url";
             if allowed_format {
                 self.allowed_format_macros = self.allowed_format_macros.saturating_add(1);
+            } else if expression.path.leading_colon.is_none()
+                && expression.path.segments.len() == 1
+                && expression.path.is_ident("matches")
+                && normalized_token_text(&expression.tokens)
+                    == "policy.version(),SuppliedSessionPolicyVersion::V1|SuppliedSessionPolicyVersion::V2"
+            {
+                self.allowed_fixed_session_policy_macros =
+                    self.allowed_fixed_session_policy_macros.saturating_add(1);
             } else {
                 self.forbidden_macro_invocations =
                     self.forbidden_macro_invocations.saturating_add(1);
@@ -2885,6 +2942,17 @@ fn authority_prelude_is_closed(
             visit::visit_expr_return(self, expression);
         }
 
+        fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+            let wordpress_refusal = matches!(expression.then_branch.stmts.as_slice(),
+                [syn::Stmt::Expr(syn::Expr::Return(returned), Some(_))]
+                    if web_assessment_build_typed_error_return_variant(returned)
+                        == Some("WordPressSuppliedSessionUnsupportedPolicy"));
+            if wordpress_refusal && !wordpress_fixed_session_if_is_exact(expression) {
+                self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
+            }
+            visit::visit_expr_if(self, expression);
+        }
+
         fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
             self.forbidden_control_flow = self.forbidden_control_flow.saturating_add(1);
             visit::visit_expr_loop(self, expression);
@@ -2923,6 +2991,7 @@ fn authority_prelude_is_closed(
 
     let mut visitor = PreludeVisitor {
         allowed_format_macros: 0,
+        allowed_fixed_session_policy_macros: 0,
         forbidden_macro_invocations: 0,
         critical_assignments: 0,
         block_items: 0,
@@ -2984,11 +3053,13 @@ fn authority_prelude_is_closed(
     let profile_is_exact = match build_profile {
         AssessmentBuildProfile::Fixture => {
             visitor.allowed_format_macros == 0
+                && visitor.allowed_fixed_session_policy_macros == 0
                 && visitor.reviewed_tries == fixture_tries
                 && visitor.typed_error_returns.is_empty()
         },
         AssessmentBuildProfile::Production => {
             visitor.allowed_format_macros == 1
+                && visitor.allowed_fixed_session_policy_macros == 1
                 && visitor.reviewed_tries == production_tries
                 && visitor.typed_error_returns == production_error_returns
         },
@@ -3000,6 +3071,77 @@ fn authority_prelude_is_closed(
         && visitor.forbidden_control_flow == 0
         && visitor.invalid_tries == 0
         && profile_is_exact
+}
+
+fn wordpress_fixed_session_if_is_exact(expression: &syn::ExprIf) -> bool {
+    if expression.else_branch.is_some() {
+        return false;
+    }
+    let syn::Expr::Binary(condition) = expression.cond.as_ref() else {
+        return false;
+    };
+    if !condition.attrs.is_empty()
+        || !matches!(condition.op, syn::BinOp::And(_))
+        || !expression_is_self_field(&condition.left, "wordpress_supplied_session")
+    {
+        return false;
+    }
+    let syn::Expr::MethodCall(selected) = condition.right.as_ref() else {
+        return false;
+    };
+    let syn::Expr::MethodCall(borrowed) = selected.receiver.as_ref() else {
+        return false;
+    };
+    if !selected.attrs.is_empty()
+        || selected.method != "is_some_and"
+        || selected.turbofish.is_some()
+        || selected.args.len() != 1
+        || !borrowed.attrs.is_empty()
+        || borrowed.method != "as_ref"
+        || borrowed.turbofish.is_some()
+        || !borrowed.args.is_empty()
+        || !expression_is_self_field(&borrowed.receiver, "supplied_session_review")
+    {
+        return false;
+    }
+    let Some(syn::Expr::Closure(closure)) = selected.args.first() else {
+        return false;
+    };
+    if !closure.attrs.is_empty()
+        || closure.lifetimes.is_some()
+        || closure.constness.is_some()
+        || closure.movability.is_some()
+        || closure.asyncness.is_some()
+        || closure.capture.is_some()
+        || !matches!(closure.output, syn::ReturnType::Default)
+        || !matches!(closure.inputs.first(), Some(syn::Pat::Tuple(tuple))
+            if closure.inputs.len() == 1 && tuple.attrs.is_empty() && tuple.elems.len() == 2
+                && matches!(tuple.elems.first(), Some(syn::Pat::Ident(name))
+                    if name.attrs.is_empty() && name.by_ref.is_none() && name.mutability.is_none()
+                        && name.ident == "policy" && name.subpat.is_none())
+                && matches!(tuple.elems.last(), Some(syn::Pat::Wild(wild)) if wild.attrs.is_empty()))
+    {
+        return false;
+    }
+    let syn::Expr::Block(body) = closure.body.as_ref() else {
+        return false;
+    };
+    let [syn::Stmt::Expr(syn::Expr::Unary(negated), None)] = body.block.stmts.as_slice() else {
+        return false;
+    };
+    let syn::Expr::Macro(selection) = negated.expr.as_ref() else {
+        return false;
+    };
+    body.attrs.is_empty()
+        && body.label.is_none()
+        && negated.attrs.is_empty()
+        && matches!(negated.op, syn::UnOp::Not(_))
+        && selection.attrs.is_empty()
+        && selection.mac.path.leading_colon.is_none()
+        && selection.mac.path.is_ident("matches")
+        && matches!(selection.mac.delimiter, syn::MacroDelimiter::Paren(_))
+        && normalized_token_text(&selection.mac.tokens)
+            == "policy.version(),SuppliedSessionPolicyVersion::V1|SuppliedSessionPolicyVersion::V2"
 }
 
 fn reviewed_authority_local_is_exact(local: &syn::Local) -> bool {
@@ -13168,6 +13310,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                     "oauth_code"
                 )
                 | (
+                    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs",
+                    "oauth_refresh"
+                )
+                | (
                     "crates/termivar-scanner/src/web_runtime.rs",
                     "wordpress_runtime"
                 )
@@ -19672,5 +19818,112 @@ mod tests {
                 "accepted removed OAuth guard {from}"
             );
         }
+    }
+
+    #[test]
+    fn oauth_code_and_refresh_posts_each_keep_their_own_closed_once_permit() {
+        let mut http =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence.rs").to_owned();
+        for child in [
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/policy.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/probe.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/response.rs"),
+        ] {
+            http.push_str(child);
+        }
+        let broker =
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs");
+        let needle = "the imported OAuth-code child must remain one sealed exact-IdP";
+        let baseline = inspect_assessment_transport_markers(&http, broker).join("\n");
+        assert!(!baseline.contains(needle), "{baseline}");
+        for (start, from, to) in [
+            (
+                "    pub(crate) async fn collect(",
+                "!self.mint.is_valid_for(policy)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect(",
+                "!grant.matches_policy(policy)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_refresh(",
+                "!permit.is_valid_for(policy, &phase.mint)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_refresh(",
+                "!descriptor.validate_against(policy)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_refresh(",
+                "!self.attempted.load(std::sync::atomic::Ordering::SeqCst)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_refresh(",
+                ".compare_exchange(",
+                ".swap(",
+            ),
+            (
+                "    pub(crate) async fn collect_refresh(",
+                "SUPPLIED_SESSION_OAUTH_REFRESH_ACTION_ID",
+                "SUPPLIED_SESSION_OAUTH_CODE_ACTION_ID",
+            ),
+        ] {
+            let (head, tail) = broker
+                .split_once(start)
+                .expect("exact reviewed phase must exist");
+            assert!(tail.contains(from), "stale phase mutation {from}");
+            let changed = format!("{head}{start}{}", tail.replacen(from, to, 1));
+            assert_ne!(changed, broker);
+            assert!(
+                inspect_assessment_transport_markers(&http, &changed)
+                    .join("\n")
+                    .contains(needle),
+                "accepted phase mutation {from}"
+            );
+        }
+    }
+
+    #[test]
+    fn wordpress_session_builder_allowlist_cannot_admit_oauth_or_invert_refusal() {
+        let source =
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/web_assessment.rs");
+        let baseline = inspect_web_assessment_composition(source).unwrap();
+        assert!(baseline.is_empty(), "{baseline:#?}");
+        let from = "SuppliedSessionPolicyVersion::V2";
+        assert!(
+            source.contains(from),
+            "stale closed builder mutation {from}"
+        );
+        let changed = source.replacen(from, "SuppliedSessionPolicyVersion::V6", 1);
+        assert_ne!(changed, source);
+        let violations = inspect_web_assessment_composition(&changed)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("exact four-way TLS/owned-HTTPS cfg"),
+            "{violations}"
+        );
+        let anchor = "if self.wordpress_supplied_session";
+        let (head, tail) = source
+            .split_once(anchor)
+            .expect("reviewed WordPress selection must exist");
+        assert!(tail.contains("!matches!("));
+        let changed = format!(
+            "{head}{anchor}{}",
+            tail.replacen("!matches!(", "matches!(", 1)
+        );
+        assert_ne!(changed, source);
+        let violations = inspect_web_assessment_composition(&changed)
+            .unwrap()
+            .join("\n");
+        assert!(
+            violations.contains("exact four-way TLS/owned-HTTPS cfg"),
+            "{violations}"
+        );
     }
 }
