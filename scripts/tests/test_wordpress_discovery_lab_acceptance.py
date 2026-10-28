@@ -56,6 +56,7 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
         "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
         "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
+        "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
         "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
         "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
     ],
@@ -63,7 +64,7 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "complete health-qualified session-resource HTML may nominate public WordPress "
         "metadata; the credential is not sent to metadata or fingerprint requests; "
         "authenticated-page fingerprint acquisition is not selected; WordPress "
-        "supplied-session composition remains limited to V1/V2; V3/V4/V5/V6 are rejected "
+        "supplied-session composition remains limited to V1/V2; V3/V4/V5/V6/V7 are rejected "
         "before their secret files are read"
     ),
 }
@@ -1633,7 +1634,7 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "credential is not sent to metadata or fingerprint requests",
             "authenticated-page fingerprint acquisition is not selected",
             "WordPress supplied-session composition remains limited to V1/V2",
-            "V3/V4/V5/V6 are rejected before their secret files are read",
+            "V3/V4/V5/V6/V7 are rejected before their secret files are read",
         ):
             self.assertIn(clause, limitation)
 
@@ -1708,11 +1709,19 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         ):
             runner._validate_discovery_capability(missing_v6)
 
+        missing_v7 = copy.deepcopy(document)
+        missing_v7["surfaces"][1]["prerequisites"].remove(
+            "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy"
+        )
+        with self.assertRaisesRegex(runner.AcceptanceError,
+                                   "capabilities do not report compiled supplied-session review"):
+            runner._validate_discovery_capability(missing_v7)
+
         stale_wordpress_boundary = copy.deepcopy(document)
         stale_wordpress_boundary["surfaces"][1]["limitation"] = (
             stale_wordpress_boundary["surfaces"][1]["limitation"].replace(
+                "V3/V4/V5/V6/V7 are rejected before their secret files are read",
                 "V3/V4/V5/V6 are rejected before their secret files are read",
-                "V3/V4/V5 are rejected before their secret files are read",
             )
         )
         self.assertNotEqual(stale_wordpress_boundary, document)

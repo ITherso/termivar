@@ -995,6 +995,7 @@ impl OAuthCodeRequestDescriptor {
             policy.version(),
             crate::supplied_session_review::SuppliedSessionPolicyVersion::V5
                 | crate::supplied_session_review::SuppliedSessionPolicyVersion::V6
+                | crate::supplied_session_review::SuppliedSessionPolicyVersion::V7
         ) {
             return None;
         }
@@ -1014,6 +1015,7 @@ impl OAuthCodeRequestDescriptor {
             policy.version(),
             crate::supplied_session_review::SuppliedSessionPolicyVersion::V5
                 | crate::supplied_session_review::SuppliedSessionPolicyVersion::V6
+                | crate::supplied_session_review::SuppliedSessionPolicyVersion::V7
         ) && policy.application_url() == &self.application
             && policy.policy_reference() == self.policy_reference
             && policy.principal_alias() == self.principal_alias
@@ -1111,6 +1113,39 @@ struct OAuthRefreshRequestAuthority {
 
 #[cfg(feature = "supplied-session-review")]
 impl OAuthCodeRequestBroker {
+    pub(crate) async fn collect_authorized(
+        &self,
+        descriptor: &OAuthCodeRequestDescriptor,
+        policy: &SuppliedSessionPolicy,
+        permit: &crate::web_runtime::OAuthAuthorizationDispatchPermit,
+        limits: DecisionExecutionLimits,
+    ) -> Result<OAuthCodeTransportResponse, OAuthCodeRequestError> {
+        if !self.mint.is_valid_for(policy)
+            || !descriptor.validate_against(policy)
+            || !permit.is_valid_for(policy, &self.mint)
+            || self.broker.validate_target(&descriptor.target).is_err()
+        {
+            return Err(OAuthCodeRequestError::InvalidDescriptor);
+        }
+        if self
+            .attempted
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Err(OAuthCodeRequestError::AlreadyAttempted);
+        }
+        let form = permit
+            .compose_form_body(policy)
+            .map_err(|_| OAuthCodeRequestError::InvalidDescriptor)?;
+        self.collect_code_form(descriptor, form.as_bytes(), limits)
+            .await
+    }
+
     pub(crate) async fn collect_refresh(
         &self,
         descriptor: &OAuthRefreshRequestDescriptor,
@@ -1223,6 +1258,16 @@ impl OAuthCodeRequestBroker {
         let form = grant
             .compose_form_body(policy)
             .map_err(|_| OAuthCodeRequestError::InvalidDescriptor)?;
+        self.collect_code_form(descriptor, form.as_bytes(), limits)
+            .await
+    }
+
+    async fn collect_code_form(
+        &self,
+        descriptor: &OAuthCodeRequestDescriptor,
+        form: &[u8],
+        limits: DecisionExecutionLimits,
+    ) -> Result<OAuthCodeTransportResponse, OAuthCodeRequestError> {
         let request = self
             .broker
             .client
@@ -1230,7 +1275,7 @@ impl OAuthCodeRequestBroker {
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .header(ACCEPT, "application/json")
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .body(form.as_bytes().to_vec())
+            .body(form.to_vec())
             .build()
             .map_err(|_| OAuthCodeRequestError::Http)?;
         let mut response = self

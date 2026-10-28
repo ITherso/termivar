@@ -90,7 +90,7 @@ authorization-review = ["scanning"]
 
 # Explicitly enabled, bounded assessment using one caller-supplied Authorization
 # session. Secret ownership and transport remain inside the web-assessment host.
-supplied-session-review = ["scanning", "dep:zeroize", "dep:subtle"]
+supplied-session-review = ["scanning", "dep:zeroize", "dep:subtle", "dep:getrandom"]
 
 # Explicitly enabled, zero-additional-request review of complete anonymous
 # textual response bodies already acquired by the assessment runtime. The

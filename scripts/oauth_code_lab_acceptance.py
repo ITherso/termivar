@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Owned Keycloak acceptance for the imported authorization-code session slice.
+"""Owned Keycloak acceptance for imported and client-initiated code sessions.
 
 This controller is not product login automation or an OIDC verifier. It uses
 an explicitly admin-prepared SSO fixture for two ephemeral users in one pinned,
 isolated provider. It does NOT qualify an interactive username/password flow.
-Only the bounded transaction file is handed to Termivar. The resource server
-independently introspects the resulting bearer using a different client.
+The nine historical cases hand only a bounded transaction file to Termivar.
+Five separately registered V7 cases instead consume Termivar's generated private
+handoff and submit a genuine form POST to its one-shot loopback listener. The
+resource server independently introspects the bearer using a different client.
 
 --validate-only checks original fixture contracts; it does NOT run Keycloak,
 Docker, a CLI process, or a CMS. Actual execution requires Linux Docker and an
@@ -28,6 +30,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -80,6 +83,32 @@ SCENARIOS = (
 )
 REFRESH_SCENARIOS = ("refresh-a", "refresh-b-context", "refresh-health-loss")
 REFRESH_POSITIVE = ("refresh-a", "refresh-b-context")
+# A separate V7 registry; the historical nine cases, path guard and input
+# cardinalities below remain unchanged. These are frozen before any CLI run.
+AUTHORIZATION_SCENARIOS = (
+    "initiated-valid-a", "initiated-wrong-state", "initiated-wrong-issuer",
+    "initiated-provider-error", "initiated-challenge-substitution",
+)
+AUTHORIZATION_CALLBACK_PATH = "/termivar/oauth/callback"
+AUTHORIZATION_UNASSIGNED_SCOPE = "owned-unassigned-scope"
+AUTHORIZATION_WAIT_MS = 30_000
+AUTHORIZATION_EXPECTED = {
+    "initiated-valid-a": {"token_posts": 1, "protected_gets": 5, "resources": 2,
+                          "callback_commits": 1, "callback_outcome": "callback_committed",
+                          "session_outcome": "complete"},
+    "initiated-wrong-state": {"token_posts": 0, "protected_gets": 0, "resources": 0,
+                              "callback_commits": 0, "callback_outcome": "response_rejected",
+                              "session_outcome": "oauth_code_exchange_unavailable"},
+    "initiated-wrong-issuer": {"token_posts": 0, "protected_gets": 0, "resources": 0,
+                               "callback_commits": 0, "callback_outcome": "response_rejected",
+                               "session_outcome": "oauth_code_exchange_unavailable"},
+    "initiated-provider-error": {"token_posts": 0, "protected_gets": 0, "resources": 0,
+                                 "callback_commits": 0, "callback_outcome": "provider_error",
+                                 "session_outcome": "oauth_code_exchange_unavailable"},
+    "initiated-challenge-substitution": {"token_posts": 1, "protected_gets": 0, "resources": 0,
+                                        "callback_commits": 1, "callback_outcome": "callback_committed",
+                                        "session_outcome": "oauth_code_exchange_unavailable"},
+}
 EXPECTED_SESSION_ROLES = {
     "option-off": (),
     "valid-a": ("health", "resource-one", "health", "resource-two", "health"),
@@ -331,6 +360,26 @@ class PrivateValues:
                         for value in self._owned_input_path_digests), "secret_digest_in_output")
 
 
+class CombinedOutputPrivacy:
+    """Both retained registries remain live through every offline operation.
+
+    V7 has its own explicit 96-entry lab guard, not extra slots in the legacy
+    guard. The total retained payload ceiling is twice the unchanged per-guard
+    ceiling. This is bounded harness storage, not a product budget increase.
+    """
+
+    def __init__(self, legacy: PrivateValues, authorization: PrivateValues):
+        require(type(legacy) is PrivateValues and type(authorization) is PrivateValues
+                and legacy is not authorization, "combined_privacy_guards")
+        self.guards = (legacy, authorization)
+
+    def check(self, source: bytes) -> None:
+        require(sum(guard._retained_bytes for guard in self.guards) <= 2 * 96 * MAX_HTTP_BODY,
+                "combined_privacy_retained_limit")
+        for guard in self.guards:
+            guard.check(source)
+
+
 def _record_fixture_failure(owner: object, error: Exception, channel: str) -> None:
     """Keep the original failure and only a closed, value-free cause class."""
     owner.errors.append(channel + "_failure")
@@ -359,7 +408,7 @@ def _fixture_runtime_diagnostic(scenario: str, relay: object, target: object) ->
 
     captures = getattr(relay, "_refresh_captures", _MISSING)
     selected = captures.get(scenario, _MISSING) if type(captures) is dict else _MISSING
-    return {"scenario": scenario if scenario in SCENARIOS else marker(scenario),
+    result = {"scenario": scenario if scenario in SCENARIOS + AUTHORIZATION_SCENARIOS else marker(scenario),
             "relay": channel(relay), "target": channel(target),
             "private_registry": {"entry_count": count(getattr(getattr(relay, "private", None), "_values", _MISSING), 96),
                                  "entry_limit": 96},
@@ -367,6 +416,12 @@ def _fixture_runtime_diagnostic(scenario: str, relay: object, target: object) ->
             "selected_refresh_capture": {
                 key: marker(getattr(selected, key, _MISSING))
                 for key in ("initial_returned", "refresh_responses", "replacement_returned", "replacement_value_differs")}}
+    if scenario in AUTHORIZATION_SCENARIOS:
+        result["authorization_private_registry"] = {
+            "entry_count": count(getattr(getattr(relay, "authorization_private", None), "_values", _MISSING), 96),
+            "entry_limit": 96,
+        }
+    return result
 
 
 @dataclasses.dataclass(frozen=True)
@@ -637,6 +692,7 @@ class Runner:
     def __init__(self, private: PrivateValues):
         self.private = private
         self.records: list[dict] = []
+        self.output_privacy = private
 
     def run(self, args: list[str], *, label: str, expected: tuple[int, ...] = (0,),
             input_bytes: bytes | None = None, timeout: float = MAX_COMMAND_SECONDS,
@@ -645,8 +701,8 @@ class Runner:
         child = CapturedChild(args, input_bytes)
         result = child.finish(timeout)
         if not sensitive_output:
-            self.private.check(result.stdout)
-            self.private.check(result.stderr)
+            self.output_privacy.check(result.stdout)
+            self.output_privacy.check(result.stderr)
         self.records.append({"id": label, "exit_code": result.returncode,
                              "elapsed_seconds": round(time.monotonic() - started, 6)})
         require(result.returncode in expected, "process_exit", {"command_id": label, "exit_code": result.returncode})
@@ -681,6 +737,120 @@ def request_bytes(url: str, method: str, body: bytes | None = None,
 
 
 _IDP_UPSTREAM_SEAL = object()
+_AUTHORIZATION_REQUEST_SEAL = object()
+
+
+def _authorization_callback(value: object) -> str:
+    require(type(value) is str and len(value) <= 128, "authorization_callback_binding")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise LabError("authorization_callback_binding") from None
+    require(parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+            and port is not None and 1024 <= port <= 65535
+            and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment
+            and parsed.path == AUTHORIZATION_CALLBACK_PATH
+            and value == f"http://127.0.0.1:{port}" + AUTHORIZATION_CALLBACK_PATH,
+            "authorization_callback_binding")
+    return value
+
+
+def authorization_callback_bindings() -> dict[str, str]:
+    """Freeze five distinct unprivileged callback registrations before import.
+
+    The sockets are controller-owned reservations only during selection and are
+    closed before the product starts. A later bind race fails acceptance; the
+    controller never changes the registered redirect to make a run connect.
+    """
+    sockets = []
+    result = {}
+    try:
+        for name in AUTHORIZATION_SCENARIOS:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sockets.append(listener)
+            listener.bind(("127.0.0.1", 0))
+            value = f"http://127.0.0.1:{listener.getsockname()[1]}" + AUTHORIZATION_CALLBACK_PATH
+            result[name] = _authorization_callback(value)
+        require(len(set(result.values())) == 5, "authorization_callback_duplicates")
+        return result
+    finally:
+        for listener in sockets:
+            listener.close()
+
+
+@dataclasses.dataclass(frozen=True, repr=False)
+class _InitiatedAuthorizationRequest:
+    origin: str
+    target: str
+    redirect: str
+    state: str
+    code_challenge: str
+    scope: str
+    substituted: bool
+    _seal: object
+
+    def validate(self, relay_host: str) -> None:
+        require(self._seal is _AUTHORIZATION_REQUEST_SEAL
+                and _loopback_origin(self.origin) == self.origin
+                and urllib.parse.urlsplit(self.origin).netloc == relay_host,
+                "authorization_request_binding")
+        _authorization_callback(self.redirect)
+        require(type(self.target) is str and len(self.target) <= 4096
+                and self.target.startswith(AUTH_PATH + "?")
+                and type(self.substituted) is bool, "authorization_request_binding")
+        try:
+            fields = urllib.parse.parse_qsl(self.target.split("?", 1)[1], keep_blank_values=True,
+                                            strict_parsing=True, errors="strict", max_num_fields=8)
+        except (ValueError, UnicodeError):
+            raise LabError("authorization_request_parameters") from None
+        values = dict(fields)
+        require(len(fields) == len(values) == 8
+                and set(values) == {"response_type", "response_mode", "client_id", "redirect_uri",
+                                    "scope", "state", "code_challenge", "code_challenge_method"}
+                and values == {"response_type": "code", "response_mode": "form_post", "client_id": PUBLIC_CLIENT,
+                               "redirect_uri": self.redirect, "scope": self.scope, "state": self.state,
+                               "code_challenge": self.code_challenge, "code_challenge_method": "S256"}
+                and self.scope in (SCOPE, AUTHORIZATION_UNASSIGNED_SCOPE)
+                and re.fullmatch(r"[A-Za-z0-9_-]{43}", self.state) is not None
+                and re.fullmatch(r"[A-Za-z0-9_-]{43}", self.code_challenge) is not None,
+                "authorization_request_parameters")
+
+
+def initiated_authorization_request(handoff: bytes, origin: str, redirect: str,
+                                    scenario: str, private: PrivateValues) -> _InitiatedAuthorizationRequest:
+    require(scenario in AUTHORIZATION_SCENARIOS and type(handoff) is bytes
+            and 1 < len(handoff) <= 4097 and handoff.endswith(b"\n")
+            and b"\r" not in handoff and b"\n" not in handoff[:-1], "authorization_handoff_shape")
+    try:
+        uri = handoff[:-1].decode("ascii")
+        parsed = urllib.parse.urlsplit(uri)
+        require(uri.startswith(_loopback_origin(origin) + AUTH_PATH + "?")
+                and not parsed.fragment and not parsed.username and not parsed.password
+                and parsed.path == AUTH_PATH, "authorization_handoff_endpoint")
+        rows = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True,
+                                      errors="strict", max_num_fields=8)
+    except (UnicodeError, ValueError):
+        raise LabError("authorization_handoff_shape") from None
+    values = dict(rows)
+    require(len(rows) == len(values) == 8, "authorization_request_parameters")
+    scope = AUTHORIZATION_UNASSIGNED_SCOPE if scenario == "initiated-provider-error" else SCOPE
+    descriptor = _InitiatedAuthorizationRequest(origin, parsed.path + "?" + parsed.query,
+        _authorization_callback(redirect), values.get("state"), values.get("code_challenge"),
+        scope, False, _AUTHORIZATION_REQUEST_SEAL)
+    descriptor.validate(urllib.parse.urlsplit(origin).netloc)
+    private.add(uri)
+    private.add(descriptor.state)
+    private.add(descriptor.code_challenge)
+    if scenario == "initiated-challenge-substitution":
+        changed = ("A" if descriptor.code_challenge[0] != "A" else "B") + descriptor.code_challenge[1:]
+        values["code_challenge"] = changed
+        descriptor = dataclasses.replace(descriptor, target=AUTH_PATH + "?" + urllib.parse.urlencode(values),
+                                         code_challenge=changed, substituted=True)
+        descriptor.validate(urllib.parse.urlsplit(origin).netloc)
+        private.add(origin + descriptor.target)
+    return descriptor
 
 
 def _owned_network_plan(network: object, owner: str, name: str) -> tuple[str, tuple]:
@@ -755,6 +925,15 @@ class _OwnedIdpUpstream:
         require(self._seal is _IDP_UPSTREAM_SEAL and type(self) is _OwnedIdpUpstream, "idp_binding_seal")
         self._validate()
         _provider_route(method, target)
+        return self._request_validated(method, target, body, headers)
+
+    def request_authorization(self, descriptor: _InitiatedAuthorizationRequest, headers: dict) -> tuple[int, list, bytes]:
+        require(type(descriptor) is _InitiatedAuthorizationRequest, "authorization_request_binding")
+        self._validate()
+        descriptor.validate(self._relay_host)
+        return self._request_validated("GET", descriptor.target, None, headers)
+
+    def _request_validated(self, method: str, target: str, body: bytes | None, headers: dict) -> tuple[int, list, bytes]:
         require(body is None or type(body) is bytes and len(body) <= MAX_HTTP_BODY, "http_body_limit")
         require(method != "GET" or body is None, "relay_route_refused")
         require(type(headers) is dict and set(headers) <= {"Host", "Accept-Encoding", "Content-Type", "Cookie", "Authorization", "Accept"}
@@ -864,14 +1043,19 @@ class ControllerCookiePolicy(http.cookiejar.DefaultCookiePolicy):
     attributes intact and never changes product cookie or TLS policy.
     """
 
-    def __init__(self, origin: str, *, owned_loopback_http: bool = False):
+    def __init__(self, origin: str, *, owned_loopback_http: bool = False,
+                 authorization_request: _InitiatedAuthorizationRequest | None = None):
         super().__init__()
         require(type(owned_loopback_http) is bool, "controller_cookie_policy")
         try:
             origin = _loopback_origin(origin)
         except (TypeError, ValueError):
             raise LabError("controller_cookie_origin") from None
-        self.authorization_url = origin + AUTH_PATH
+        if authorization_request is not None:
+            require(type(authorization_request) is _InitiatedAuthorizationRequest, "controller_cookie_policy")
+            authorization_request.validate(urllib.parse.urlsplit(origin).netloc)
+            require(authorization_request.origin == origin, "controller_cookie_origin")
+        self.authorization_url = origin + (authorization_request.target if authorization_request is not None else AUTH_PATH)
         self.owned_loopback_http = owned_loopback_http
 
     def return_ok(self, cookie, request):
@@ -962,8 +1146,178 @@ def obtain_code(origin: str, redirect: str, username: str, controller_secret: st
     return Grant(code, verifier, fields["code_challenge"], origin + REALM_PATH, redirect, int(time.time()))
 
 
-def realm_document(resource_secret: str, controller_secret: str, redirect: str) -> dict:
+def prepare_initiated_sso(origin: str, controller_secret: str, private: PrivateValues):
+    """Prepare only the owned user-agent SSO; it never supplies a product grant.
+
+    The later authorization URL, state and challenge must come from the running
+    product's private handoff. Controller credentials/cookies never enter it.
+    """
+    _loopback_origin(origin)
+    jar = http.cookiejar.CookieJar(policy=ControllerCookiePolicy(origin, owned_loopback_http=True))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
+                                         urllib.request.HTTPCookieProcessor(jar))
+
+    def post(path: str, values: dict[str, str], headers: dict | None = None) -> bytes:
+        require(path in (TOKEN_PATH, "/admin/realms/" + REALM + "/users/" + USER_IDS["canary-a"] + "/impersonation"),
+                "authorization_sso_route")
+        request = urllib.request.Request(origin + path, encoded_form(values),
+            {"Content-Type": "application/x-www-form-urlencoded", **(headers or {})}, method="POST")
+        try:
+            with opener.open(request, timeout=8) as response:
+                require(response.status == 200 and not response.headers.get("Content-Encoding"), "authorization_sso_response")
+                body = response.read(MAX_HTTP_BODY + 1)
+                require(len(body) <= MAX_HTTP_BODY, "authorization_sso_response_limit")
+                return body
+        except (OSError, urllib.error.URLError, http.client.HTTPException):
+            raise LabError("authorization_sso_transport") from None
+
+    raw = post(TOKEN_PATH, {"grant_type": "client_credentials", "client_id": CONTROLLER_CLIENT,
+                            "client_secret": controller_secret})
+    admin = strict_json(raw, MAX_TOKEN_BODY)
+    require(type(admin) is dict and type(admin.get("access_token")) is str, "authorization_sso_token")
+    private.add(raw)
+    private.add(admin["access_token"])
+    result = strict_json(post("/admin/realms/" + REALM + "/users/" + USER_IDS["canary-a"] + "/impersonation", {},
+                              {"Authorization": "Bearer " + admin["access_token"]}))
+    require(type(result) is dict and type(result.get("sameRealm")) is bool
+            and any(cookie.name == "KEYCLOAK_IDENTITY" for cookie in jar), "authorization_sso_cookie")
+    for cookie in jar:
+        private.add(cookie.value)
+    return opener, jar
+
+
+def _read_handoff(path: Path, stop: threading.Event) -> bytes:
+    deadline = time.monotonic() + AUTHORIZATION_WAIT_MS / 1000
+    while time.monotonic() < deadline:
+        if path.exists():
+            require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 4097,
+                    "authorization_handoff_shape")
+            with path.open("rb") as stream:
+                body = stream.read(4098)
+            require(len(body) <= 4097, "authorization_handoff_shape")
+            if body.endswith(b"\n"):
+                return body
+        require(not stop.is_set(), "authorization_handoff_not_written")
+        stop.wait(0.005)
+    raise LabError("authorization_handoff_timeout")
+
+
+def submit_authorization_callback(redirect: str, origin: str, fields: dict[str, str],
+                                   private: PrivateValues) -> dict:
+    """A real POST to the product listener, with exact independent wire length."""
+    _authorization_callback(redirect)
+    origin = _loopback_origin(origin)
+    require(type(fields) is dict and 1 <= len(fields) <= 16
+            and all(type(key) is str and len(key) <= 128 and type(value) is str
+                    and len(value.encode()) <= 2048 for key, value in fields.items()),
+            "authorization_callback_fields")
+    body = encoded_form(fields)
+    require(0 < len(body) <= 8192, "authorization_callback_form_limit")
+    parsed = urllib.parse.urlsplit(redirect)
+    request = (f"POST {AUTHORIZATION_CALLBACK_PATH} HTTP/1.1\r\nHost: {parsed.netloc}\r\nOrigin: {origin}\r\n"
+               "Content-Type: application/x-www-form-urlencoded\r\n"
+               f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode() + body
+    require(len(request) <= 4096 + 8192, "authorization_callback_wire_limit")
+    private.add(body)
+    try:
+        with socket.create_connection(("127.0.0.1", parsed.port), timeout=8) as connection:
+            connection.settimeout(8)
+            connection.sendall(request)
+            connection.shutdown(socket.SHUT_WR)
+            reply = bytearray()
+            while len(reply) <= 512:
+                chunk = connection.recv(min(128, 513 - len(reply)))
+                if not chunk:
+                    break
+                reply.extend(chunk)
+            require(0 < len(reply) <= 512 and bytes(reply).startswith(b"HTTP/1.1 200 OK\r\n"),
+                    "authorization_callback_reply")
+            private.check(bytes(reply))
+            return {"post_count": 1, "request_bytes": len(request), "reply_bytes": len(reply),
+                    "response_status": 200, "credential_headers_sent": False}
+    except (OSError, ValueError):
+        raise LabError("authorization_callback_transport") from None
+
+
+def drive_initiated_authorization(relay: "TokenRelay", opener, jar, handoff_path: Path,
+                                  redirect: str, name: str, private: PrivateValues,
+                                  stop: threading.Event) -> dict:
+    """Inert provider HTML parsing, not JavaScript/browser automation.
+
+    The challenge-substitution case changes only the controlled AS request, not
+    the handoff file or product verifier. Wrong state/issuer change only the
+    returned form. The provider-error case requests an unassigned scope and
+    must receive an actual pinned-provider invalid_scope form.
+    """
+    original = _read_handoff(handoff_path, stop)
+    descriptor = initiated_authorization_request(original, relay.origin, redirect, name, private)
+    jar.set_policy(ControllerCookiePolicy(relay.origin, owned_loopback_http=True,
+                                           authorization_request=descriptor))
+    relay.phase = "controller-authorization-" + name
+    relay.select_authorization_request(descriptor)
+    try:
+        request = urllib.request.Request(relay.origin + descriptor.target, method="GET")
+        with opener.open(request, timeout=8) as response:
+            require(response.status == 200 and not response.headers.get("Content-Encoding"), "authorization_provider_response")
+            raw = response.read(MAX_HTTP_BODY + 1)
+            require(len(raw) <= MAX_HTTP_BODY, "authorization_provider_response_limit")
+            private.add(raw)
+        require(relay.authorization_request_used is True, "authorization_request_not_observed")
+        forms = FormParser(raw).forms
+        require(len(forms) == 1 and forms[0]["method"] == "post" and forms[0]["action"] == redirect,
+                "authorization_provider_form")
+        values = forms[0]["inputs"]
+        require(type(values) is dict and values.get("state") == descriptor.state
+                and values.get("iss") == relay.origin + REALM_PATH
+                and ("code" in values) != ("error" in values), "authorization_provider_form_binding")
+        if name == "initiated-provider-error":
+            require(values.get("error") == "invalid_scope" and "code" not in values, "authorization_provider_error_oracle")
+        else:
+            require("error" not in values and type(values.get("code")) is str
+                    and 1 <= len(values["code"]) <= 2048, "authorization_provider_code")
+            private.add(values["code"])
+        for cookie in jar:
+            private.add(cookie.value)
+        require(_read_handoff(handoff_path, stop) == original, "authorization_handoff_modified")
+        fields = dict(values)
+        if name == "initiated-wrong-state":
+            fields["state"] = "controlled-wrong-state-value-for-negative"
+        elif name == "initiated-wrong-issuer":
+            fields["iss"] = "https://unrelated.invalid/owned-issuer"
+        relay.phase = name
+        submission = submit_authorization_callback(redirect, relay.origin, fields, private)
+        return {**submission, "handoff_preserved_before_submission": True,
+                "product_generated_request_used": True, "authorization_get_count": 1,
+                "controlled_challenge_substitution": descriptor.substituted,
+                "provider_error_class": "invalid_scope" if name == "initiated-provider-error" else None,
+                "interactive_login_performed": False}
+    except (OSError, urllib.error.URLError, http.client.HTTPException):
+        raise LabError("authorization_provider_transport") from None
+    finally:
+        relay.authorization_request = None
+
+
+def closed_callback_replay_control(redirect: str) -> dict:
+    _authorization_callback(redirect)
+    port = urllib.parse.urlsplit(redirect).port
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            accepted = True
+    except OSError:
+        accepted = False
+    require(accepted is False, "authorization_listener_reopened")
+    return {"execution_class": "controller_after_completed_product_flow", "connection_attempt_count": 1,
+            "connection_accepted": False, "form_resubmitted": False,
+            "meaning": "closed_single_use_listener_not_provider_code_replay_or_identity_proof"}
+
+
+def realm_document(resource_secret: str, controller_secret: str, redirect: str,
+                   authorization_redirects: tuple[str, ...] = ()) -> dict:
     """Original fixture configuration, not scanner input or expected inventory."""
+    require(type(authorization_redirects) is tuple and len(authorization_redirects) in (0, 5)
+            and len(set(authorization_redirects)) == len(authorization_redirects), "authorization_callback_registry")
+    for callback in authorization_redirects:
+        _authorization_callback(callback)
     return {
         "realm": REALM, "enabled": True, "sslRequired": "none",
         "registrationAllowed": False, "resetPasswordAllowed": False,
@@ -984,7 +1338,7 @@ def realm_document(resource_secret: str, controller_secret: str, redirect: str) 
         "clients": [
             {"clientId": PUBLIC_CLIENT, "enabled": True, "protocol": "openid-connect", "publicClient": True,
              "standardFlowEnabled": True, "implicitFlowEnabled": False, "directAccessGrantsEnabled": False,
-             "serviceAccountsEnabled": False, "consentRequired": False, "redirectUris": [redirect],
+             "serviceAccountsEnabled": False, "consentRequired": False, "redirectUris": [redirect, *authorization_redirects],
              "defaultClientScopes": [], "optionalClientScopes": [SCOPE],
              "attributes": {"pkce.code.challenge.method": "S256"}},
             {"clientId": RESOURCE_CLIENT, "enabled": True, "protocol": "openid-connect", "publicClient": False,
@@ -1069,7 +1423,7 @@ def _send(handler, status: int, body: bytes, content_type: str, headers: list = 
     handler.close_connection = True
 
 
-def public_token_grant(body: bytes, redirect: str | None) -> str:
+def public_token_grant(body: bytes, redirect: str | None, initiated_private: PrivateValues | None = None) -> str:
     """Reduce a selected public-client form to a closed class, never its values."""
     require(type(body) is bytes and 0 < len(body) <= 16 * 1024, "public_token_form_size")
     try:
@@ -1093,6 +1447,14 @@ def public_token_grant(body: bytes, redirect: str | None) -> str:
                 and all(0x20 <= ord(c) <= 0x7e for c in fields["refresh_token"]), "public_token_form")
     else:
         raise LabError("public_token_grant")
+    if initiated_private is not None:
+        require(type(initiated_private) is PrivateValues and kind == "authorization_code", "authorization_private_form")
+        # Unlike imported grants, these values were generated inside Termivar.
+        # Register them at the relay BEFORE any provider dispatch or CLI output
+        # check. Whole encoded body and individual values guard different sinks.
+        initiated_private.add(fields["code"])
+        initiated_private.add(fields["code_verifier"])
+        initiated_private.add(body)
     return kind
 
 
@@ -1119,6 +1481,9 @@ class TokenRelay:
         self.public_redirect: str | None = None
         self.scanner_scenarios_complete = False
         self._refresh_captures: dict[str, _RefreshCapture] = {}
+        self.authorization_private: PrivateValues | None = None
+        self.authorization_request: _InitiatedAuthorizationRequest | None = None
+        self.authorization_request_used = False
         owner = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -1135,23 +1500,37 @@ class TokenRelay:
 
             def forward(self):
                 try:
-                    role = _provider_route(self.command, self.path)
+                    initiated = owner.authorization_request if self.command == "GET" and owner.authorization_request is not None else None
+                    if initiated is not None:
+                        require(owner.phase in tuple("controller-authorization-" + name for name in AUTHORIZATION_SCENARIOS)
+                                and self.path == initiated.target and owner.authorization_request_used is False,
+                                "relay_authorization_request_refused")
+                        initiated.validate(urllib.parse.urlsplit(owner.origin).netloc)
+                        owner.authorization_request_used = True
+                        role = "controller-authorization"
+                    else:
+                        role = _provider_route(self.command, self.path)
                     require(type(owner._upstream) is _OwnedIdpUpstream and len(owner.trace) < MAX_TRACE, "relay_not_ready_or_limit")
                     body = _read_request(self, MAX_HTTP_BODY)
                     grant_type = None
-                    public = owner.phase in SCENARIOS and role == "token-exchange"
+                    public = owner.phase in SCENARIOS + AUTHORIZATION_SCENARIOS and role == "token-exchange"
                     if public:
                         require(self.command == "POST" and not self.headers.get("Authorization")
                                 and not self.headers.get("Cookie")
                                 and self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
                                 and self.headers.get("Accept-Encoding") == "identity", "public_token_context")
-                        grant_type = public_token_grant(body, owner.public_redirect)
+                        grant_type = public_token_grant(body, owner.public_redirect,
+                            owner.active_private() if owner.phase in AUTHORIZATION_SCENARIOS else None)
                     headers = {"Host": urllib.parse.urlsplit(owner.origin).netloc, "Accept-Encoding": "identity"}
                     for key in ("Content-Type", "Cookie", "Authorization", "Accept"):
                         if self.headers.get(key) is not None:
                             require(len(self.headers[key]) <= 16384, "relay_header_limit")
                             headers[key] = self.headers[key]
-                    status, response_headers, response_body = owner._upstream.request(self.command, self.path, body or None, headers)
+                    if initiated is not None:
+                        require(not body and not self.headers.get("Authorization"), "relay_authorization_request_refused")
+                        status, response_headers, response_body = owner._upstream.request_authorization(initiated, headers)
+                    else:
+                        status, response_headers, response_body = owner._upstream.request(self.command, self.path, body or None, headers)
                     require(not any(k.lower() == "content-encoding" for k, _ in response_headers), "relay_coded_response")
                     # Values are only checked for leakage in private memory. The
                     # provider response is forwarded unchanged, never repaired.
@@ -1167,12 +1546,14 @@ class TokenRelay:
                             # malformed JSON and silently disable privacy checks.
                             for name in ("access_token", "refresh_token", "id_token"):
                                 if isinstance(document.get(name), str):
-                                    owner.private.add(document[name])
+                                    owner.active_private().add(document[name])
                             if document.get("error") == "invalid_grant":
                                 error_class = "invalid_grant"
                             if public and owner.phase in REFRESH_SCENARIOS:
                                 owner.private.add(response_body)
                                 capture_flags = owner._capture_refresh(grant_type, status, document)
+                            elif public and owner.phase in AUTHORIZATION_SCENARIOS:
+                                owner.active_private().add(response_body)
                     owner.trace.append({"phase": owner.phase, "role": role, "method": self.command,
                                         "request_bytes": len(body), "status": status,
                                         "response_bytes": len(response_body), "error_class": error_class,
@@ -1188,6 +1569,22 @@ class TokenRelay:
                     _send(self, 502, b'{"error":"owned_relay_failure"}', "application/json")
 
         self.server = OwnedHTTPServer(Handler)
+
+    def active_private(self) -> PrivateValues:
+        selected = (self.phase in AUTHORIZATION_SCENARIOS
+                    or self.phase in tuple("controller-authorization-" + name for name in AUTHORIZATION_SCENARIOS))
+        if selected:
+            require(type(self.authorization_private) is PrivateValues, "authorization_privacy_unavailable")
+            return self.authorization_private
+        return self.private
+
+    def select_authorization_request(self, descriptor: _InitiatedAuthorizationRequest) -> None:
+        require(type(descriptor) is _InitiatedAuthorizationRequest and self.authorization_request is None
+                and self.phase in tuple("controller-authorization-" + name for name in AUTHORIZATION_SCENARIOS),
+                "relay_authorization_request_refused")
+        descriptor.validate(urllib.parse.urlsplit(self.origin).netloc)
+        self.authorization_request = descriptor
+        self.authorization_request_used = False
 
     def _capture_refresh(self, grant_type: str, status: int, document: dict) -> dict:
         require(self.phase in REFRESH_SCENARIOS and len(self._refresh_captures) <= 3, "refresh_capture_scope")
@@ -1299,7 +1696,9 @@ class TargetApplication:
                     if authorization:
                         require(self.command == "GET" and role != "ordinary" and authorization.startswith("Bearer "), "target_credential_scope")
                         token = authorization[7:]
-                        owner.relay.private.add(token)
+                        owner.relay.active_private().add(token)
+                        if owner.phase in AUTHORIZATION_SCENARIOS:
+                            owner.relay.active_private().add(authorization)
                         basic = base64.b64encode((RESOURCE_CLIENT + ":" + owner.resource_secret).encode()).decode()
                         status, _, data = request_bytes(owner.relay.origin + INTROSPECTION_PATH, "POST",
                             encoded_form({"token": token, "token_type_hint": "access_token"}),
@@ -1626,6 +2025,69 @@ after_resource_count = 1
 max_attempts = 1
 '''
     return source.encode()
+
+
+def authorization_policy_source(issuer: str, redirect: str, name: str) -> bytes:
+    require(name in AUTHORIZATION_SCENARIOS, "authorization_scenario")
+    _authorization_callback(redirect)
+    scope = AUTHORIZATION_UNASSIGNED_SCOPE if name == "initiated-provider-error" else SCOPE
+    return f'''schema = "security.supplied-session-policy/v7"
+principal_alias = "canary-a"
+credential_mechanism = "authorization_header"
+credential_acquisition = "client_initiated_oauth_pkce"
+health_path = "/app/health"
+health_json_field = "canary_a"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 6
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+[oauth_code]
+profile = "client-initiated-public-code-s256-bearer/v1"
+transport_profile = "owned-numeric-loopback-http/v1"
+issuer = "{issuer}"
+token_endpoint = "{issuer}/protocol/openid-connect/token"
+client_id = "{PUBLIC_CLIENT}"
+redirect_uri = "{redirect}"
+scopes = ["{scope}"]
+max_token_response_bytes = 8192
+[oauth_authorization]
+profile = "loopback-form-post-state/v1"
+authorization_endpoint = "{issuer}/protocol/openid-connect/auth"
+max_wait_ms = {AUTHORIZATION_WAIT_MS}
+'''.encode()
+
+
+def validate_authorization_fixture_policy(source: bytes, issuer: str, redirect: str, name: str) -> None:
+    try:
+        value = tomllib.loads(source.decode())
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        raise LabError("authorization_fixture_policy") from None
+    code, authorization = value.get("oauth_code"), value.get("oauth_authorization")
+    require(set(value) == {"schema", "principal_alias", "credential_mechanism", "credential_acquisition",
+                           "health_path", "health_json_field", "resources", "max_session_requests",
+                           "max_total_response_bytes", "max_response_body_bytes", "max_wall_time_ms",
+                           "oauth_code", "oauth_authorization"}
+            and value.get("schema") == "security.supplied-session-policy/v7"
+            and value.get("principal_alias") == "canary-a"
+            and value.get("credential_mechanism") == "authorization_header"
+            and value.get("credential_acquisition") == "client_initiated_oauth_pkce"
+            and value.get("health_path") == HEALTH and value.get("health_json_field") == "canary_a"
+            and value.get("resources") == list(RESOURCES)
+            and all(type(value.get(key)) is int and value[key] == expected for key, expected in {
+                "max_session_requests": 6, "max_total_response_bytes": 65536,
+                "max_response_body_bytes": 8192, "max_wall_time_ms": 10000}.items()),
+            "authorization_fixture_policy")
+    scope = AUTHORIZATION_UNASSIGNED_SCOPE if name == "initiated-provider-error" else SCOPE
+    require(type(code) is dict and code == {
+        "profile": "client-initiated-public-code-s256-bearer/v1", "transport_profile": "owned-numeric-loopback-http/v1",
+        "issuer": issuer, "token_endpoint": issuer + "/protocol/openid-connect/token", "client_id": PUBLIC_CLIENT,
+        "redirect_uri": _authorization_callback(redirect), "scopes": [scope], "max_token_response_bytes": 8192}
+        and type(code["max_token_response_bytes"]) is int
+        and type(authorization) is dict and authorization == {
+            "profile": "loopback-form-post-state/v1", "authorization_endpoint": issuer + "/protocol/openid-connect/auth",
+            "max_wait_ms": 30000} and type(authorization["max_wait_ms"]) is int,
+        "authorization_fixture_policy")
 
 
 def validate_fixture_policy(source: bytes) -> None:
@@ -1971,6 +2433,177 @@ def validate_case(name: str, audit: object, target_rows: list[dict], idp_rows: l
             "provider_declared_lifetime_seconds": nested.get("declared_token_lifetime_seconds")}
 
 
+def validate_authorization_case(name: str, audit: object, target_rows: list[dict],
+                                idp_rows: list[dict], baseline: list[dict], user_agent: object) -> dict:
+    require(name in AUTHORIZATION_SCENARIOS, "authorization_scenario")
+    expected = AUTHORIZATION_EXPECTED[name]
+    nested = audit.get("oauth_authorization", _MISSING) if type(audit) is dict else _MISSING
+    token = audit.get("oauth_token_exchange", _MISSING) if type(audit) is dict else _MISSING
+    diagnostic = {"scenario": name, "expected": dict(expected), "actual": {
+        "audit": marker(audit), "target_rows": marker(target_rows), "idp_rows": marker(idp_rows),
+        "authorization": {key: marker(nested.get(key, _MISSING)) if type(nested) is dict else marker(nested)
+            for key in ("reservation_count", "accepted_connection_count", "completed_form_count", "callback_commit_count",
+                        "state_validated", "issuer_validated", "ingress_bytes", "reply_bytes_written")},
+        "token": {key: marker(token.get(key, _MISSING)) if type(token) is dict else marker(token)
+            for key in ("request_attempt_count", "request_admitted_count", "response_completed_count",
+                        "credential_commit_count", "token_response_validated", "response_bytes")},
+        "resources": marker(audit.get("resources", _MISSING)) if type(audit) is dict else marker(audit),
+        "user_agent": {key: marker(user_agent.get(key, _MISSING)) if type(user_agent) is dict else marker(user_agent)
+            for key in ("post_count", "request_bytes", "reply_bytes", "product_generated_request_used")}}}
+    require(type(audit) is dict and type(nested) is dict and type(token) is dict
+            and type(target_rows) is list and type(idp_rows) is list
+            and len(target_rows) <= MAX_TRACE and len(idp_rows) <= MAX_TRACE
+            and all(type(row) is dict for row in target_rows + idp_rows), "authorization_case_shape", diagnostic)
+    anonymous = [{"method": row.get("method"), "role": row.get("role"), "entry_path": row.get("entry_path")}
+                 for row in target_rows if row.get("credential_present") is False]
+    session = [row for row in target_rows if row.get("credential_present") is True]
+    exchanges = [row for row in idp_rows if row.get("role") == "token-exchange"]
+    require(anonymous == baseline and len(anonymous) == 3
+            and all(type(row.get("credential_present")) is bool for row in target_rows)
+            and all(row == {"method": "GET", "role": "ordinary", "entry_path": True} for row in anonymous),
+            "authorization_ordinary_trace", diagnostic)
+    roles = ("health", "resource-one", "health", "resource-two", "health") if expected["protected_gets"] else ()
+    require(tuple(row.get("role") for row in session) == roles
+            and all(row.get("method") == "GET" and row.get("accepted") is True
+                    and row.get("provider_active") is True and row.get("application_gate_denied") is False for row in session),
+            "authorization_protected_trace", diagnostic)
+    sequence = tuple(row.get("grant_type") if row.get("role") == "token-exchange" else row.get("role") for row in idp_rows)
+    expected_sequence = (("authorization_code",) if expected["token_posts"] else ()) + ("backend-introspection",) * expected["protected_gets"]
+    require(all(integer(row.get("response_bytes")) for row in session + exchanges),
+            "authorization_trace_byte_types", diagnostic)
+    require(sequence == expected_sequence and len(exchanges) == expected["token_posts"]
+            and all(row.get("method") == "POST" for row in idp_rows)
+            and all(row.get("credential_header_present") is False and row.get("cookie_present") is False
+                    and row.get("public_form_valid") is True and row.get("identity_requested") is True for row in exchanges),
+            "authorization_idp_trace", diagnostic)
+    require(type(user_agent) is dict and user_agent.get("post_count") == 1
+            and type(user_agent.get("post_count")) is int
+            and user_agent.get("authorization_get_count") == 1
+            and type(user_agent.get("authorization_get_count")) is int
+            and user_agent.get("product_generated_request_used") is True
+            and user_agent.get("handoff_preserved_before_submission") is True
+            and user_agent.get("credential_headers_sent") is False
+            and user_agent.get("interactive_login_performed") is False
+            and type(user_agent.get("response_status")) is int and user_agent["response_status"] == 200
+            and user_agent.get("controlled_challenge_substitution") is (name == "initiated-challenge-substitution")
+            and integer(user_agent.get("request_bytes")) and 0 < user_agent["request_bytes"] <= 12288
+            and integer(user_agent.get("reply_bytes")) and 0 < user_agent["reply_bytes"] <= 512,
+            "authorization_user_agent_contract", diagnostic)
+    require(audit.get("schema") == "security.supplied-session-audit/v7"
+            and audit.get("credential_acquisition") == "client_initiated_oauth_pkce"
+            and audit.get("principal_assurance") == "operator_declared"
+            and _opaque_reference(audit.get("policy_reference"), "supplied-session-policy-sha256:")
+            and audit.get("principal_alias") == "canary-a" and audit.get("outcome") == expected["session_outcome"]
+            and "oauth_code" not in audit and "oauth_refresh" not in audit
+            and audit.get("refresh_performed") is False and audit.get("anonymous_fallback_performed") is False
+            and audit.get("continuous_authentication_established") is False
+            and audit.get("exploit_execution") == audit.get("impact_validation") == "not_performed",
+            "authorization_session_contract", diagnostic)
+    require(nested.get("profile") == "loopback-form-post-state/v1"
+            and _opaque_reference(nested.get("authorization_policy_reference"), "oauth-authorization-policy-sha256:")
+            and type(nested.get("configured_wait_ms")) is int and nested["configured_wait_ms"] == 30000
+            and all(integer(nested.get(key)) and nested[key] == count for key, count in {
+                "reservation_count": 1, "accepted_connection_count": 1, "completed_form_count": 1,
+                "callback_commit_count": expected["callback_commits"]}.items())
+            and all(nested.get(key) is True for key in ("listener_bound", "handoff_written", "listener_closed"))
+            and nested.get("outcome") == expected["callback_outcome"]
+            and all(nested.get(key) is False for key in ("oidc_nonce_validation_performed",
+                    "oidc_identity_validation_performed", "token_signature_validation_performed"))
+            and nested.get("state_validated") is (name not in ("initiated-wrong-state", "initiated-wrong-issuer"))
+            and nested.get("issuer_validated") is (name not in ("initiated-wrong-state", "initiated-wrong-issuer"))
+            and integer(nested.get("ingress_bytes")) and nested["ingress_bytes"] == user_agent["request_bytes"]
+            and integer(nested.get("reply_bytes_written")) and nested["reply_bytes_written"] == user_agent["reply_bytes"]
+            and integer(nested.get("unknown_parameter_count")) and nested["unknown_parameter_count"] <= 16
+            and integer(nested.get("elapsed_ms"))
+            and (_opaque_reference(nested.get("evidence_reference"), "supplied-session-oauth-authorization-evidence-sha256:")
+                 if expected["callback_commits"] else nested.get("evidence_reference") is None)
+            and nested.get("provider_error_class") == ("invalid_scope" if name == "initiated-provider-error" else None),
+            "authorization_callback_accounting", diagnostic)
+    successful = name == "initiated-valid-a"
+    require(token.get("profile") == "client-initiated-public-code-s256-bearer/v1"
+            and token.get("transport_profile") == "owned-numeric-loopback-http/v1"
+            and token.get("pkce_assurance") == "client_generated_s256_not_remote_enforcement"
+            and token.get("token_interpretation") == "opaque_bearer_not_oidc_identity"
+            and _opaque_reference(token.get("idp_reference"), "oauth-code-policy-sha256:")
+            and all(integer(token.get(key)) and token[key] == count for key, count in {
+                "request_attempt_count": expected["token_posts"], "request_admitted_count": expected["token_posts"],
+                "response_completed_count": expected["token_posts"], "credential_commit_count": int(successful)}.items())
+            and token.get("verifier_in_admitted_request") is bool(expected["token_posts"])
+            and token.get("token_response_validated") is successful
+            and token.get("response_scope_matched") is (True if successful else None)
+            and token.get("outcome") == ("credential_committed" if successful else
+                "response_rejected" if expected["token_posts"] else "not_started")
+            and type(token.get("configured_token_response_byte_limit")) is int
+            and token["configured_token_response_byte_limit"] == 8192
+            and integer(token.get("response_bytes"))
+            and token["response_bytes"] == (exchanges[0].get("response_bytes") if exchanges else 0),
+            "authorization_exchange_accounting", diagnostic)
+    if exchanges:
+        require(exchanges[0].get("status") == (200 if successful else 400)
+                and (successful or exchanges[0].get("error_class") == "invalid_grant")
+                and token.get("status") == exchanges[0].get("status")
+                and token.get("body_state") == "complete" and token["response_bytes"] > 0,
+                "authorization_provider_token_oracle", diagnostic)
+    else:
+        require(token.get("status") is None and token.get("body_state") == "unavailable"
+                and token.get("evidence_reference") is None and token.get("declared_token_lifetime_seconds") is None
+                and token.get("refresh_token_returned") is None,
+                "authorization_unattempted_exchange", diagnostic)
+    checkpoints, resources = audit.get("checkpoints"), audit.get("resources")
+    require(type(checkpoints) is list and len(checkpoints) == (3 if successful else 0)
+            and type(resources) is list and len(resources) == 2
+            and all(type(row) is dict for row in checkpoints + resources)
+            and all(integer(audit.get(key)) and audit[key] == value for key, value in {
+                "selected_resource_count": 2, "dispatched_resource_count": expected["resources"],
+                "committed_resource_count": expected["resources"],
+                "dispatched_request_count": expected["token_posts"] + expected["protected_gets"]}.items()),
+            "authorization_session_accounting", diagnostic)
+    references = []
+    for index, row in enumerate(resources):
+        require(type(row.get("sequence")) is int and row["sequence"] == index
+                and type(row.get("epoch")) is int and row["epoch"] == 1
+                and _opaque_reference(row.get("resource_reference"), "supplied-session-resource-sha256:")
+                and row.get("outcome") == ("committed" if successful else "not_dispatched")
+                and row.get("status") == (200 if successful else None)
+                and integer(row.get("response_bytes"))
+                and row["response_bytes"] == (session[(1, 3)[index]]["response_bytes"] if successful else 0)
+                and (_opaque_reference(row.get("evidence_reference"), "supplied-session-resource-evidence-sha256:")
+                     if successful else row.get("evidence_reference") is None), "authorization_resource_identity", diagnostic)
+        references.append(row["resource_reference"])
+    require(len(set(references)) == 2, "authorization_resource_duplicate", diagnostic)
+    for index, row in enumerate(checkpoints):
+        require(type(row.get("sequence")) is int and row["sequence"] == index
+                and row.get("phase") == ("startup", "subject_boundary", "terminal")[index]
+                and type(row.get("after_subject_count")) is int and row["after_subject_count"] == index
+                and type(row.get("epoch")) is int and row["epoch"] == 1
+                and row.get("status") == 200 and row.get("body_state") == "complete"
+                and row.get("outcome") == "healthy" and row.get("predicate") == "matched"
+                and _opaque_reference(row.get("evidence_reference"), "supplied-session-checkpoint-evidence-sha256:")
+                and integer(row.get("response_bytes")) and row["response_bytes"] == session[(0, 2, 4)[index]]["response_bytes"],
+                "authorization_health_oracle", diagnostic)
+    committed_references = [row["evidence_reference"] for row in resources + checkpoints if row.get("evidence_reference") is not None]
+    if successful:
+        require(_opaque_reference(token.get("evidence_reference"), "supplied-session-oauth-code-evidence-sha256:"),
+                "authorization_token_evidence", diagnostic)
+        committed_references.append(token["evidence_reference"])
+    if expected["callback_commits"]:
+        committed_references.append(nested["evidence_reference"])
+    require(len(set(committed_references)) == len(committed_references), "authorization_duplicate_evidence", diagnostic)
+    total = sum(row["response_bytes"] for row in session + exchanges)
+    require(integer(audit.get("response_bytes")) and audit["response_bytes"] == total
+            and total == token["response_bytes"] + sum(row["response_bytes"] for row in checkpoints + resources)
+            and type(audit.get("response_byte_limit")) is int and audit["response_byte_limit"] == 65536
+            and audit.get("response_byte_limit_exceeded") is False, "authorization_response_bytes", diagnostic)
+    return {"status": "passed", "diagnostic": diagnostic, "outgoing_session_requests": expected["token_posts"] + len(session),
+            "callback_reception_reservations": 1, "callback_request_bytes": nested["ingress_bytes"],
+            "session_response_bytes": total, "ordinary_requests": len(anonymous),
+            "reconciled_logical_parent_admissions": len(anonymous) + 1 + expected["token_posts"] + len(session),
+            "parent_count_scope": "recomputed_from_independent_outgoing_trace_and_typed_callback_reservation_not_a_saved_parent_snapshot",
+            "evaluated_resources": expected["resources"], "callback_outcome": nested["outcome"],
+            "token_outcome": token["outcome"], "user_agent": dict(user_agent),
+            "pkce_meaning": "controlled_provider_refusal_not_universal_enforcement_proof" if name == "initiated-challenge-substitution" else "client_generated_finite_transaction"}
+
+
 def item_identities(source: dict) -> set[tuple[str, str]]:
     require(integer(source.get("item_count")) and isinstance(source.get("items"), list)
             and len(source["items"]) == source["item_count"], "source_item_count")
@@ -2078,6 +2711,146 @@ def run_offline(runner: Runner, binary: str, bundles: dict[str, tuple[Path, dict
             "selected_input_bytes_preserved": input_snapshots is not None}
 
 
+def run_authorization_cases(runner: Runner, binary: str, work: Path, relay: TokenRelay,
+                            target: TargetApplication, controller_secret: str,
+                            callbacks: dict[str, str], baseline: list[dict], private: PrivateValues,
+                            privacy: CombinedOutputPrivacy, summaries: dict) -> tuple[dict, dict]:
+    require(tuple(callbacks) == AUTHORIZATION_SCENARIOS and not summaries, "authorization_case_registry")
+    bundles, inputs = {}, {}
+    for name in AUTHORIZATION_SCENARIOS:
+        relay.phase = "controller-authorization-" + name
+        target.phase = name
+        target.expected_user = "canary-a"
+        target.deny_renewed_health = False
+        relay.public_redirect = callbacks[name]
+        opener, jar = prepare_initiated_sso(relay.origin, controller_secret, private)
+        policy, handoff = work / (name + ".toml"), work / (name + ".authorization.txt")
+        for path in (policy, handoff):
+            private.add(str(path))
+        source = authorization_policy_source(relay.origin + REALM_PATH, callbacks[name], name)
+        validate_authorization_fixture_policy(source, relay.origin + REALM_PATH, callbacks[name], name)
+        private_write(policy, source)
+        inputs[policy] = selected_input_bytes(policy)
+        require(len(inputs) <= 5 and sum(map(len, inputs.values())) <= MAX_HTTP_BODY, "authorization_input_retained_limit")
+        require(not handoff.exists(), "authorization_handoff_preexists")
+        bundle = work / (name + "-bundle")
+        args = [binary, "scan", target.origin + "/", "--profile", "web-review", "--format", "json",
+                "--session-policy", str(policy), "--session-oauth-authorization-output", str(handoff),
+                "--report-dir", str(bundle)]
+        stop = threading.Event()
+        driver_results, driver_errors = [], []
+
+        def drive():
+            try:
+                driver_results.append(drive_initiated_authorization(relay, opener, jar, handoff,
+                    callbacks[name], name, private, stop))
+            except LabError as error:
+                driver_errors.append(error)
+            except Exception:
+                driver_errors.append(LabError("authorization_user_agent_failure"))
+
+        target_start, relay_start = len(target.trace), len(relay.trace)
+        relay.phase = name
+        summaries[name] = {"status": "running", "expected": dict(AUTHORIZATION_EXPECTED[name])}
+        worker = threading.Thread(target=drive, daemon=True)
+        worker.start()
+        original_error = None
+        result = None
+        try:
+            result = runner.run(args, label=name + "-scan", expected=(0,), timeout=60)
+        except LabError as error:
+            original_error = error
+        finally:
+            stop.set()
+            worker.join(timeout=20)
+        if original_error is not None:
+            raise original_error
+        require(not worker.is_alive(), "authorization_user_agent_cleanup")
+        # A driver can register a generated canary after the child capture
+        # finishes on an early-exit path. Recheck after the bounded join before
+        # interpreting or publishing any successful process evidence.
+        require(result is not None, "authorization_scan_result_missing")
+        privacy.check(result.stdout)
+        privacy.check(result.stderr)
+        if driver_errors:
+            raise driver_errors[0]
+        require(len(driver_results) == 1 and result is not None and result.returncode == 0,
+                "authorization_scan_exit", {"scenario": name, "user_agent_result_count": len(driver_results)})
+        require(not relay.errors and not target.errors and not relay.server.handler_failed
+                and not target.server.handler_failed, "fixture_runtime_failure",
+                _fixture_runtime_diagnostic(name, relay, target))
+        audit, document = audit_from_output(result, bundle)
+        rows = target.trace[target_start:]
+        idp = [row for row in relay.trace[relay_start:] if row["phase"] == name]
+        summary = validate_authorization_case(name, audit, rows, idp, baseline, driver_results[0])
+        require(document is not None, "authorization_expected_bundle", {"scenario": name})
+        require(not handoff.exists() and selected_input_bytes(policy) == inputs[policy],
+                "authorization_input_or_handoff_cleanup", {"scenario": name})
+        summary.update({"exit_code": result.returncode, "elapsed_seconds": result.elapsed_seconds,
+                        "bundle_produced": True, "policy_bytes_preserved": True, "private_handoff_removed": True})
+        if name == "initiated-valid-a":
+            counts = len(target.trace), len(relay.trace)
+            summary["closed_listener_replay_control"] = closed_callback_replay_control(callbacks[name])
+            require((len(target.trace), len(relay.trace)) == counts, "authorization_replay_added_work")
+        summaries[name] = summary
+        bundles[name] = bundle, document
+        for body in snapshot(bundle).values():
+            privacy.check(body)
+    require(tuple(summaries) == tuple(bundles) == AUTHORIZATION_SCENARIOS,
+            "authorization_scenario_coverage")
+    return bundles, inputs
+
+
+def run_authorization_offline(runner: Runner, binary: str, bundles: dict, legacy_bundles: dict,
+                              privacy: CombinedOutputPrivacy, inputs: dict[Path, bytes]) -> dict:
+    require(tuple(bundles) == AUTHORIZATION_SCENARIOS and tuple(legacy_bundles) == SCENARIOS,
+            "authorization_offline_registry")
+    require(len(inputs) == 5 and sum(map(len, inputs.values())) <= MAX_HTTP_BODY,
+            "authorization_input_retained_limit")
+    initial = {name: snapshot(path) for name, (path, _) in bundles.items()}
+    retained = sum(len(body) for members in initial.values() for body in members.values())
+    retained += sum(sum(map(len, snapshot(path).values())) for path, _ in legacy_bundles.values())
+    require(retained <= MAX_ALL_BUNDLE_BYTES, "offline_retained_bundle_limit")
+    results = {}
+    for name, (path, source) in bundles.items():
+        for body in initial[name].values():
+            privacy.check(body)
+        result = runner.run([binary, "report", "verify", "--dir", str(path), "--format", "json"], label=name + "-verify")
+        verified = strict_json(result.stdout)
+        require(type(verified) is dict and verified.get("status") == "integrity_match", "authorization_offline_verify")
+        result = runner.run([binary, "report", "compare", "--before", str(path / "assessment.json"),
+            "--after", str(path / "assessment.json"), "--same-scope", "--format", "json"], label=name + "-self-compare")
+        counts = _self_compare(strict_json(result.stdout), source)
+        require(snapshot(path) == initial[name], "authorization_offline_bytes_changed")
+        results[name] = {"verify": "integrity_match", "self_compare_counts": counts, "input_bytes_preserved": True}
+    before, after = legacy_bundles["valid-a"], bundles["initiated-valid-a"]
+    result = runner.run([binary, "report", "compare", "--before", str(before[0] / "assessment.json"),
+        "--after", str(after[0] / "assessment.json"), "--same-scope", "--format", "json"], label="external-code-to-initiated-compare")
+    document = strict_json(result.stdout)
+    counts = comparison_counts(document)
+    require(len(item_identities(before[1])) == counts["only_in_before"] + counts["changed"] + counts["unchanged"]
+            and len(item_identities(after[1])) == counts["only_in_after"] + counts["changed"] + counts["unchanged"],
+            "authorization_control_conservation")
+    nested = document.get("supplied_session_comparison")
+    require(type(nested) is dict and nested.get("status") == "not_compared"
+            and nested.get("context", {}).get("status") == "session_policy_changed"
+            and nested.get("health_and_coverage", {}).get("status") == "not_comparable"
+            and nested.get("accounting", {}).get("status") == "not_comparable"
+            and before[1]["supplied_session"]["schema"] == "security.supplied-session-audit/v5"
+            and after[1]["supplied_session"]["schema"] == "security.supplied-session-audit/v7",
+            "authorization_control_methodology")
+    for rows, source in ((document["only_in_before"] + document["changed"] + document["unchanged"], before[1]),
+                         (document["only_in_after"] + document["changed"] + document["unchanged"], after[1])):
+        require(item_identities({"item_count": len(rows), "items": rows}) == item_identities(source),
+                "authorization_control_identities")
+    require(all(snapshot(path) == initial[name] for name, (path, _) in bundles.items())
+            and all(selected_input_bytes(path) == source for path, source in inputs.items()),
+            "authorization_offline_input_modified")
+    return {"status": "passed", "bundles": results, "policy_bytes_preserved": True,
+            "controlled_comparisons": {"external-code-to-initiated": {
+                "status": "not_compared_different_policy_and_methodology", "item_counts": counts}}}
+
+
 def validate_fixture() -> dict:
     # RFC7636 Appendix B independent known-answer, not production-generated.
     require(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "rfc7636_oracle")
@@ -2097,8 +2870,15 @@ def validate_fixture() -> dict:
                                          "http://127.0.0.1:5678/callback", "canary-a"))
     validate_fixture_policy(policy_source("http://127.0.0.1:1234/realms/termivar-owned-code",
                                          "http://127.0.0.1:5678/callback", "canary-a", renewable=True))
+    require(len(AUTHORIZATION_SCENARIOS) == len(set(AUTHORIZATION_SCENARIOS)) == 5
+            and set(AUTHORIZATION_EXPECTED) == set(AUTHORIZATION_SCENARIOS), "authorization_scenario_registry")
+    for index, name in enumerate(AUTHORIZATION_SCENARIOS):
+        callback = f"http://127.0.0.1:{18500 + index}" + AUTHORIZATION_CALLBACK_PATH
+        source = authorization_policy_source("http://127.0.0.1:1234" + REALM_PATH, callback, name)
+        validate_authorization_fixture_policy(source, "http://127.0.0.1:1234" + REALM_PATH, callback, name)
     return {"schema": SCHEMA, "status": "fixture_contracts_valid", "execution_class": "static_only",
             "cms_or_idp_execution": "not_performed", "scenario_registry": list(SCENARIOS),
+            "authorization_scenario_registry": list(AUTHORIZATION_SCENARIOS),
             "provider_version": KEYCLOAK_VERSION, "provider_source": KEYCLOAK_SOURCE,
             "image_index": KEYCLOAK_INDEX, "image_linux_amd64": KEYCLOAK_AMD64}
 
@@ -2110,6 +2890,9 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
     output.mkdir(mode=0o700, parents=True)
     private = runner.private if runner is not None else PrivateValues()
     runner = runner or Runner(private)
+    authorization_private = PrivateValues()
+    output_privacy = CombinedOutputPrivacy(private, authorization_private)
+    runner.output_privacy = output_privacy
     binary_hash = hashlib.sha256()
     with binary.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -2117,12 +2900,14 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
     evidence = {**validate_fixture(), "status": "running", "execution_class": "real_owned_keycloak_and_native_cli",
                 "source_ref": source_ref, "binary_sha256": binary_hash.hexdigest(),
                 "binary_bytes": binary.stat().st_size, "scenarios": {}, "offline": {"status": "not_run"},
+                "authorization_scenarios": {}, "authorization_offline": {"status": "not_run"},
                 "publication": "not_performed",
                 "controller_refresh_replay": {"status": "not_run", "expected": {"http_status": 400,
                     "error_class": "invalid_grant", "submitted_revoke_refresh_token": True,
                     "submitted_refresh_token_max_reuse": 0}, "observations": {},
                     "meaning": "independent_owned_provider_control_not_product_revocation_or_identity_assurance"}}
     relay = TokenRelay(private)
+    relay.authorization_private = authorization_private
     resource_secret = secrets.token_urlsafe(32)
     controller_secret = secrets.token_urlsafe(32)
     for value in (resource_secret, controller_secret):
@@ -2130,15 +2915,19 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
     target = TargetApplication(relay, resource_secret)
     redirect = target.origin + "/callback"
     relay.public_redirect = redirect
-    lab = KeycloakLab(runner, relay, realm_document(resource_secret, controller_secret, redirect))
+    callbacks = authorization_callback_bindings()
+    lab = KeycloakLab(runner, relay, realm_document(resource_secret, controller_secret, redirect,
+                                                   tuple(callbacks.values())))
     primary_error = None
     controller_error = None
     cleanup = {}
     bundles = {}
     input_snapshots = {}
+    authorization_bundles, authorization_inputs = {}, {}
     with tempfile.TemporaryDirectory(prefix=".private-owned-oauth-", dir=output, ignore_cleanup_errors=True) as temporary:
         work = Path(temporary)
         private.add(str(work))
+        authorization_private.add(str(work))
         try:
             version = runner.run([str(binary), "--version"], label="candidate-version")
             require(re.fullmatch(rb"termivar " + re.escape(expect_version.encode()) + rb"\s*", version.stdout) is not None, "candidate_version")
@@ -2215,17 +3004,20 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                 require(source is not None, "expected_completed_bundle", {"scenario": name})
             require(tuple(evidence["scenarios"]) == SCENARIOS, "scenario_coverage")
             require(tuple(bundles) == SCENARIOS, "emitted_bundle_coverage")
+            authorization_bundles, authorization_inputs = run_authorization_cases(
+                runner, str(binary), work, relay, target, controller_secret, callbacks, baseline,
+                authorization_private, output_privacy, evidence["authorization_scenarios"])
             # No positive flow can depend on state after a replay/revocation
             # control. All scanner activity finishes before these two controls.
             relay.scanner_scenarios_complete = True
             target_count = len(target.trace)
-            scanner_idp_count = sum(row["phase"] in SCENARIOS for row in relay.trace)
+            scanner_idp_count = sum(row["phase"] in SCENARIOS + AUTHORIZATION_SCENARIOS for row in relay.trace)
             replay_results = evidence["controller_refresh_replay"]
             for name in REFRESH_POSITIVE:
                 try:
                     replay_results["observations"][name] = relay.replay_initial_after_completed_flow(name)
                     require(len(target.trace) == target_count
-                            and sum(row["phase"] in SCENARIOS for row in relay.trace) == scanner_idp_count,
+                            and sum(row["phase"] in SCENARIOS + AUTHORIZATION_SCENARIOS for row in relay.trace) == scanner_idp_count,
                             "refresh_control_contaminated_scanner_trace")
                 except LabError as error:
                     replay_results["observations"][name] = {"status": "not_run" if error.code == "refresh_control_not_run" else "failed",
@@ -2261,9 +3053,14 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
                     and cleanup["idp"]["status"] == "complete", "cleanup_failed")
             if primary_error is None:
                 frozen_trace_lengths = (len(target.trace), len(relay.trace))
-                evidence["offline"] = run_offline(runner, str(binary), bundles, private, input_snapshots)
+                evidence["offline"] = run_offline(runner, str(binary), bundles, output_privacy, input_snapshots)
+                evidence["authorization_offline"] = run_authorization_offline(
+                    runner, str(binary), authorization_bundles, bundles, output_privacy, authorization_inputs)
+                require(all(selected_input_bytes(path) == data for path, data in input_snapshots.items()),
+                        "offline_selected_input_modified")
                 require((len(target.trace), len(relay.trace)) == frozen_trace_lengths, "offline_network_activity")
                 evidence["offline"]["fixtures_stopped_before_execution"] = True
+                evidence["authorization_offline"]["fixtures_stopped_before_execution"] = True
         except LabError as error:
             if primary_error is None:
                 primary_error = controller_error if controller_error is not None else error
@@ -2294,13 +3091,16 @@ def execute(binary: Path, output: Path, source_ref: str, expect_version: str, ru
         evidence["status"] = "passed"
     evidence["controller_acquisition"] = "admin_prepared_sso_then_real_post_authorization_s256_form_post"
     evidence["controller_cookie_transport"] = "explicit_owned_loopback_http_exact_relay_authorization_only_secure_attribute_retained"
+    evidence["authorization_acquisition"] = "product_generated_state_s256_handoff_then_admin_prepared_sso_user_agent_get_and_real_loopback_form_post"
     evidence["interactive_login_qualification"] = "not_performed"
     evidence["privacy"] = {"selected_sinks_checked": True, "raw_tokens_or_provider_logs_exported": False,
+                           "independent_retained_guards": 2, "raw_entry_cap_per_guard": 96,
+                           "combined_retained_payload_byte_ceiling": 2 * 96 * MAX_HTTP_BODY,
                            "sensitive_python_library_copies_zeroized": "not_claimed"}
     payload = json.dumps(evidence, sort_keys=True, indent=2).encode() + b"\n"
     try:
         require(len(payload) <= MAX_EVIDENCE, "evidence_size")
-        private.check(payload)
+        output_privacy.check(payload)
         private_write(output / "oauth-code-lab-acceptance.json", payload)
     except (OSError, LabError):
         if primary_error is None:
@@ -2326,7 +3126,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         require(all((args.binary, args.output_dir, args.source_ref, args.expect_version)), "execution_arguments")
         result = execute(args.binary.resolve(), args.output_dir.absolute(), args.source_ref, args.expect_version)
-        print(json.dumps({"schema": SCHEMA, "status": result["status"], "scenario_count": len(result["scenarios"])}))
+        print(json.dumps({"schema": SCHEMA, "status": result["status"], "scenario_count": len(result["scenarios"]),
+                          "authorization_scenario_count": len(result["authorization_scenarios"])}))
         return 0
     except LabError as error:
         # Never emit exception causes, target URLs, secret paths or captured output.

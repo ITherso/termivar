@@ -1,0 +1,24 @@
+schema = "security.supplied-session-policy/v7"
+principal_alias = "original-synthetic-principal"
+credential_mechanism = "authorization_header"
+credential_acquisition = "client_initiated_oauth_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/read-only"]
+max_session_requests = 4
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+[oauth_code]
+profile = "client-initiated-public-code-s256-bearer/v1"
+transport_profile = "verified-https/v1"
+issuer = "https://issuer-fuzz.invalid/issuer"
+token_endpoint = "https://issuer-fuzz.invalid/issuer/token"
+client_id = "original-synthetic-client"
+redirect_uri = "http://127.0.0.1:43123/termivar/oauth/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+[oauth_authorization]
+profile = "loopback-form-post-state/v1"
+authorization_endpoint = "https://issuer-fuzz.invalid/issuer/authorize"
+max_wait_ms = 1000

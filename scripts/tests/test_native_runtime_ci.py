@@ -120,13 +120,15 @@ OAUTH_CODE = """      - name: Exercise imported OAuth-code session and feature-o
           TERMIVAR_NATIVE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,secret-exposure-review --test supplied_session_oauth_code_cli --test supplied_session_oauth_refresh_cli --test capabilities_cli -- --nocapture
+          cargo test --release --locked -p termivar-cli --no-default-features --features supplied-session-review,secret-exposure-review --test supplied_session_oauth_code_cli --test supplied_session_oauth_refresh_cli --test oauth_authorization_cli --test capabilities_cli -- --nocapture
           python -c 'import hashlib,json,os,pathlib,platform; e=os.environ; p=pathlib.Path("target/release/termivar"+(".exe" if os.name=="nt" else "")); assert p.is_file() and not p.is_symlink(); n=p.stat().st_size; assert 0<n<=2**27; print(json.dumps(dict(schema="native-oauth-executable/v1",source=e["TERMIVAR_NATIVE_SOURCE"],run_id=e["GITHUB_RUN_ID"],run_attempt=e["GITHUB_RUN_ATTEMPT"],host=platform.system(),arch=platform.machine(),features="supplied-session-review,secret-exposure-review",profile="release",bytes=n,sha256=hashlib.file_digest(p.open("rb"),"sha256").hexdigest(),assurance="self_reported_hash_not_attestation"),sort_keys=True))'
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_code::tests:: -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_refresh::tests:: -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::supplied_session_runtime::oauth_authorization:: -- --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features supplied-session-review,reporting web_runtime::web_assessment::tests::normal_runtime_oauth_refresh_central_reports_all_formats_without_private_values -- --exact --nocapture
           cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_code_saved_reader_ -- --nocapture
-          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_refresh_saved_ -- --nocapture"""
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting supplied_session_oauth_refresh_saved_ -- --nocapture
+          cargo test --release --locked -p termivar-scanner --lib --no-default-features --features reporting oauth_authorization_ -- --nocapture"""
 BUDGET = "    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 120 || 90 }}"
 CHECKOUT = """      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -267,17 +269,21 @@ class NativeRuntimeWorkflowTests(unittest.TestCase):
             OAUTH_CODE.replace("supplied-session-review,secret-exposure-review", "supplied-session-review"),
             OAUTH_CODE.replace("--test supplied_session_oauth_code_cli", "--test supplied_session_cli"),
             OAUTH_CODE.replace(" --test supplied_session_oauth_refresh_cli", ""),
+            OAUTH_CODE.replace(" --test oauth_authorization_cli", ""),
             OAUTH_CODE.replace(" --test capabilities_cli", ""),
             OAUTH_CODE.replace('          TERMIVAR_NATIVE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}\n', ""),
             "\n".join(line for line in OAUTH_CODE.splitlines() if "          python -c " not in line),
             OAUTH_CODE.replace('target/release/termivar', 'target/debug/termivar'),
             OAUTH_CODE.replace("oauth_code::tests::", "nonexistent_filter::"),
             "\n".join(line for line in OAUTH_CODE.splitlines() if "oauth_refresh::tests::" not in line),
+            "\n".join(line for line in OAUTH_CODE.splitlines() if "oauth_authorization::" not in line),
             "\n".join(line for line in OAUTH_CODE.splitlines() if "normal_runtime_oauth_refresh_central_reports_all_formats_without_private_values" not in line),
             OAUTH_CODE.replace(" -- --exact --nocapture", " -- --nocapture"),
             "\n".join(line for line in OAUTH_CODE.splitlines() if "supplied_session_oauth_refresh_saved_" not in line),
             OAUTH_CODE.replace("--features reporting supplied_session_oauth_refresh_saved_", "--features supplied-session-review supplied_session_oauth_refresh_saved_"),
             OAUTH_CODE.replace("--features reporting supplied_session_oauth_code_saved_reader_", "--features supplied-session-review supplied_session_oauth_code_saved_reader_"),
+            "\n".join(line for line in OAUTH_CODE.splitlines() if "--features reporting oauth_authorization_" not in line),
+            OAUTH_CODE.replace("--features reporting oauth_authorization_", "--features supplied-session-review oauth_authorization_"),
             OAUTH_CODE + "\n        if: false",
             OAUTH_CODE + "\n        continue-on-error: true",
         ):

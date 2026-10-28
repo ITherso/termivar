@@ -413,6 +413,7 @@ SUPPLIED_SESSION_OPTIONS = (
     "--session-cookie-file",
     "--session-login-file",
     "--session-oauth-code-file",
+    "--session-oauth-authorization-output",
 )
 SUPPLIED_SESSION_PREREQUISITES = (
     "--profile web-review",
@@ -423,6 +424,7 @@ SUPPLIED_SESSION_PREREQUISITES = (
     "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
     "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
     "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
+    "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
     "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
@@ -480,10 +482,20 @@ SUPPLIED_SESSION_LIMITATION = (
     "Access lifetime may change only inside the immutable assessment deadline. Failed or ambiguous "
     "renewal stops without retry or old-token fallback. V6 performs no interactive authorization, "
     "OIDC identity or token signature validation and admits no WordPress or WebSocket composition. "
+    "V7 alone initiates one public-client S256 authorization transaction with independent OS-random verifier and state. "
+    "--session-oauth-authorization-output creates a private one-shot authorization-URI handoff outside the report; it never opens a browser or imports credentials. "
+    "The exact registered IPv4 http://127.0.0.1 unprivileged-port callback accepts one bounded form_post response, requires matching state and issuer, and closes before composition. "
+    "A separately counted callback reception reservation and framing/form ingress consume the same parent request/byte ledger. "
+    "At most 30 seconds of authorization wait precedes the unchanged at-most-ten-second session window; neither extends the immutable parent deadline. "
+    "Only exact committed callback evidence authorizes the existing once-only IdP token POST and subsequent health-qualified read collection. "
+    "V7 uses at most three resources and 2 + 2 * resource_count outgoing session requests plus one callback reservation, at most nine combined logical admissions. "
+    "Codes, state, verifier, raw callback content, authorization URI and query stay out of reports and progress; the private handoff contains state/challenge but never the verifier and receives ownership-checked cleanup. "
+    "An observed matching issuer/state is not browser/sender authentication or proof of remote PKCE enforcement. "
+    "V7 performs no OIDC nonce, identity or token signature validation, refresh, endpoint discovery, automatic login, or WordPress/WebSocket composition. "
     "No browser-profile "
-    "import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass, "
+    "import, form discovery, credential guessing, automatic OAuth/OIDC login, MFA bypass, "
     "exploit, or impact validation occurs. WordPress supplied-session composition remains "
-    "limited to V1/V2; V3/V4/V5/V6 are rejected before their secret files are read."
+    "limited to V1/V2; V3/V4/V5/V6/V7 are rejected before their secret files are read."
 )
 WORDPRESS_OPTIONS = (
     "--wordpress-review",

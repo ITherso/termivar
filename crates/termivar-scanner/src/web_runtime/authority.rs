@@ -20,6 +20,27 @@ use crate::{
 #[cfg(feature = "supplied-session-review")]
 struct OAuthCodeMintSeal;
 
+#[cfg(feature = "supplied-session-review")]
+pub(super) struct OAuthAuthorizationCallbackMint {
+    policy_reference: String,
+    knowledge_authority: crate::knowledge::KnowledgeAuthority,
+    _seal: OAuthCodeMintSeal,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl OAuthAuthorizationCallbackMint {
+    pub(super) fn is_valid_for(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+        knowledge: &KnowledgeBase,
+    ) -> bool {
+        policy.version() == crate::supplied_session_review::SuppliedSessionPolicyVersion::V7
+            && policy.oauth_authorization_policy().is_some()
+            && policy.policy_reference() == self.policy_reference
+            && self.knowledge_authority.is_same_as(knowledge.authority())
+    }
+}
+
 /// Move-only IdP child authority. Only this assessment owner can construct it;
 /// neither a saved audit nor a token/grant string can mint an endpoint permit.
 #[cfg(feature = "supplied-session-review")]
@@ -28,6 +49,7 @@ pub(crate) struct OAuthCodeMintToken {
     policy_reference: String,
     idp_reference: String,
     principal_alias: String,
+    knowledge_authority: crate::knowledge::KnowledgeAuthority,
     _seal: OAuthCodeMintSeal,
 }
 
@@ -44,6 +66,10 @@ impl OAuthCodeMintToken {
             crate::supplied_session_review::SuppliedSessionPolicyVersion::V6 => {
                 policy.oauth_refresh_policy().is_some()
             },
+            crate::supplied_session_review::SuppliedSessionPolicyVersion::V7 => {
+                policy.oauth_authorization_policy().is_some()
+                    && policy.oauth_refresh_policy().is_none()
+            },
             _ => false,
         }) && policy.application_url() == &self.application
             && policy.policy_reference() == self.policy_reference
@@ -52,6 +78,14 @@ impl OAuthCodeMintToken {
                 idp.is_valid_for_application(&self.application)
                     && idp.binding_reference() == self.idp_reference
             })
+    }
+
+    pub(crate) fn is_valid_for_knowledge(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+        knowledge: &KnowledgeBase,
+    ) -> bool {
+        self.is_valid_for(policy) && self.knowledge_authority.is_same_as(knowledge.authority())
     }
 }
 
@@ -188,6 +222,8 @@ pub(crate) struct SharedWebRuntimeAuthority {
     native_oast_provider_minted: Arc<std::sync::Mutex<bool>>,
     #[cfg(feature = "websocket-review")]
     websocket_review_minted: Arc<std::sync::Mutex<bool>>,
+    #[cfg(feature = "supplied-session-review")]
+    oauth_authorization_callback_minted: Arc<std::sync::Mutex<bool>>,
 }
 
 impl SharedWebRuntimeAuthority {
@@ -323,6 +359,8 @@ impl SharedWebRuntimeAuthority {
             native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
             #[cfg(feature = "websocket-review")]
             websocket_review_minted: Arc::new(std::sync::Mutex::new(false)),
+            #[cfg(feature = "supplied-session-review")]
+            oauth_authorization_callback_minted: Arc::new(std::sync::Mutex::new(false)),
         })
     }
 
@@ -415,6 +453,8 @@ impl SharedWebRuntimeAuthority {
             native_oast_provider_minted: Arc::new(std::sync::Mutex::new(false)),
             #[cfg(feature = "websocket-review")]
             websocket_review_minted: Arc::new(std::sync::Mutex::new(false)),
+            #[cfg(feature = "supplied-session-review")]
+            oauth_authorization_callback_minted: Arc::new(std::sync::Mutex::new(false)),
         })
     }
 
@@ -445,7 +485,9 @@ impl SharedWebRuntimeAuthority {
         use crate::supplied_session_review::SuppliedSessionPolicyVersion;
         if !matches!(
             policy.version(),
-            SuppliedSessionPolicyVersion::V5 | SuppliedSessionPolicyVersion::V6
+            SuppliedSessionPolicyVersion::V5
+                | SuppliedSessionPolicyVersion::V6
+                | SuppliedSessionPolicyVersion::V7
         ) || policy.application_url() != &self.selected_target
         {
             return Err(());
@@ -459,6 +501,7 @@ impl SharedWebRuntimeAuthority {
             policy_reference: policy.policy_reference().to_owned(),
             idp_reference: idp.binding_reference().to_owned(),
             principal_alias: policy.principal_alias().to_owned(),
+            knowledge_authority: self.knowledge.authority().clone(),
             _seal: OAuthCodeMintSeal,
         };
         let refresh_mint = policy
@@ -479,6 +522,32 @@ impl SharedWebRuntimeAuthority {
 
     pub(crate) const fn request_accounting(&self) -> &RequestAccountingBroker {
         &self.request_accounting
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    pub(super) fn mint_oauth_authorization_callback(
+        &self,
+        policy: &crate::supplied_session_review::SuppliedSessionPolicy,
+    ) -> Result<OAuthAuthorizationCallbackMint, ()> {
+        if policy.version() != crate::supplied_session_review::SuppliedSessionPolicyVersion::V7
+            || policy.application_url() != &self.selected_target
+            || policy.oauth_authorization_policy().is_none()
+        {
+            return Err(());
+        }
+        let mut minted = self
+            .oauth_authorization_callback_minted
+            .lock()
+            .map_err(|_| ())?;
+        if *minted {
+            return Err(());
+        }
+        *minted = true;
+        Ok(OAuthAuthorizationCallbackMint {
+            policy_reference: policy.policy_reference().to_owned(),
+            knowledge_authority: self.knowledge.authority().clone(),
+            _seal: OAuthCodeMintSeal,
+        })
     }
 
     pub(crate) fn cancellation_token(&self) -> CancellationToken {

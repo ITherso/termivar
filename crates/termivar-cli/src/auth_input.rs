@@ -504,7 +504,7 @@ impl JwtPolicyReviewInput {
     feature = "supplied-session-review",
     feature = "xml-external-entity-review"
 ))]
-fn validate_local_file_path(path: &Path) -> Result<(), AuthorizationInputError> {
+pub(super) fn validate_local_file_path(path: &Path) -> Result<(), AuthorizationInputError> {
     #[cfg(windows)]
     if windows_path_is_remote_or_special(path) {
         return Err(AuthorizationInputError::SourceUnavailable);
@@ -773,6 +773,9 @@ enum SuppliedSessionSecretSource {
     Cookies(PathBuf),
     FormLogin(PathBuf),
     OAuthCode(PathBuf),
+    // An explicit no-secret acquisition selection. This path is an output,
+    // never opened by credential intake or passed to the scanner runtime.
+    OAuthAuthorization(PathBuf),
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -783,6 +786,9 @@ impl SuppliedSessionSecretSource {
             Self::Cookies(_) => SuppliedSessionCredentialAcquisition::SuppliedCookieJar,
             Self::FormLogin(_) => SuppliedSessionCredentialAcquisition::BoundedFormLogin,
             Self::OAuthCode(_) => SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce,
+            Self::OAuthAuthorization(_) => {
+                SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce
+            },
         }
     }
 }
@@ -795,6 +801,7 @@ impl fmt::Debug for SuppliedSessionSecretSource {
             Self::Cookies(_) => "cookies",
             Self::FormLogin(_) => "form_login",
             Self::OAuthCode(_) => "imported_oauth_code",
+            Self::OAuthAuthorization(_) => "client_initiated_oauth",
         };
         formatter
             .debug_struct("SuppliedSessionSecretSource")
@@ -835,7 +842,14 @@ impl SuppliedSessionInput {
         cookie_file: Option<PathBuf>,
         login_file: Option<PathBuf>,
     ) -> Result<Option<Self>, SuppliedSessionInputError> {
-        Self::select_all(policy_file, authorization, cookie_file, login_file, None)
+        Self::select_all(
+            policy_file,
+            authorization,
+            cookie_file,
+            login_file,
+            None,
+            None,
+        )
     }
 
     /// Selects the explicit V5 code file without opening it or changing the
@@ -853,6 +867,27 @@ impl SuppliedSessionInput {
             cookie_file,
             login_file,
             Some(oauth_code_file),
+            None,
+        )
+    }
+
+    /// Selects a V7 private authorization output without reading a credential,
+    /// opening a file, starting a listener or falling back from a missing source.
+    pub(crate) fn select_with_oauth_authorization(
+        policy_file: Option<PathBuf>,
+        authorization: AuthorizationSourceOptions,
+        cookie_file: Option<PathBuf>,
+        login_file: Option<PathBuf>,
+        oauth_code_file: Option<PathBuf>,
+        authorization_output: PathBuf,
+    ) -> Result<Option<Self>, SuppliedSessionInputError> {
+        Self::select_all(
+            policy_file,
+            authorization,
+            cookie_file,
+            login_file,
+            oauth_code_file,
+            Some(authorization_output),
         )
     }
 
@@ -862,6 +897,7 @@ impl SuppliedSessionInput {
         cookie_file: Option<PathBuf>,
         login_file: Option<PathBuf>,
         oauth_code_file: Option<PathBuf>,
+        authorization_output: Option<PathBuf>,
     ) -> Result<Option<Self>, SuppliedSessionInputError> {
         let any_selected = policy_file.is_some()
             || authorization.environment.is_some()
@@ -869,7 +905,8 @@ impl SuppliedSessionInput {
             || authorization.stdin
             || cookie_file.is_some()
             || login_file.is_some()
-            || oauth_code_file.is_some();
+            || oauth_code_file.is_some()
+            || authorization_output.is_some();
         if !any_selected {
             return Ok(None);
         }
@@ -881,12 +918,23 @@ impl SuppliedSessionInput {
             authorization.stdin,
         )
         .map_err(|_| SuppliedSessionInputError::ConflictingCredentialSources)?;
-        let secret = match (authorization, cookie_file, login_file, oauth_code_file) {
-            (Some(source), None, None, None) => SuppliedSessionSecretSource::Authorization(source),
-            (None, Some(path), None, None) => SuppliedSessionSecretSource::Cookies(path),
-            (None, None, Some(path), None) => SuppliedSessionSecretSource::FormLogin(path),
-            (None, None, None, Some(path)) => SuppliedSessionSecretSource::OAuthCode(path),
-            (None, None, None, None) => {
+        let secret = match (
+            authorization,
+            cookie_file,
+            login_file,
+            oauth_code_file,
+            authorization_output,
+        ) {
+            (Some(source), None, None, None, None) => {
+                SuppliedSessionSecretSource::Authorization(source)
+            },
+            (None, Some(path), None, None, None) => SuppliedSessionSecretSource::Cookies(path),
+            (None, None, Some(path), None, None) => SuppliedSessionSecretSource::FormLogin(path),
+            (None, None, None, Some(path), None) => SuppliedSessionSecretSource::OAuthCode(path),
+            (None, None, None, None, Some(path)) => {
+                SuppliedSessionSecretSource::OAuthAuthorization(path)
+            },
+            (None, None, None, None, None) => {
                 return Err(SuppliedSessionInputError::MissingCredentialSource)
             },
             _ => return Err(SuppliedSessionInputError::ConflictingCredentialSources),
@@ -894,7 +942,8 @@ impl SuppliedSessionInput {
         if let SuppliedSessionSecretSource::Authorization(AuthorizationInputSource::File(path))
         | SuppliedSessionSecretSource::Cookies(path)
         | SuppliedSessionSecretSource::FormLogin(path)
-        | SuppliedSessionSecretSource::OAuthCode(path) = &secret
+        | SuppliedSessionSecretSource::OAuthCode(path)
+        | SuppliedSessionSecretSource::OAuthAuthorization(path) = &secret
         {
             validate_local_file_path(path).map_err(SuppliedSessionInputError::CredentialSource)?;
         }
@@ -927,6 +976,36 @@ impl SuppliedSessionInput {
 
 #[cfg(feature = "supplied-session-review")]
 impl PreparedSuppliedSessionInput {
+    /// CLI-owned sensitive handoff destination. Only the CLI may inspect or
+    /// reserve it; no pathname enters the scanner input.
+    pub(crate) fn authorization_output(&self) -> Option<&Path> {
+        match &self.secret {
+            SuppliedSessionSecretSource::OAuthAuthorization(path) => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Binds the already created private writer to V7 without reading any secret.
+    pub(crate) fn load_with_authorization_writer(
+        self,
+        writer: File,
+    ) -> Result<(SuppliedSessionPolicy, SuppliedSessionRuntimeInput), SuppliedSessionInputError>
+    {
+        if !matches!(
+            self.secret,
+            SuppliedSessionSecretSource::OAuthAuthorization(_)
+        ) {
+            return Err(SuppliedSessionInputError::CredentialMechanismMismatch);
+        }
+        let input =
+            termivar_scanner::supplied_session_review::SuppliedSessionOAuthAuthorization::new(
+                &self.policy,
+                writer,
+            )
+            .map_err(|_| SuppliedSessionInputError::CredentialMechanismMismatch)?;
+        Ok((self.policy, SuppliedSessionRuntimeInput::from(input)))
+    }
+
     /// Policy generation is non-secret and may be used for cross-capability
     /// preflight before any credential source or output destination is opened.
     #[cfg(any(
@@ -1003,6 +1082,9 @@ impl PreparedSuppliedSessionInput {
                 ).map_err(|_| SuppliedSessionInputError::InvalidCredentialValue)?;
                 SuppliedSessionRuntimeInput::from(grant)
             },
+            SuppliedSessionSecretSource::OAuthAuthorization(_) => {
+                return Err(SuppliedSessionInputError::MissingAuthorizationWriter);
+            },
         };
         Ok((self.policy, runtime_input))
     }
@@ -1021,6 +1103,7 @@ pub(crate) enum SuppliedSessionInputError {
     CredentialSource(AuthorizationInputError),
     InvalidCredentialValue,
     CredentialClockUnavailable,
+    MissingAuthorizationWriter,
 }
 
 #[cfg(feature = "supplied-session-review")]
@@ -1039,6 +1122,9 @@ impl fmt::Display for SuppliedSessionInputError {
             Self::CredentialSource(_) => "supplied-session credential source could not be loaded",
             Self::InvalidCredentialValue => "supplied-session credential value is invalid",
             Self::CredentialClockUnavailable => "supplied-session credential clock is unavailable",
+            Self::MissingAuthorizationWriter => {
+                "OAuth authorization requires its explicitly reserved private output"
+            },
         })
     }
 }
@@ -2741,6 +2827,143 @@ max_total_response_bytes = 131072
 max_response_body_bytes = 32768
 max_wall_time_ms = 5000
 "#
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    fn valid_oauth_authorization_policy() -> &'static str {
+        r#"schema = "security.supplied-session-policy/v7"
+principal_alias = "authorization-reader"
+credential_mechanism = "authorization_header"
+credential_acquisition = "client_initiated_oauth_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private"]
+max_session_requests = 4
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+[oauth_code]
+profile = "client-initiated-public-code-s256-bearer/v1"
+transport_profile = "owned-numeric-loopback-http/v1"
+issuer = "http://127.0.0.1:8124/realm"
+token_endpoint = "http://127.0.0.1:8124/realm/token"
+client_id = "owned-public"
+redirect_uri = "http://127.0.0.1:18443/termivar/oauth/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+[oauth_authorization]
+profile = "loopback-form-post-state/v1"
+authorization_endpoint = "http://127.0.0.1:8124/realm/authorize"
+max_wait_ms = 1000
+"#
+    }
+
+    #[cfg(feature = "supplied-session-review")]
+    #[test]
+    fn oauth_authorization_intake_is_explicit_no_secret_and_writer_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy_path = directory.path().join("PRIVATE-POLICY.toml");
+        let output_path = directory.path().join("PRIVATE-HANDOFF.txt");
+        std::fs::write(&policy_path, valid_oauth_authorization_policy()).unwrap();
+        let select = || {
+            SuppliedSessionInput::select_with_oauth_authorization(
+                Some(policy_path.clone()),
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                None,
+                None,
+                output_path.clone(),
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let input = select();
+        assert!(!format!("{input:?}").contains("PRIVATE-"));
+        let target = url::Url::parse("http://127.0.0.1:8123/app/").unwrap();
+        let prepared = input.prepare(&target).unwrap();
+        assert_eq!(prepared.policy_version(), SuppliedSessionPolicyVersion::V7);
+        assert_eq!(prepared.authorization_output(), Some(output_path.as_path()));
+        assert!(
+            !output_path.exists(),
+            "preparation must not reserve handoff output"
+        );
+        assert_eq!(
+            prepared.load().unwrap_err(),
+            SuppliedSessionInputError::MissingAuthorizationWriter
+        );
+        assert!(!output_path.exists());
+        let file = File::create(&output_path).unwrap();
+        let (policy, runtime) = select()
+            .prepare(&target)
+            .unwrap()
+            .load_with_authorization_writer(file)
+            .unwrap();
+        assert!(runtime.matches_policy(&policy));
+        assert_eq!(
+            std::fs::metadata(&output_path).unwrap().len(),
+            0,
+            "intake must not initiate authorization or write a URI"
+        );
+        assert!(!format!("{runtime:?}").contains("PRIVATE-"));
+
+        std::fs::write(&policy_path, valid_supplied_session_policy()).unwrap();
+        assert_eq!(
+            select().prepare(&target).unwrap_err(),
+            SuppliedSessionInputError::CredentialMechanismMismatch
+        );
+        assert_eq!(
+            SuppliedSessionInput::select(
+                Some(policy_path.clone()),
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                None,
+            )
+            .unwrap_err(),
+            SuppliedSessionInputError::MissingCredentialSource
+        );
+        for (authorization, cookie, login, code) in [
+            (
+                AuthorizationSourceOptions::new(
+                    Some(OsString::from("PRIVATE-ENV-MUST-NOT-READ")),
+                    None,
+                    false,
+                ),
+                None,
+                None,
+                None,
+            ),
+            (
+                AuthorizationSourceOptions::new(None, None, false),
+                Some(PathBuf::from("PRIVATE-COOKIE-MUST-NOT-READ")),
+                None,
+                None,
+            ),
+            (
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                Some(PathBuf::from("PRIVATE-LOGIN-MUST-NOT-READ")),
+                None,
+            ),
+            (
+                AuthorizationSourceOptions::new(None, None, false),
+                None,
+                None,
+                Some(PathBuf::from("PRIVATE-CODE-MUST-NOT-READ")),
+            ),
+        ] {
+            assert_eq!(
+                SuppliedSessionInput::select_with_oauth_authorization(
+                    Some(policy_path.clone()),
+                    authorization,
+                    cookie,
+                    login,
+                    code,
+                    output_path.clone(),
+                )
+                .unwrap_err(),
+                SuppliedSessionInputError::ConflictingCredentialSources
+            );
+        }
     }
 
     #[cfg(feature = "supplied-session-review")]

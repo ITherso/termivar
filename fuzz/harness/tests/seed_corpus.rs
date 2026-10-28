@@ -50,6 +50,52 @@ fn committed_declarative_policy_corpus_satisfies_the_semantic_oracle() {
 }
 
 #[test]
+fn committed_session_v7_inputs_have_independent_admission_and_empty_partition_oracles() {
+    use termivar_scanner::{
+        reporting::comparison::{import_assessment_summary, ComparisonError},
+        supplied_session_review::{SuppliedSessionPolicy, SuppliedSessionPolicyVersion},
+    };
+    let policy = include_bytes!("../../corpus/json_parser/session-v7-policy.toml");
+    let audit = include_bytes!("../../corpus/json_parser/session-v7-selected-empty.json");
+    let application = url::Url::parse("https://session-fuzz.invalid/app/").unwrap();
+    let parsed = SuppliedSessionPolicy::parse_toml(&application, policy).unwrap();
+    assert_eq!(parsed.version(), SuppliedSessionPolicyVersion::V7);
+    assert_eq!(parsed.resource_count(), 1);
+    assert_eq!(parsed.max_session_requests(), 4);
+    let imported = import_assessment_summary(audit).unwrap();
+    assert_eq!(imported.item_count(), 0);
+    assert_eq!(imported.subject_count(), 1);
+    for input in [policy.as_slice(), audit.as_slice(), b"", b"{", b"false"] {
+        termivar_fuzz_harness::check_supplied_session_inputs(input);
+    }
+    let mut wrong: serde_json::Value = serde_json::from_slice(audit).unwrap();
+    wrong["supplied_session"]["oauth_authorization"]["callback_commit_count"] =
+        serde_json::json!(true);
+    let wrong = serde_json::to_vec(&wrong).unwrap();
+    assert_eq!(
+        import_assessment_summary(&wrong),
+        Err(ComparisonError::InvalidDocument)
+    );
+    termivar_fuzz_harness::check_supplied_session_inputs(&wrong);
+    let source = std::str::from_utf8(policy).unwrap();
+    for mutation in [
+        source.replace(
+            "client-initiated-public-code-s256-bearer/v1",
+            "client-initiated-public-code-plain-bearer/v1",
+        ),
+        source.replace("127.0.0.1:43123", "localhost:43123"),
+        source.replace("max_wait_ms = 1000", "max_wait_ms = 30001"),
+    ] {
+        assert_ne!(
+            mutation, source,
+            "negative mutation must change the independent seed"
+        );
+        assert!(SuppliedSessionPolicy::parse_toml(&application, mutation.as_bytes()).is_err());
+        termivar_fuzz_harness::check_supplied_session_inputs(mutation.as_bytes());
+    }
+}
+
+#[test]
 fn committed_decision_loop_authority_corpus_satisfies_the_semantic_oracle() {
     replay_json_corpus(
         "decision_loop_authority",

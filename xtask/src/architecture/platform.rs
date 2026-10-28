@@ -1194,6 +1194,14 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_refresh.rs"))?,
         &fs::read_to_string(workspace_root.join(SUPPLIED_SESSION_RUNTIME_SOURCE))?,
     ));
+    violations.extend(oauth_authorization_source_contract_violations(
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/supplied_session_review/oauth_authorization.rs"))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_authorization.rs"))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_authorization.rs"))?,
+        &fs::read_to_string(workspace_root.join(SUPPLIED_SESSION_RUNTIME_SOURCE))?,
+        &fs::read_to_string(workspace_root.join("crates/termivar-scanner/src/web_runtime/authority.rs"))?,
+        &fs::read_to_string(workspace_root.join(GRAPHQL_REVIEW_BROKER_SOURCE))?,
+    ));
     violations.extend(private_natural_child_module_violations(
         &web_runtime_source,
         "scan_profile",
@@ -1898,6 +1906,7 @@ fn exact_raw_feature_closures() -> Vec<(&'static str, &'static [&'static str])> 
                 "core",
                 "dep:zeroize",
                 "dep:subtle",
+                "dep:getrandom",
                 "dep:async-trait",
                 "dep:html5ever",
                 "dep:markup5ever_rcdom",
@@ -2562,7 +2571,7 @@ fn oauth_refresh_source_contract_violations(
             "validate_supplied_session_oauth_code(&Value::Object(common),items)?;",
         ][..]),
         ("parent", parent, &[
-            "letsession_deadline=earliest_deadline(timing.deadline(),local_deadline);",
+            "letmutsession_deadline=earliest_deadline(timing.deadline(),local_deadline);",
             "deadline:session_deadline,budget:state.dispatch_budget()",
             "oauth_refresh_receipt=Some(Box::new(acquired.receipt));",
             "state.epoch=2;", "drop(old_refresh);",
@@ -2583,6 +2592,169 @@ fn oauth_refresh_source_contract_violations(
                 if compact.contains(forbidden) {
                     violations.push(format!("OAuth-refresh {label} cannot create ambient authority: {forbidden}"));
                 }
+            }
+        }
+    }
+    violations
+}
+
+fn oauth_authorization_source_contract_violations(
+    codec: &str,
+    runtime: &str,
+    reader: &str,
+    parent: &str,
+    authority: &str,
+    broker: &str,
+) -> Vec<String> {
+    let codec = match exact_inline_tests_production("OAuth-authorization codec", codec) {
+        Ok(source) => source,
+        Err(errors) => return errors,
+    };
+    // Both exact callback test scopes are removed before examining production.
+    // A test string or a production tail after either module cannot satisfy it.
+    let runtime = runtime.replace("\r\n", "\n");
+    let boundary = "#[cfg(test)]\n#[path = \"oauth_authorization_tests.rs\"]\nmod runtime_tests;";
+    if runtime.matches(boundary).count() != 1 {
+        return vec![
+            "OAuth-authorization runtime requires its exact private external runtime-test boundary"
+                .to_owned(),
+        ];
+    }
+    let without_external = runtime.replacen(boundary, "", 1);
+    let runtime =
+        match exact_inline_tests_production("OAuth-authorization runtime", &without_external) {
+            Ok(source) => source,
+            Err(errors) => return errors,
+        };
+    let parent = match exact_inline_tests_production("OAuth-authorization parent", parent) {
+        Ok(source) => source,
+        Err(errors) => return errors,
+    };
+    let mint =
+        named_function_source(authority, "mint_oauth_authorization_callback").unwrap_or_default();
+    let dispatch = named_function_source(broker, "collect_authorized").unwrap_or_default();
+    let mut violations = Vec::new();
+    for (label, source, required) in [
+        ("codec", codec, &[
+            "MAX_WAIT_MS:u64=30_000", "MAX_RESPONSE_BYTES:usize=8_192",
+            "MAX_PARAMETERS:usize=16", "MAX_FIELD_BYTES:usize=2_048", "RANDOM_BYTES:usize=32",
+            "SocketAddrV4::new(Ipv4Addr::LOCALHOST,port)",
+            "getrandom::getrandom(bytes)", "letdeadline=deadline.min(wait_deadline);",
+            "letsource=Zeroizing::new(source);", "state.as_bytes().ct_eq(self.state.as_bytes())",
+            "issuer.as_str()!=self.code_policy.issuer().as_str()",
+            "ValidatedOAuthAuthorizationCode(<redacted>)", "PendingOAuthAuthorization(<redacted>)",
+        ][..]),
+        ("runtime", runtime, &[
+            "MAX_HEADERS:usize=4096", "MAX_FORM:usize=8192", "MAX_HEADER_COUNT:usize=32",
+            "if!mint.is_valid_for(policy,authority.knowledge())",
+            "try_begin_with_request_body_bytes(ACTION,DecisionExecutionStage::Passive,None,0)",
+            "TcpListener::bind(config.callback_socket())", "accepted=listener.accept()",
+            "drop(listener);", "if!peer.ip().is_loopback()",
+            "gate=lease.acquire_response_read()", "lease.observe_response_bytes(count)<count",
+            "self.knowledge_authority.is_same_as(knowledge.authority())",
+            "knowledge.inspect_evidence(&id,|value|value==&self.expected_evidence)",
+            "self.expected_evidence.source().correlation_id()==Some(self.transaction_reference.as_str())",
+            "mint.is_valid_for_knowledge(policy,&self.knowledge)",
+            "self.receipt.is_valid_for(policy,&self.knowledge)",
+            "self.parts.transaction_reference==self.receipt.transaction_reference",
+            "self.parts.principal_alias==self.receipt.principal_alias",
+            "self.parts.unknown_parameter_count<=16",
+            "receipt.is_valid_for(policy,authority.knowledge()).then_some(receipt)",
+            "transaction.accept_form_post(form,std::time::Instant::now())",
+            "lease.finish(transport_outcome);", "oidc_nonce_validation_performed:false",
+        ][..]),
+        ("reader", reader, &[
+            "security.supplied-session-audit/v7", "client_initiated_oauth_pkce",
+            "letadmitted=number(exchange,\"request_admitted_count\",attempted)?;",
+            "check(attempted==0||callback_commits==1)?;",
+            "requests+reserved<=9", "check(!boolean(auth,field)?)?;",
+            "validate_supplied_session(&Value::Object(common),items)?;",
+        ][..]),
+        ("parent", parent, &[
+            "SuppliedSessionRuntimeInput::OAuthAuthorization(output)",
+            "authority.mint_oauth_authorization_callback(&policy)",
+            "oauth_authorization::receive(authority,mint,&policy,*output)",
+            "session_deadline=earliest_deadline(timing.deadline(),Some(permit.deadline()));",
+            "oauth_code::acquire_authorized(",
+        ][..]),
+        ("mint", mint, &[
+            "policy.version()!=crate::supplied_session_review::SuppliedSessionPolicyVersion::V7",
+            "policy.application_url()!=&self.selected_target", "self.oauth_authorization_callback_minted.lock()",
+            "if*minted", "*minted=true;", "knowledge_authority:self.knowledge.authority().clone()",
+        ][..]),
+        ("dispatch", dispatch, &[
+            "!self.mint.is_valid_for(policy)", "!descriptor.validate_against(policy)",
+            "!permit.is_valid_for(policy,&self.mint)",
+            "self.broker.validate_target(&descriptor.target).is_err()",
+            ".compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst,)",
+            "permit.compose_form_body(policy)", "self.collect_code_form(descriptor,form.as_bytes(),limits)",
+        ][..]),
+    ] {
+        let tokens = match source.parse::<TokenStream>() {
+            Ok(tokens) => tokens,
+            Err(_) => { violations.push(format!("OAuth-authorization {label} must remain production Rust tokens")); continue; },
+        };
+        let compact = squash_ascii_whitespace(&tokens.to_string());
+        for marker in required {
+            if !compact.contains(marker) {
+                violations.push(format!("OAuth-authorization {label} lost its exact bounded/committed contract: {marker}"));
+            }
+        }
+        if matches!(label, "codec" | "runtime" | "reader") {
+            for forbidden in ["reqwest::", "std::process::", "std::fs::", "std::env::",
+                "KnowledgeBase::new()", "HttpRequestBroker::new", "TcpStream::connect",
+                "danger_accept_invalid_certs"]
+            {
+                if compact.contains(forbidden) {
+                    violations.push(format!("OAuth-authorization {label} cannot acquire ambient authority: {forbidden}"));
+                }
+            }
+        }
+        if label == "codec" && (compact.contains("TcpListener") || compact.contains("TcpStream")) {
+            violations.push("OAuth-authorization pure codec cannot own a listener or stream".to_owned());
+        }
+        if label == "runtime" && (compact.matches("TcpListener::bind(").count() != 1
+            || compact.matches("listener.accept()").count() != 1)
+        {
+            violations.push("OAuth-authorization runtime permits only one policy-bound listener and one accept".to_owned());
+        }
+    }
+    for (source, names) in [
+        (
+            codec,
+            &[
+                "PendingOAuthAuthorization",
+                "ValidatedOAuthAuthorizationCode",
+            ][..],
+        ),
+        (
+            runtime,
+            &[
+                "CommittedOAuthAuthorizationReceipt",
+                "OAuthAuthorizationDispatchPermit",
+            ][..],
+        ),
+    ] {
+        let Ok(syntax) = syn::parse_file(source) else {
+            continue;
+        };
+        for name in names {
+            let matches = syntax
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Struct(item) if item.ident == *name => Some(item),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if !matches!(matches.as_slice(), [item] if item.attrs.iter().all(|a|a.path().is_ident("doc"))
+                && item.fields.iter().all(|f|matches!(f.vis,Visibility::Inherited))
+                && matches!(&item.vis, Visibility::Restricted(vis)
+                    if vis.path.is_ident(if *name == "CommittedOAuthAuthorizationReceipt" { "super" } else { "crate" })))
+            {
+                violations.push(format!(
+                    "OAuth-authorization {name} must remain underived with private fields"
+                ));
             }
         }
     }
@@ -5106,7 +5278,9 @@ fn reporting_cross_source_set_violations_with_inventory(
     for (relative_path, syntax) in parsed {
         if matches!(
             relative_path.as_str(),
-            "web_runtime/assessment_item_tests.rs" | "web_runtime/web_assessment_tests.rs"
+            "web_runtime/assessment_item_tests.rs"
+                | "web_runtime/web_assessment_tests.rs"
+                | "web_runtime/supplied_session_runtime/oauth_authorization_tests.rs"
         ) {
             continue;
         }
@@ -6819,6 +6993,14 @@ const EXACT_REPORTING_DOCUMENT_STRUCTS: &[ReportingDocumentShape] = &[
             (
                 "oauth_refresh",
                 "Option<Box<crate::web_runtime::SuppliedSessionOAuthRefreshAudit>>",
+            ),
+            (
+                "oauth_authorization",
+                "Option<Box<crate::web_runtime::SuppliedSessionOAuthAuthorizationAudit>>",
+            ),
+            (
+                "oauth_token_exchange",
+                "Option<Box<crate::web_runtime::SuppliedSessionOAuthInitiatedTokenAudit>>",
             ),
             (
                 "health_oracle",
@@ -8703,6 +8885,8 @@ fn reporting_document_contract_violations(source: &str) -> Result<Vec<String>, s
                                     | "renewal"
                                     | "oauth_code"
                                     | "oauth_refresh"
+                                    | "oauth_authorization"
+                                    | "oauth_token_exchange"
                             ))
                         || (name == "AssessmentSuppliedSessionLoginDocument"
                             && field_name == "form_error_code")
@@ -11360,8 +11544,8 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 665_493;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0x60c0_1553_fd9d_9eb6_7bb7_781c_9006_0edf;
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 669_180;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xf6b5_33ba_1545_b424_9462_4375_6127_4d4c;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"
@@ -11585,6 +11769,7 @@ const EXACT_REPORTING_SOURCE_IMPORTS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
@@ -11848,6 +12033,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "comparison::validate_supplied_session_renewal",
     "comparison::validate_supplied_session_oauth_code",
     "comparison::validate_supplied_session_oauth_refresh",
+    "comparison::validate_supplied_session_oauth_authorization",
     "AssessmentWordPressDiscoveryAuditDocument::from_wordpress_audit",
     "WordPressPageCollectionDocument::validate",
     "WordPressSuppliedSessionPageCollectionDocument::validate",
@@ -12304,6 +12490,7 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA",
+    "crate::web_runtime::SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA",
     "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID",
     "crate::web_runtime::SuppliedSessionAuditOutcome",
@@ -12324,6 +12511,8 @@ const ALLOWED_REPORTING_QUALIFIED_PATHS: &[&str] = &[
     "crate::web_runtime::WebAssessmentSuppliedSessionAudit",
     "crate::web_runtime::SuppliedSessionOAuthCodeAudit",
     "crate::web_runtime::SuppliedSessionOAuthRefreshAudit",
+    "crate::web_runtime::SuppliedSessionOAuthAuthorizationAudit",
+    "crate::web_runtime::SuppliedSessionOAuthInitiatedTokenAudit",
     "crate::web_runtime::WebAssessmentSuppliedSessionCheckpointAudit",
     "crate::web_runtime::WORDPRESS_DISCOVERY_OBSERVATION_CAPABILITY_ID",
     "crate::web_runtime::WORDPRESS_REVIEW_CAPABILITY_ID",
@@ -12500,6 +12689,7 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
     "comparison::validate_supplied_session_renewal",
     "comparison::validate_supplied_session_oauth_code",
     "comparison::validate_supplied_session_oauth_refresh",
+    "comparison::validate_supplied_session_oauth_authorization",
     "AssessmentTlsNegotiationReviewAuditDocument::from_audit",
     "AssessmentTemplateEvaluationReviewAuditDocument::from_audit",
     "AssessmentXmlExternalEntityReviewAuditDocument::from_audit",
@@ -12766,6 +12956,15 @@ const ALLOWED_REPORTING_FUNCTION_CALLS: &[&str] = &[
 const ALLOWED_REPORTING_METHOD_CALLS: &[&str] = &[
     "oauth_code",
     "oauth_refresh",
+    "oauth_authorization",
+    "oauth_token_exchange",
+    "authorization_policy_reference",
+    "reservation_count",
+    "accepted_connection_count",
+    "callback_commit_count",
+    "ingress_bytes",
+    "state_validated",
+    "issuer_validated",
     "human_summary",
     "refresh_policy_reference",
     "replacement_refresh_token_received",
@@ -13836,6 +14035,7 @@ fn reporting_source_import_violations(source: &str) -> Result<Vec<String>, syn::
                     | "crate::web_runtime::SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA"
+                    | "crate::web_runtime::SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA"
                     | "crate::web_runtime::SUPPLIED_SESSION_CAPABILITY_ID"
                     | "crate::web_runtime::SuppliedSessionAuditOutcome"
@@ -14363,7 +14563,8 @@ impl<'ast> Visit<'ast> for ReportingSourceVisitor {
 
 fn exact_boxed_oauth_refresh_field(field: &syn::FieldValue) -> bool {
     if !field.attrs.is_empty()
-        || !matches!(&field.member, syn::Member::Named(name) if name == "oauth_refresh")
+        || !matches!(&field.member, syn::Member::Named(name)
+            if matches!(name.to_string().as_str(), "oauth_refresh" | "oauth_authorization" | "oauth_token_exchange"))
         || field.colon_token.is_none()
     {
         return false;
@@ -14394,7 +14595,7 @@ fn exact_boxed_oauth_refresh_field(field: &syn::FieldValue) -> bool {
         && cloned.turbofish.is_none()
         && cloned.args.is_empty()
         && audit.attrs.is_empty()
-        && audit.method == "oauth_refresh"
+        && matches!(&field.member, syn::Member::Named(name) if audit.method == *name)
         && audit.turbofish.is_none()
         && audit.args.is_empty()
         && matches!(audit.receiver.as_ref(), syn::Expr::Path(path)
@@ -14938,6 +15139,7 @@ mod tests {
                 "scanning".to_owned(),
                 "dep:zeroize".to_owned(),
                 "dep:subtle".to_owned(),
+                "dep:getrandom".to_owned(),
             ],
         );
         features.insert(
@@ -15658,12 +15860,24 @@ mod tests {
                 |violation| violation.contains("`supplied-session-review` raw feature closure")
                     && violation.contains("dep:subtle")
             ));
+        let mut missing_random = valid_feature_map();
+        missing_random
+            .get_mut("supplied-session-review")
+            .unwrap()
+            .retain(|member| member != "dep:getrandom");
+        assert!(feature_violations(&missing_random)
+            .iter()
+            .any(
+                |violation| violation.contains("`supplied-session-review` raw feature closure")
+                    && violation.contains("dep:getrandom")
+            ));
         assert_eq!(
             features.get("supplied-session-review").unwrap(),
             &[
                 "scanning".to_owned(),
                 "dep:zeroize".to_owned(),
-                "dep:subtle".to_owned()
+                "dep:subtle".to_owned(),
+                "dep:getrandom".to_owned()
             ]
         );
         assert!(!raw_feature_closure(&features, "default").contains("supplied-session-review"));
@@ -16310,6 +16524,91 @@ mod tests {
         );
         assert_ne!(changed, codec);
         assert!(!oauth_code_source_contract_violations(&changed, runtime, reader).is_empty());
+    }
+
+    #[test]
+    fn oauth_authorization_children_keep_one_committed_metered_callback() {
+        let sources = [
+            include_str!("../../../crates/termivar-scanner/src/supplied_session_review/oauth_authorization.rs"),
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_authorization.rs"),
+            include_str!("../../../crates/termivar-scanner/src/reporting/comparison/import/audits/supplied_session_oauth_authorization.rs"),
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs"),
+            include_str!("../../../crates/termivar-scanner/src/web_runtime/authority.rs"),
+            include_str!("../../../crates/termivar-scanner/src/http_evidence/request_broker.rs"),
+        ];
+        let check = |s: [&str; 6]| {
+            oauth_authorization_source_contract_violations(s[0], s[1], s[2], s[3], s[4], s[5])
+        };
+        let baseline = check(sources);
+        assert!(baseline.is_empty(), "{baseline:#?}");
+        for (index, from, to) in [
+            (
+                0,
+                "MAX_RESPONSE_BYTES: usize = 8_192",
+                "MAX_RESPONSE_BYTES: usize = 8_193",
+            ),
+            (
+                0,
+                "state.as_bytes().ct_eq(self.state.as_bytes())",
+                "state.as_bytes().ct_eq(state.as_bytes())",
+            ),
+            (
+                0,
+                "issuer.as_str() != self.code_policy.issuer().as_str()",
+                "false",
+            ),
+            (1, "lease.observe_response_bytes(count) < count", "false"),
+            (
+                1,
+                "mint.is_valid_for_knowledge(policy, &self.knowledge)",
+                "true",
+            ),
+            (1, "value == &self.expected_evidence", "true"),
+            (
+                1,
+                "self.expected_evidence.source().correlation_id()",
+                "None",
+            ),
+            (
+                1,
+                "pub(crate) struct OAuthAuthorizationDispatchPermit",
+                "#[derive(Clone)]\npub(crate) struct OAuthAuthorizationDispatchPermit",
+            ),
+            (
+                2,
+                "check(attempted == 0 || callback_commits == 1)?;",
+                "check(true)?;",
+            ),
+            (
+                3,
+                "session_deadline = earliest_deadline(timing.deadline(), Some(permit.deadline()));",
+                "session_deadline = Some(permit.deadline());",
+            ),
+            (4, "if *minted {", "if false {"),
+            (5, "!permit.is_valid_for(policy, &self.mint)", "false"),
+        ] {
+            assert!(
+                sources[index].contains(from),
+                "stale V7 mutation {index}: {from}"
+            );
+            let changed = sources[index].replacen(from, to, 1);
+            let mut candidate = sources;
+            candidate[index] = &changed;
+            assert!(
+                !check(candidate).is_empty(),
+                "accepted V7 mutation {index}: {from}"
+            );
+        }
+        for index in [0, 1] {
+            let changed = format!("{}\nfn escaped_test_tail() {{}}", sources[index]);
+            let mut candidate = sources;
+            candidate[index] = &changed;
+            assert!(!check(candidate).is_empty());
+        }
+        let changed = format!("{}\nfn ambient() {{ KnowledgeBase::new(); }}", sources[2]);
+        let mut candidate = sources;
+        candidate[2] = &changed;
+        assert!(!check(candidate).is_empty());
     }
 
     #[test]
@@ -19269,6 +19568,7 @@ mod tests {
                     SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
+                    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA,
                     SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
                 },
             };
@@ -19618,24 +19918,36 @@ mod tests {
     }
 
     #[test]
-    fn reporting_box_allocation_is_only_the_exact_optional_refresh_audit_field() {
-        let source = "fn project(audit: &Audit) { let _ = Self { oauth_refresh: audit.oauth_refresh().cloned().map(Box::new) }; }";
-        assert!(reporting_source_violations(source).unwrap().is_empty());
-        for (from, to) in [
-            ("oauth_refresh:", "unreviewed_field:"),
-            ("audit.oauth_refresh()", "other.oauth_refresh()"),
-            (".cloned()", ".clone()"),
-            ("Box::new", "Box::leak"),
+    fn reporting_box_allocation_is_only_the_exact_paired_optional_oauth_audit_fields() {
+        for field in [
+            "oauth_refresh",
+            "oauth_authorization",
+            "oauth_token_exchange",
         ] {
-            let changed = source.replacen(from, to, 1);
-            assert_ne!(changed, source);
-            assert!(
-                !reporting_source_violations(&changed).unwrap().is_empty(),
-                "{from}"
-            );
+            let source = format!("fn project(audit: &Audit) {{ let _ = Self {{ {field}: audit.{field}().cloned().map(Box::new) }}; }}");
+            assert!(reporting_source_violations(&source).unwrap().is_empty());
+            for (from, to) in [
+                (format!("{field}:"), "unreviewed_field:".to_owned()),
+                (format!("audit.{field}()"), format!("other.{field}()")),
+                (
+                    format!("audit.{field}()"),
+                    "audit.unreviewed_field()".to_owned(),
+                ),
+                (".cloned()".to_owned(), ".clone()".to_owned()),
+                ("Box::new".to_owned(), "Box::leak".to_owned()),
+            ] {
+                let changed = source.replacen(&from, &to, 1);
+                assert_ne!(changed, source);
+                assert!(
+                    !reporting_source_violations(&changed).unwrap().is_empty(),
+                    "{from}"
+                );
+            }
         }
-        let changed = format!("{source}\nfn unreviewed() {{ Box::new(1); }}");
-        assert!(!reporting_source_violations(&changed).unwrap().is_empty());
+        let changed = "fn project(audit: &Audit) { let _ = Self { oauth_authorization: audit.oauth_token_exchange().cloned().map(Box::new) }; }";
+        assert!(!reporting_source_violations(changed).unwrap().is_empty());
+        let changed = "fn unreviewed() { Box::new(1); }";
+        assert!(!reporting_source_violations(changed).unwrap().is_empty());
     }
 
     #[test]
@@ -20521,6 +20833,10 @@ mod tests {
                 oauth_code: Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>,
                 #[serde(skip_serializing_if = "Option::is_none")]
                 oauth_refresh: Option<Box<crate::web_runtime::SuppliedSessionOAuthRefreshAudit>>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                oauth_authorization: Option<Box<crate::web_runtime::SuppliedSessionOAuthAuthorizationAudit>>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                oauth_token_exchange: Option<Box<crate::web_runtime::SuppliedSessionOAuthInitiatedTokenAudit>>,
                 health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
                 outcome: &'static str,
                 coverage: &'static str,

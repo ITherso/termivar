@@ -135,8 +135,10 @@ use crate::{
         MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
         MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA,
         SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
-        SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
-        SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
+        SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
     },
 };
 #[cfg(all(feature = "scanning", feature = "websocket-review"))]
@@ -9871,6 +9873,10 @@ struct AssessmentSuppliedSessionAuditDocument {
     oauth_code: Option<crate::web_runtime::SuppliedSessionOAuthCodeAudit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     oauth_refresh: Option<Box<crate::web_runtime::SuppliedSessionOAuthRefreshAudit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_authorization: Option<Box<crate::web_runtime::SuppliedSessionOAuthAuthorizationAudit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_token_exchange: Option<Box<crate::web_runtime::SuppliedSessionOAuthInitiatedTokenAudit>>,
     health_oracle: AssessmentSuppliedSessionHealthOracleDocument,
     outcome: &'static str,
     coverage: &'static str,
@@ -10252,6 +10258,15 @@ impl AssessmentSuppliedSessionAuditDocument {
         {
             return Err(ReportError::Serialization);
         }
+        if audit
+            .oauth_authorization()
+            .is_some_and(|a| !a.is_consistent())
+            || audit
+                .oauth_token_exchange()
+                .is_some_and(|a| !a.is_consistent())
+        {
+            return Err(ReportError::Serialization);
+        }
         let document = Self {
             schema: audit.schema(),
             capability_id: audit.capability_id(),
@@ -10270,10 +10285,13 @@ impl AssessmentSuppliedSessionAuditDocument {
                 SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA
                     | SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA
                     | SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
+                    | SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA
             )
             .then(|| supplied_session_credential_acquisition_token(audit.credential_acquisition())),
             oauth_code: audit.oauth_code().cloned(),
             oauth_refresh: audit.oauth_refresh().cloned().map(Box::new),
+            oauth_authorization: audit.oauth_authorization().cloned().map(Box::new),
+            oauth_token_exchange: audit.oauth_token_exchange().cloned().map(Box::new),
             cookie_policy: audit.cookie_policy().map(|policy| {
                 AssessmentSuppliedSessionCookiePolicyDocument {
                     declared_count: policy.declared_count(),
@@ -10389,6 +10407,18 @@ impl AssessmentSuppliedSessionAuditDocument {
     }
 
     fn validate(&self, items: &[AssessmentItemDocument<'_>]) -> Result<(), ReportError> {
+        if self.schema == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA {
+            if items
+                .iter()
+                .any(|item| item.capability_id == SUPPLIED_SESSION_CAPABILITY_ID)
+            {
+                return Err(ReportError::Serialization);
+            }
+            let value = serde_json::to_value(self).map_err(|_| ReportError::Serialization)?;
+            return comparison::validate_supplied_session_oauth_authorization(&value)
+                .map(|_| ())
+                .map_err(|_| ReportError::Serialization);
+        }
         if self.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA {
             if items
                 .iter()
@@ -10428,6 +10458,8 @@ impl AssessmentSuppliedSessionAuditDocument {
         if self.renewal.is_some()
             || self.oauth_code.is_some()
             || self.oauth_refresh.is_some()
+            || self.oauth_authorization.is_some()
+            || self.oauth_token_exchange.is_some()
             || self
                 .checkpoints
                 .iter()
@@ -10825,6 +10857,32 @@ impl AssessmentSuppliedSessionAuditDocument {
         ];
         if let Some(acquisition) = self.credential_acquisition {
             metadata.push(("Credential acquisition", acquisition.to_owned()));
+        }
+        if let Some(authorization) = self.oauth_authorization.as_ref() {
+            metadata.extend([
+                ("OAuth authorization profile", "loopback-form-post-state/v1".to_owned()),
+                ("OAuth authorization policy reference", authorization.authorization_policy_reference().to_owned()),
+                ("OAuth callback outcome", format!("{:?}", authorization.outcome())),
+                ("OAuth callback reception reservations (not outgoing HTTP)", authorization.reservation_count().to_string()),
+                ("OAuth accepted loopback connections", authorization.accepted_connection_count().to_string()),
+                ("OAuth committed state/issuer-qualified callbacks", authorization.callback_commit_count().to_string()),
+                ("OAuth recorded state validation", authorization.state_validated().to_string()),
+                ("OAuth recorded issuer validation", authorization.issuer_validated().to_string()),
+                ("OAuth inbound framing and form bytes (charged to parent)", authorization.ingress_bytes().to_string()),
+                ("OAuth authorization assurance", "Selected policy requires client-generated S256/state and exact issuer/single-use callback binding; only recorded validation and commit counts establish completed checks. These facts are not browser/sender authentication or remote PKCE enforcement. Authorization wait is bounded separately under the same immutable parent deadline. No OIDC nonce, identity or token signature validation.".to_owned()),
+            ]);
+        }
+        if let Some(exchange) = self.oauth_token_exchange.as_ref() {
+            metadata.extend([
+                ("OAuth token exchange profile", "client-initiated-public-code-s256-bearer/v1".to_owned()),
+                ("OAuth IdP reference", exchange.idp_reference().to_owned()),
+                ("OAuth token exchange outcome", exchange.outcome().as_str().to_owned()),
+                ("OAuth outgoing token attempts", exchange.request_attempt_count().to_string()),
+                ("OAuth admitted token requests", exchange.request_admitted_count().to_string()),
+                ("OAuth committed credentials", exchange.credential_commit_count().to_string()),
+                ("OAuth token response bytes", exchange.response_bytes().to_string()),
+                ("OAuth token meaning", "Opaque Bearer credential; protected health and resource coverage are qualified separately, not OIDC identity.".to_owned()),
+            ]);
         }
         if let Some(code) = self.oauth_code.as_ref() {
             metadata.extend([
@@ -15363,6 +15421,7 @@ impl WordPressSuppliedSessionPageCollectionDocument {
         session: &AssessmentSuppliedSessionAuditDocument,
     ) -> Result<(), ReportError> {
         if session.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
+            || session.schema == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA
             || self.policy_reference != session.policy_reference
             || self.application_reference != session.application_reference
             || self.principal_reference != session.principal_reference
@@ -21419,6 +21478,8 @@ mod tests {
             renewal: None,
             oauth_code: None,
             oauth_refresh: None,
+            oauth_authorization: None,
+            oauth_token_exchange: None,
             health_oracle: AssessmentSuppliedSessionHealthOracleDocument {
                 kind: "json_boolean_true",
                 field_reference: format!("supplied-session-health-field-sha256:{}", "3".repeat(64)),

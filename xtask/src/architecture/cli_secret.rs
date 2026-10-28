@@ -22,6 +22,8 @@ use syn::{
 const AUTH_INPUT_SOURCE: &str = "crates/termivar-cli/src/auth_input.rs";
 const RECON_INPUT_SOURCE: &str = "crates/termivar-cli/src/recon_input.rs";
 const CLI_MAIN_SOURCE: &str = "crates/termivar-cli/src/main.rs";
+const OAUTH_AUTHORIZATION_OUTPUT_SOURCE: &str =
+    "crates/termivar-cli/src/oauth_authorization_output.rs";
 const SCANNER_CONTEXT_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs";
 const PAYLOAD_STRATEGY_SOURCE: &str = "crates/termivar-scanner/src/payload_strategy.rs";
@@ -66,6 +68,7 @@ const CLI_AUTH_FIELDS: &[&str] = &[
     "session_cookie_file",
     "session_login_file",
     "session_oauth_code_file",
+    "session_oauth_authorization_output",
     "session_policy",
 ];
 const CLI_SCAN_FIELDS: &[&str] = &[
@@ -127,6 +130,7 @@ const CLI_SCAN_FIELDS: &[&str] = &[
     "session_cookie_file",
     "session_login_file",
     "session_oauth_code_file",
+    "session_oauth_authorization_output",
     "session_policy",
     "ssrf_oast_policy",
     "ssrf_oast_review",
@@ -140,6 +144,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let auth_input = fs::read_to_string(workspace_root.join(AUTH_INPUT_SOURCE))?;
     let recon_input = fs::read_to_string(workspace_root.join(RECON_INPUT_SOURCE))?;
     let cli_main = fs::read_to_string(workspace_root.join(CLI_MAIN_SOURCE))?;
+    let oauth_output = fs::read_to_string(workspace_root.join(OAUTH_AUTHORIZATION_OUTPUT_SOURCE))?;
     let scanner_context = fs::read_to_string(workspace_root.join(SCANNER_CONTEXT_SOURCE))?;
     let payload_strategy = fs::read_to_string(workspace_root.join(PAYLOAD_STRATEGY_SOURCE))?;
     let xml_external_entity_policy =
@@ -148,6 +153,7 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
     let mut violations = inspect_auth_input_contract(&auth_input)?;
     violations.extend(inspect_recon_input_contract(&recon_input)?);
     violations.extend(inspect_cli_auth_surface(&cli_main)?);
+    violations.extend(inspect_oauth_authorization_output_contract(&oauth_output)?);
     violations.extend(inspect_xml_external_entity_policy_input_contract(
         &xml_external_entity_policy,
     )?);
@@ -597,7 +603,8 @@ fn type_references_alias(item_type: &Type, aliases: &BTreeSet<String>) -> bool {
 
 fn inspect_auth_input_contract(source: &str) -> Result<Vec<String>, syn::Error> {
     let syntax = syn::parse_file(source)?;
-    let compact = compact_source(source);
+    // Compare Rust tokens, not comments that happen to sit inside a closed enum.
+    let compact = compact_tokens(&syn::parse_str::<TokenStream>(source)?);
     let contracts = contract_items(source)?;
     let mut violations = Vec::new();
 
@@ -808,12 +815,12 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         ),
         (
             "SuppliedSessionInput",
-            &["prepare", "select", "select_all", "select_with_oauth_code"][..],
+            &["prepare", "select", "select_all", "select_with_oauth_code", "select_with_oauth_authorization"][..],
             "formatter.debug_struct(\"SuppliedSessionInput\").field(\"policy_file\",&\"<redacted>\").field(\"secret\",&\"<redacted>\").finish()",
         ),
         (
             "PreparedSuppliedSessionInput",
-            &["load", "policy_version", "resource_count"][..],
+            &["load", "policy_version", "resource_count", "authorization_output", "load_with_authorization_writer"][..],
             "formatter.debug_struct(\"PreparedSuppliedSessionInput\").field(\"policy\",&\"<validated>\").field(\"secret\",&\"<redacted>\").finish()",
         ),
         (
@@ -863,8 +870,10 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
     let session_methods = inherent_methods(syntax, "SuppliedSessionInput");
     if session_methods.get("select_all").is_none_or(|method| !matches!(method.vis, Visibility::Inherited))
         || session_methods.get("select_with_oauth_code").is_none_or(|method| !is_pub_crate(&method.vis))
+        || session_methods.get("select_with_oauth_authorization").is_none_or(|method| !is_pub_crate(&method.vis))
         || !compact.contains("pub(crate)fnselect_with_oauth_code(policy_file:Option<PathBuf>,authorization:AuthorizationSourceOptions,cookie_file:Option<PathBuf>,login_file:Option<PathBuf>,oauth_code_file:PathBuf,)->Result<Option<Self>,SuppliedSessionInputError>")
-        || !compact.contains("fnselect_all(policy_file:Option<PathBuf>,authorization:AuthorizationSourceOptions,cookie_file:Option<PathBuf>,login_file:Option<PathBuf>,oauth_code_file:Option<PathBuf>,)->Result<Option<Self>,SuppliedSessionInputError>")
+        || !compact.contains("fnselect_all(policy_file:Option<PathBuf>,authorization:AuthorizationSourceOptions,cookie_file:Option<PathBuf>,login_file:Option<PathBuf>,oauth_code_file:Option<PathBuf>,authorization_output:Option<PathBuf>,)->Result<Option<Self>,SuppliedSessionInputError>")
+        || !compact.contains("pub(crate)fnselect_with_oauth_authorization(policy_file:Option<PathBuf>,authorization:AuthorizationSourceOptions,cookie_file:Option<PathBuf>,login_file:Option<PathBuf>,oauth_code_file:Option<PathBuf>,authorization_output:PathBuf,)->Result<Option<Self>,SuppliedSessionInputError>")
     {
         violations.push("SuppliedSessionInput V5 selection must retain only the exact crate-private PathBuf entry and private non-reading source-union helper".to_owned());
     }
@@ -896,16 +905,22 @@ fn inspect_authorization_review_input_contract(syntax: &syn::File, compact: &str
         "pub(crate)structXmlExternalEntityReviewInput{policy_file:PathBuf,administrator:AuthorizationInputSource,}",
         "pub(crate)structPreparedXmlExternalEntityReviewInput{policy:XmlExternalEntityReviewPolicy,administrator:AuthorizationInputSource,}",
         "structJwtTargetAcceptancePolicyDocument{schema:String,policy_reference:String,policy_revision:String,application:String,resource:String,resource_reference:String,success_json_field:String,}",
-        "enumSuppliedSessionSecretSource{Authorization(AuthorizationInputSource),Cookies(PathBuf),FormLogin(PathBuf),OAuthCode(PathBuf),}",
+        "enumSuppliedSessionSecretSource{Authorization(AuthorizationInputSource),Cookies(PathBuf),FormLogin(PathBuf),OAuthCode(PathBuf),OAuthAuthorization(PathBuf),}",
         "Self::FormLogin(_)=>SuppliedSessionCredentialAcquisition::BoundedFormLogin",
         "pub(crate)structSuppliedSessionInput{policy_file:PathBuf,secret:SuppliedSessionSecretSource,}",
         "pub(crate)structPreparedSuppliedSessionInput{policy:SuppliedSessionPolicy,secret:SuppliedSessionSecretSource,}",
-        "letsecret=match(authorization,cookie_file,login_file,oauth_code_file){(Some(source),None,None,None)=>SuppliedSessionSecretSource::Authorization(source),(None,Some(path),None,None)=>SuppliedSessionSecretSource::Cookies(path),(None,None,Some(path),None)=>SuppliedSessionSecretSource::FormLogin(path),(None,None,None,Some(path))=>SuppliedSessionSecretSource::OAuthCode(path),(None,None,None,None)=>{returnErr(SuppliedSessionInputError::MissingCredentialSource)},_=>returnErr(SuppliedSessionInputError::ConflictingCredentialSources),};",
+        "letsecret=match(authorization,cookie_file,login_file,oauth_code_file,authorization_output,){(Some(source),None,None,None,None)=>{SuppliedSessionSecretSource::Authorization(source)},(None,Some(path),None,None,None)=>SuppliedSessionSecretSource::Cookies(path),(None,None,Some(path),None,None)=>SuppliedSessionSecretSource::FormLogin(path),(None,None,None,Some(path),None)=>SuppliedSessionSecretSource::OAuthCode(path),(None,None,None,None,Some(path))=>{SuppliedSessionSecretSource::OAuthAuthorization(path)},(None,None,None,None,None)=>{returnErr(SuppliedSessionInputError::MissingCredentialSource)},_=>returnErr(SuppliedSessionInputError::ConflictingCredentialSources),};",
         "validate_local_file_path(&policy_file).map_err(SuppliedSessionInputError::PolicySource)?;",
-        "ifletSuppliedSessionSecretSource::Authorization(AuthorizationInputSource::File(path))|SuppliedSessionSecretSource::Cookies(path)|SuppliedSessionSecretSource::FormLogin(path)|SuppliedSessionSecretSource::OAuthCode(path)=&secret{validate_local_file_path(path).map_err(SuppliedSessionInputError::CredentialSource)?;}",
+        "ifletSuppliedSessionSecretSource::Authorization(AuthorizationInputSource::File(path))|SuppliedSessionSecretSource::Cookies(path)|SuppliedSessionSecretSource::FormLogin(path)|SuppliedSessionSecretSource::OAuthCode(path)|SuppliedSessionSecretSource::OAuthAuthorization(path)=&secret{validate_local_file_path(path).map_err(SuppliedSessionInputError::CredentialSource)?;}",
         "Self::OAuthCode(_)=>SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce",
-        "Self::select_all(policy_file,authorization,cookie_file,login_file,None)",
-        "Self::select_all(policy_file,authorization,cookie_file,login_file,Some(oauth_code_file),)",
+        "Self::select_all(policy_file,authorization,cookie_file,login_file,None,None,)",
+        "Self::select_all(policy_file,authorization,cookie_file,login_file,Some(oauth_code_file),None,)",
+        "Self::select_all(policy_file,authorization,cookie_file,login_file,oauth_code_file,Some(authorization_output),)",
+        "Self::OAuthAuthorization(_)=>{SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce}",
+        "pub(crate)fnauthorization_output(&self)->Option<&Path>",
+        "pub(crate)fnload_with_authorization_writer(self,writer:File,)->Result<(SuppliedSessionPolicy,SuppliedSessionRuntimeInput),SuppliedSessionInputError>",
+        "if!matches!(self.secret,SuppliedSessionSecretSource::OAuthAuthorization(_)){returnErr(SuppliedSessionInputError::CredentialMechanismMismatch);}",
+        "termivar_scanner::supplied_session_review::SuppliedSessionOAuthAuthorization::new(&self.policy,writer,)",
         "termivar_scanner::supplied_session_review::SuppliedSessionOAuthGrant::parse_tsv(&self.policy,bytes.into_owned(),now,)",
         "termivar_scanner::supplied_session_review::HARD_MAX_SUPPLIED_SESSION_OAUTH_CODE_SECRET_BYTES",
         "ifpolicy.credential_acquisition()!=self.secret.acquisition(){returnErr(SuppliedSessionInputError::CredentialMechanismMismatch);}",
@@ -1129,6 +1144,11 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         ("session_cookie_file", "Option", Some("PathBuf")),
         ("session_login_file", "Option", Some("PathBuf")),
         ("session_oauth_code_file", "Option", Some("PathBuf")),
+        (
+            "session_oauth_authorization_output",
+            "Option",
+            Some("PathBuf"),
+        ),
         ("template_evaluation_review", "bool", None),
         ("authz_primary_env", "Option", Some("OsString")),
         ("authz_primary_file", "Option", Some("PathBuf")),
@@ -1384,6 +1404,12 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             "session_oauth_code_file",
             ("Option", Some("PathBuf")),
             "long,value_name=\"FILE\",requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_file\",\"session_auth_stdin\",\"session_cookie_file\",\"session_login_file\"]",
+            &[][..],
+        ),
+        (
+            "session_oauth_authorization_output",
+            ("Option", Some("PathBuf")),
+            "long,value_name=\"FILE\",requires=\"session_policy\",conflicts_with_all=[\"session_auth_env\",\"session_auth_file\",\"session_auth_stdin\",\"session_cookie_file\",\"session_login_file\",\"session_oauth_code_file\"]",
             &[][..],
         ),
     ] {
@@ -1887,9 +1913,9 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
-    let supplied_session_selection = "letsupplied_session_selected=session_policy.is_some()||session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some()||session_oauth_code_file.is_some();";
-    let supplied_session_credential_selection = "letsupplied_session_credential_selected=session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some()||session_oauth_code_file.is_some();";
-    let supplied_session_input = "letsupplied_session_input=ifletSome(code_file)=session_oauth_code_file{auth_input::SuppliedSessionInput::select_with_oauth_code(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,code_file,)?}else{auth_input::SuppliedSessionInput::select(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,)?};";
+    let supplied_session_selection = "letsupplied_session_selected=session_policy.is_some()||session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some()||session_oauth_code_file.is_some()||session_oauth_authorization_output.is_some();";
+    let supplied_session_credential_selection = "letsupplied_session_credential_selected=session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some()||session_oauth_code_file.is_some()||session_oauth_authorization_output.is_some();";
+    let supplied_session_input = "letsupplied_session_input=ifletSome(output)=session_oauth_authorization_output{auth_input::SuppliedSessionInput::select_with_oauth_authorization(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,session_oauth_code_file,output,)?}elseifletSome(code_file)=session_oauth_code_file{auth_input::SuppliedSessionInput::select_with_oauth_code(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,code_file,)?}else{auth_input::SuppliedSessionInput::select(session_policy,auth_input::AuthorizationSourceOptions::new(session_auth_env,session_auth_file,session_auth_stdin,),session_cookie_file,session_login_file,)?};";
     if compact.matches(supplied_session_selection).count() != 1
         || compact
             .matches(supplied_session_credential_selection)
@@ -1902,10 +1928,10 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
-    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&matches!(version,termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5|termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6){Some(\"`--wordpress-supplied-session`doesnotsupportimportedOAuthcodepolicies\")}elseifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\",)}}";
+    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V7{Some(\"`--wordpress-supplied-session`doesnotsupportclient-initiatedOAuthpolicies\")}elseifselected&&matches!(version,termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5|termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6){Some(\"`--wordpress-supplied-session`doesnotsupportimportedOAuthcodepolicies\")}elseifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\",)}}";
     if compact.matches(wordpress_v3_preflight).count() != 1 {
         violations.push(
-            "CLI must reject WordPress composition with prepared V3/V4/V5/V6 policies before output reservation or acquisition-secret reads"
+            "CLI must reject WordPress composition with prepared V3/V4/V5/V6/V7 policies before output reservation or acquisition-secret reads"
                 .to_owned(),
         );
     }
@@ -1914,7 +1940,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         || !compact.contains("letprepared_supplied_session_review=supplied_session_input.map(|input|input.prepare(&target)).transpose()?")
         || !compact.contains("letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?")
         || !compact.contains("letprepared_xml_external_entity_review=xml_external_entity_review_input.map(|input|input.prepare(&target)).transpose()?")
-        || !compact.contains(".map(auth_input::PreparedSuppliedSessionInput::load)")
+        || !compact.contains(".map(|prepared|matchoauth_authorization_writer{Some(writer)=>prepared.load_with_authorization_writer(writer),None=>prepared.load(),})")
         || !compact.contains(".map(auth_input::PreparedSsrfOastReviewInput::load)")
         || !compact.contains(".map(auth_input::PreparedXmlExternalEntityReviewInput::load)")
     {
@@ -2034,6 +2060,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "prepare",
         "prepare",
         "preflight_report_output",
+        "prepare",
         "reserve_report_bundle",
         "load",
         "load",
@@ -2105,7 +2132,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         != 1
         || compact
             .matches(
-                "letsupplied_session_credential_selected=session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some()||session_oauth_code_file.is_some();",
+                "letsupplied_session_credential_selected=session_auth_env.is_some()||session_auth_file.is_some()||session_auth_stdin||session_cookie_file.is_some()||session_login_file.is_some()||session_oauth_code_file.is_some()||session_oauth_authorization_output.is_some();",
             )
             .count()
             != 1
@@ -2202,7 +2229,7 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
             .iter()
             .filter(|name| name.as_str() == "prepare")
             .count()
-            != 5
+            != 6
         || ordered
             .iter()
             .filter(|name| name.as_str() == "select")
@@ -2226,10 +2253,13 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         "letprepared_ssrf_oast_review=ssrf_oast_review_input.map(|input|input.prepare(&target)).transpose()?;",
         "letprepared_xml_external_entity_review=xml_external_entity_review_input.map(|input|input.prepare(&target)).transpose()?;",
         "preflight_report_output(report_output.as_deref())?;",
+        "letprepared_oauth_authorization_output=prepared_supplied_session_review.as_ref().and_then(auth_input::PreparedSuppliedSessionInput::authorization_output).map(|path|{oauth_authorization_output::PreparedAuthorizationOutput::prepare(path,report_output.as_deref(),report_dir.as_deref(),)}).transpose()?;",
         "letmutreport_bundle=report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
+        "letmutoauth_authorization_output=prepared_oauth_authorization_output.map(oauth_authorization_output::PreparedAuthorizationOutput::reserve).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letoauth_authorization_writer=oauth_authorization_output.as_ref().map(oauth_authorization_output::AuthorizationOutput::writer).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letroot_authorization_context=authorization_source.map(auth_input::AuthorizationInputSource::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letresource_authorization_review=resource_authorization_input.map(|input|input.load(&target)).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
-        "letsupplied_session_review=prepared_supplied_session_review.map(auth_input::PreparedSuppliedSessionInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
+        "letsupplied_session_review=prepared_supplied_session_review.map(|prepared|matchoauth_authorization_writer{Some(writer)=>prepared.load_with_authorization_writer(writer),None=>prepared.load(),}).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letssrf_oast_review=prepared_ssrf_oast_review.map(auth_input::PreparedSsrfOastReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letxml_external_entity_review=prepared_xml_external_entity_review.map(auth_input::PreparedXmlExternalEntityReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
         "letloaded_jwt_policy_review=prepared_jwt_policy_review.map(auth_input::PreparedJwtPolicyReviewInput::load).transpose().inspect_err(|_|{abort_report_bundle_after_failure(&mutreport_bundle);})?;",
@@ -2241,6 +2271,127 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
         );
     }
 
+    if !unique_markers_are_ordered(
+        &compact,
+        &[
+            "letexecution_result=assessment_scan::run_profile_scan(",
+            "ifoauth_authorization_output.as_mut().is_some_and(|output|output.cleanup().is_err())",
+            "letexecution=matchexecution_result{",
+            "execution.into_parts();",
+        ],
+    ) {
+        violations.push("CLI V7 must attempt owned private handoff cleanup after execution and before result publication, preserving the primary failure".to_owned());
+    }
+
+    Ok(violations)
+}
+
+fn inspect_oauth_authorization_output_contract(source: &str) -> Result<Vec<String>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let exact_tests = syntax.items.iter().filter(|item| matches!(item,
+        Item::Mod(module) if module.ident == "tests" && module.content.is_some()
+            && module.attrs.len() == 1 && exact_cfg_attribute(&module.attrs, "test") && matches!(module.vis, Visibility::Inherited)
+    )).count();
+    if exact_tests != 1
+        || !matches!(syntax.items.last(), Some(Item::Mod(module))
+        if module.ident == "tests" && module.content.is_some()
+            && exact_cfg_attribute(&module.attrs, "test"))
+    {
+        return Ok(vec![
+            "OAuth private output must end in its one exact cfg(test) inline test module"
+                .to_owned(),
+        ]);
+    }
+    let Some((production, _)) = source.rsplit_once("#[cfg(test)]") else {
+        return Ok(vec![
+            "OAuth private output production/test boundary is missing".to_owned(),
+        ]);
+    };
+    let syntax = syn::parse_file(production)?;
+    let compact = compact_source(production);
+    let contracts = contract_items(production)?;
+    let mut violations = Vec::new();
+    if !definitions_are_exact(
+        &contracts,
+        r#"
+        pub(crate) struct PreparedAuthorizationOutput {
+            path: PathBuf, parent: PathBuf, parent_identity: Handle,
+        }
+        pub(crate) struct AuthorizationOutput {
+            path: PathBuf, parent: PathBuf, parent_identity: Handle,
+            identity: Option<Handle>, file: Option<File>, cleanup_attempted: bool,
+        }
+    "#,
+    ) {
+        violations.push("OAuth private output must retain only exact private path/handle ownership, not a public filesystem authority".to_owned());
+    }
+    for (name, methods, traits) in [
+        (
+            "PreparedAuthorizationOutput",
+            &["prepare", "reserve"][..],
+            &["Debug"][..],
+        ),
+        (
+            "AuthorizationOutput",
+            &["writer", "cleanup", "verify_owned_file"][..],
+            &["Debug", "Drop"][..],
+        ),
+    ] {
+        if inherent_methods(&syntax, name)
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != methods.iter().copied().collect()
+            || explicit_trait_impls(&syntax, name)
+                != traits.iter().map(|value| (*value).to_owned()).collect()
+        {
+            violations.push(format!("OAuth private output {name} must remain move-only with only its reviewed methods/traits"));
+        }
+    }
+    for marker in [
+        "crate::auth_input::validate_local_file_path(path)",
+        "ifreport_output.map(prospective_file).transpose()?.as_ref().is_some_and(|report|same_path(report,&path))",
+        ".is_some_and(|directory|path_beneath(&path,&directory))",
+        "verify_directory(&self.parent,&self.parent_identity)?;require_absent(&self.path)?;",
+        "letfile=create_private_file(&self.path)",
+        "file.metadata().is_ok_and(|metadata|metadata.is_file())",
+        "file.try_clone().and_then(Handle::from_file)",
+        "pub(crate)fnwriter(&self)->io::Result<File>{self.verify_owned_file()?;",
+        "ifstd::mem::replace(&mutself.cleanup_attempted,true)",
+        "Ok(_)=>self.verify_owned_file()?,",
+        "iflink_like(&metadata)||!metadata.is_file()",
+        "ifself.identity.as_ref()!=Some(&current)",
+        "if&current!=expected",
+        "self.file=None;self.identity=None;fs::remove_file(&self.path)",
+        "options.write(true).create_new(true);",
+        "options.mode(0o600);",
+        "formatter.write_str(\"PreparedAuthorizationOutput(<redacted>)\")",
+        "formatter.write_str(\"AuthorizationOutput(<redacted>)\")",
+        "eprintln!(\"OAuthauthorizationoutputcleanupwasincomplete;inspecttheprivatedestination\");",
+    ] {
+        if !compact.contains(marker) {
+            violations.push(format!("OAuth private output lost its create-only, separate, owned-cleanup or value-free contract: {marker}"));
+        }
+    }
+    if compact.matches("eprintln!(").count() != 1 {
+        violations.push("OAuth private output permits only one static cleanup warning, never private values or paths".to_owned());
+    }
+    for forbidden in [
+        "reqwest",
+        "TcpListener",
+        "TcpStream",
+        "std::env",
+        "std::process",
+        "fs::read(",
+        "fs::write(",
+        "File::open(",
+        "set_permissions(",
+        "truncate(true)",
+    ] {
+        if compact.contains(forbidden) {
+            violations.push(format!("OAuth private output cannot acquire unrelated secret, transport or overwrite authority: {forbidden}"));
+        }
+    }
     Ok(violations)
 }
 
@@ -3515,6 +3666,8 @@ mod tests {
     const AUTH_INPUT: &str = include_str!("../../../crates/termivar-cli/src/auth_input.rs");
     const RECON_INPUT: &str = include_str!("../../../crates/termivar-cli/src/recon_input.rs");
     const CLI_MAIN: &str = include_str!("../../../crates/termivar-cli/src/main.rs");
+    const OAUTH_OUTPUT: &str =
+        include_str!("../../../crates/termivar-cli/src/oauth_authorization_output.rs");
     const SCANNER_CONTEXT: &str = include_str!(
         "../../../crates/termivar-scanner/src/web_runtime/assessment_api_visibility.rs"
     );
@@ -3546,7 +3699,8 @@ mod tests {
         assert!(violations.is_empty(), "{violations:#?}");
         let violations = inspect_recon_input_contract(RECON_INPUT).unwrap();
         assert!(violations.is_empty(), "{violations:#?}");
-        assert!(inspect_cli_auth_surface(CLI_MAIN).unwrap().is_empty());
+        let violations = inspect_cli_auth_surface(CLI_MAIN).unwrap();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
         assert!(
             inspect_xml_external_entity_policy_input_contract(XML_EXTERNAL_ENTITY_POLICY)
                 .unwrap()
@@ -4379,19 +4533,19 @@ mod tests {
                 "exact union of the five local inputs plus optional target-acceptance policy",
             ),
             (
-                "        || session_cookie_file.is_some()\n        || session_login_file.is_some()\n        || session_oauth_code_file.is_some();",
+                "        || session_cookie_file.is_some()\n        || session_login_file.is_some()\n        || session_oauth_code_file.is_some()\n        || session_oauth_authorization_output.is_some();",
                 "        || session_cookie_file.is_some();",
                 "exact historical and V5 supplied-session source union",
             ),
             (
                 "SuppliedSessionPolicyVersion::V3)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
                 "SuppliedSessionPolicyVersion::V2)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
-                "reject WordPress composition with prepared V3/V4/V5/V6 policies",
+                "reject WordPress composition with prepared V3/V4/V5/V6/V7 policies",
             ),
             (
                 "SuppliedSessionPolicyVersion::V4\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
                 "SuppliedSessionPolicyVersion::V2\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
-                "reject WordPress composition with prepared V3/V4/V5/V6 policies",
+                "reject WordPress composition with prepared V3/V4/V5/V6/V7 policies",
             ),
             (
                 "conflicts_with_all = [\"report_format\", \"report_output\"]",
@@ -4473,13 +4627,14 @@ mod tests {
             );
         }
 
-        assert_mutation_fails(
-            CLI_MAIN,
-            "        preflight_report_output(report_output.as_deref())?;\n        let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;\n        // All flag, profile, target, and obvious report-output checks above\n        // precede every selected secret-source read in the CLI.\n        let root_authorization_context = authorization_source\n            .map(auth_input::AuthorizationInputSource::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;",
-            "        // Mutated only in the architecture regression: a secret read must not\n        // move ahead of report preflight and reservation.\n        let root_authorization_context = authorization_source\n            .map(auth_input::AuthorizationInputSource::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;\n        preflight_report_output(report_output.as_deref())?;\n        let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;",
-            |source| inspect_cli_auth_surface(source).unwrap(),
-            "exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order",
-        );
+        let root_load = "        let root_authorization_context = authorization_source\n            .map(auth_input::AuthorizationInputSource::load)\n            .transpose()\n            .inspect_err(|_| {\n                abort_report_bundle_after_failure(&mut report_bundle);\n            })?;";
+        let preflight = "        preflight_report_output(report_output.as_deref())?;";
+        assert!(CLI_MAIN.contains(root_load) && CLI_MAIN.contains(preflight));
+        let without_load = CLI_MAIN.replacen(root_load, "", 1);
+        let early_load = without_load.replacen(preflight, &format!("{root_load}\n{preflight}"), 1);
+        assert_ne!(early_load, CLI_MAIN);
+        assert!(inspect_cli_auth_surface(&early_load).unwrap().join("\n")
+            .contains("exact non-secret preparation, report preflight/reservation, secret-load, and failure-cleanup order"));
 
         let scan_args_offset = CLI_MAIN
             .find("struct ScanArgs")
@@ -4553,8 +4708,8 @@ mod tests {
                 "value-free redacted Debug",
             ),
             (
-                "(None, None, Some(path), None) => SuppliedSessionSecretSource::FormLogin(path),",
-                "(None, None, Some(path), None) => SuppliedSessionSecretSource::Cookies(path),",
+                "(None, None, Some(path), None, None) => SuppliedSessionSecretSource::FormLogin(path),",
+                "(None, None, Some(path), None, None) => SuppliedSessionSecretSource::Cookies(path),",
                 "exact V3 form-login source matching/loading",
             ),
             (
@@ -4621,9 +4776,59 @@ mod tests {
         assert_ne!(changed, CLI_MAIN);
         let violations = inspect_cli_auth_surface(&changed).unwrap().join("\n");
         assert!(
-            violations.contains("prepared V3/V4/V5/V6 policies"),
+            violations.contains("prepared V3/V4/V5/V6/V7 policies"),
             "{violations}"
         );
+    }
+
+    #[test]
+    fn oauth_authorization_selection_output_and_cleanup_are_narrow() {
+        let violations = inspect_auth_input_contract(AUTH_INPUT).unwrap();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+        let violations = inspect_cli_auth_surface(CLI_MAIN).unwrap();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+        let syntax = syn::parse_file(CLI_MAIN).unwrap();
+        let run = find_function(&syntax, "run_deterministic_scan").unwrap();
+        let order = ordered_boundary_references(run);
+        // The public handoff is not a secret load. Its branch adds one prepare;
+        // load_with_authorization_writer is validated separately by exact type/order.
+        assert_eq!(
+            order
+                .iter()
+                .filter(|name| name.as_str() == "prepare")
+                .count(),
+            6
+        );
+        assert_eq!(
+            order.iter().filter(|name| name.as_str() == "load").count(),
+            10
+        );
+        assert!(inspect_oauth_authorization_output_contract(OAUTH_OUTPUT)
+            .unwrap()
+            .is_empty());
+        for (source, from, to, inspect) in [
+            (AUTH_INPUT, "OAuthAuthorization(PathBuf)", "OAuthAuthorization(String)", 0),
+            (AUTH_INPUT, "pub(crate) fn select_with_oauth_authorization(", "pub fn select_with_oauth_authorization(", 0),
+            (AUTH_INPUT, "SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce", "SuppliedSessionCredentialAcquisition::ImportedOAuthCodePkce", 0),
+            (CLI_MAIN, "Some(writer) => prepared.load_with_authorization_writer(writer)", "Some(writer) => prepared.load()", 1),
+            (CLI_MAIN, "output.cleanup().is_err()", "false", 1),
+            (CLI_MAIN, "version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V7", "false", 1),
+            (OAUTH_OUTPUT, "options.write(true).create_new(true);", "options.write(true).create(true).truncate(true);", 2),
+            (OAUTH_OUTPUT, "self.identity.as_ref() != Some(&current)", "false", 2),
+            (OAUTH_OUTPUT, "if &current != expected", "if false", 2),
+            (OAUTH_OUTPUT, "pub(crate) fn writer(&self) -> io::Result<File>", "pub(crate) fn writer(&self) -> io::Result<PathBuf>", 2),
+            (OAUTH_OUTPUT, "formatter.write_str(\"AuthorizationOutput(<redacted>)\")", "formatter.write_str(\"AuthorizationOutput(visible)\")", 2),
+        ] {
+            assert!(source.contains(from), "stale V7 private output mutation {from}");
+            let changed = source.replacen(from,to,1);
+            let violations = match inspect {
+                0 => inspect_auth_input_contract(&changed).unwrap(),
+                1 => inspect_cli_auth_surface(&changed).unwrap(),
+                2 => inspect_oauth_authorization_output_contract(&changed).unwrap(),
+                _ => unreachable!(),
+            };
+            assert!(!violations.is_empty(), "accepted V7 private output mutation {from}");
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@
 These guarantees describe the current development source, not the published
 prerelease binaries. They apply to the CLI's shared credential/policy-file
 loader—including the non-bundled supplied-session Preview's V1 authorization
-sources, V2/V4 cookie file, V3 form credential and V5 imported-code file—and the native
+sources, V2/V4 cookie file, V3 form credential and V5/V6 imported-code file—and the native
 provider's administrator-token loader. Source selection, byte
 ceilings, validation, redacted errors and the absence of raw credential-value
 arguments remain unchanged.
@@ -34,6 +34,26 @@ special or network path can contact its owner before handle validation, so
 there is no general no-contact or bounded-latency guarantee for arbitrary paths.
 
 ## Owned intake memory
+
+V7 selects no imported credential. Its validated non-secret policy and explicit
+private output selection create one bounded OS-random S256/state transaction.
+The CLI reserves a new local handoff file only after policy/composition/output
+preflight; runtime receives a bounded one-shot writer, never a file path. The
+handoff URI deliberately contains protocol state and challenge but no verifier.
+It is private, not report output, and never printed by the command. The exact
+registered callback receives the code in a bounded guarded POST body, not a
+query string. Raw framing/form bytes are guarded before fallible parsing and
+kept out of general response observers. The complete qualified callback must
+be committed before the once-only token exchange; every target credential use
+retains that same knowledge-authority chain. Unknown response parameters are
+bounded and discarded; provider descriptions and URLs remain inert.
+
+The file is create-only (Unix 0600, Windows inherited directory ACL) and removed
+only while its parent and file identity still match task ownership. A replaced
+or unverifiable path is retained with a static warning. Trusted/quiescent parent
+assumptions still apply; regular-file writes and arbitrary host-library writers
+are not promised interruptible, and no claim covers OS/HTTP-library/allocator
+copies. Neither the handoff nor listener grants browser/profile/account access.
 
 The selected V5 imported OAuth transaction uses the same single-handle bounded
 regular-file intake, after non-secret policy/source preflight and output

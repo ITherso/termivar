@@ -6,4 +6,5 @@ fuzz_target!(|data: &[u8]| {
     let _ = serde_json::from_slice::<serde_json::Value>(data);
     termivar_fuzz_harness::check_openapi_review(data);
     termivar_fuzz_harness::check_wordpress_review(data);
+    termivar_fuzz_harness::check_supplied_session_inputs(data);
 });

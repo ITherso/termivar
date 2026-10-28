@@ -1,15 +1,26 @@
 //! Bounded supplied-session orchestration under the assessment's shared authority.
 
+mod oauth_authorization;
 mod oauth_code;
+pub(crate) use oauth_authorization::OAuthAuthorizationDispatchPermit;
+pub use oauth_authorization::{
+    SuppliedSessionOAuthAuthorizationAudit, SuppliedSessionOAuthAuthorizationOutcome,
+};
 mod oauth_refresh;
 use oauth_code::{CommittedOAuthCodeReceipt, OAuthCodeAcquisitionContext};
-pub use oauth_code::{SuppliedSessionOAuthCodeAudit, SuppliedSessionOAuthCodeOutcome};
+pub use oauth_code::{
+    SuppliedSessionOAuthCodeAudit, SuppliedSessionOAuthCodeOutcome,
+    SuppliedSessionOAuthInitiatedTokenAudit,
+};
 pub(crate) use oauth_refresh::OAuthRefreshDispatchPermit;
 use oauth_refresh::{CommittedOAuthRefreshReceipt, OAuthRefreshContext};
 pub use oauth_refresh::{SuppliedSessionOAuthRefreshAudit, SuppliedSessionOAuthRefreshOutcome};
 
 /// V6 records one explicitly scheduled, separately committed OAuth renewal.
 pub const SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA: &str = "security.supplied-session-audit/v6";
+/// V7 client-generated authorization and a separately committed token exchange.
+pub const SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA: &str =
+    "security.supplied-session-audit/v7";
 
 use std::time::Duration;
 
@@ -819,6 +830,10 @@ pub struct WebAssessmentSuppliedSessionAudit {
     oauth_code: Option<Box<SuppliedSessionOAuthCodeAudit>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     oauth_refresh: Option<Box<SuppliedSessionOAuthRefreshAudit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_authorization: Option<Box<SuppliedSessionOAuthAuthorizationAudit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_token_exchange: Option<Box<SuppliedSessionOAuthInitiatedTokenAudit>>,
 }
 
 /// Value-free record of the one explicit credential transition and its health gate.
@@ -885,6 +900,12 @@ const fn legacy_credential_acquisition(value: &SuppliedSessionCredentialAcquisit
 }
 
 impl WebAssessmentSuppliedSessionAudit {
+    pub fn oauth_authorization(&self) -> Option<&SuppliedSessionOAuthAuthorizationAudit> {
+        self.oauth_authorization.as_deref()
+    }
+    pub fn oauth_token_exchange(&self) -> Option<&SuppliedSessionOAuthInitiatedTokenAudit> {
+        self.oauth_token_exchange.as_deref()
+    }
     pub fn oauth_refresh(&self) -> Option<&SuppliedSessionOAuthRefreshAudit> {
         self.oauth_refresh.as_deref()
     }
@@ -1037,7 +1058,9 @@ impl SuppliedSessionRuntimeConfig {
             .ok_or(())?;
         let (oauth_code_requests, oauth_code_descriptor) = if matches!(
             policy.version(),
-            SuppliedSessionPolicyVersion::V5 | SuppliedSessionPolicyVersion::V6
+            SuppliedSessionPolicyVersion::V5
+                | SuppliedSessionPolicyVersion::V6
+                | SuppliedSessionPolicyVersion::V7
         ) {
             (
                 Some(Box::new(authority.mint_oauth_code_broker(&policy)?)),
@@ -1090,7 +1113,7 @@ impl SuppliedSessionRuntimeConfig {
         let timing = authority.start();
         let local_deadline = tokio::time::Instant::now()
             .checked_add(Duration::from_millis(policy.max_wall_time_ms()));
-        let session_deadline = earliest_deadline(timing.deadline(), local_deadline);
+        let mut session_deadline = earliest_deadline(timing.deadline(), local_deadline);
         let mut deadline = session_deadline;
         let mut state = ExecutionState::new(&policy, selected_resource_count);
         if resource_observer.is_some_and(|observer| observer.begin(&policy, &resources).is_err()) {
@@ -1102,6 +1125,80 @@ impl SuppliedSessionRuntimeConfig {
         let mut oauth_refresh_receipt = None;
         let mut credential = match input {
             SuppliedSessionRuntimeInput::Ready(credential) => credential,
+            SuppliedSessionRuntimeInput::OAuthAuthorization(output) => {
+                let mint = match authority.mint_oauth_authorization_callback(&policy) {
+                    Ok(mint) => mint,
+                    Err(()) => {
+                        state.outcome = SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable;
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                };
+                let (authorization_audit, permit) = boxed_dispatch_execution(|| {
+                    oauth_authorization::receive(authority, mint, &policy, *output)
+                })
+                .await;
+                let authorization_outcome = authorization_audit.outcome();
+                state.oauth_authorization = Some(Box::new(authorization_audit));
+                let permit = match permit {
+                    Ok(permit) => permit,
+                    Err(()) => {
+                        state.outcome = match authorization_outcome {
+                            SuppliedSessionOAuthAuthorizationOutcome::Cancelled => {
+                                SuppliedSessionAuditOutcome::Cancelled
+                            },
+                            SuppliedSessionOAuthAuthorizationOutcome::RuntimeLimit => {
+                                SuppliedSessionAuditOutcome::RuntimeLimit
+                            },
+                            _ => SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable,
+                        };
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                };
+                // Only the V7 pre-session wait is separate. The existing parent
+                // clock is never reset or extended; its smaller deadline wins.
+                session_deadline = earliest_deadline(timing.deadline(), Some(permit.deadline()));
+                deadline = session_deadline;
+                let (Some(idp_requests), Some(descriptor)) =
+                    (oauth_code_requests.as_ref(), oauth_code_descriptor.as_ref())
+                else {
+                    state.outcome = SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable;
+                    state.add_not_dispatched(&resources);
+                    return state.finish(policy);
+                };
+                let (audit, acquired) = boxed_dispatch_execution(|| {
+                    oauth_code::acquire_authorized(
+                        OAuthCodeAcquisitionContext {
+                            authority,
+                            requests: idp_requests,
+                            descriptor,
+                            policy: &policy,
+                            deadline,
+                            budget: state.dispatch_budget(),
+                        },
+                        permit,
+                    )
+                })
+                .await;
+                state.response_bytes = state.response_bytes.saturating_add(audit.response_bytes());
+                state.oauth_code = Some(Box::new(audit));
+                match acquired {
+                    Ok(acquired) => {
+                        deadline = earliest_deadline(
+                            session_deadline,
+                            tokio::time::Instant::now().checked_add(acquired.declared_lifetime),
+                        );
+                        oauth_receipt = Some(Box::new(acquired.receipt));
+                        acquired.credential
+                    },
+                    Err(outcome) => {
+                        state.outcome = outcome;
+                        state.add_not_dispatched(&resources);
+                        return state.finish(policy);
+                    },
+                }
+            },
             SuppliedSessionRuntimeInput::FormLogin(form_credential) => {
                 let (Some(login_page), Some(login_submit)) =
                     (login_page.as_ref(), login_submit.as_ref())
@@ -1556,7 +1653,8 @@ impl SuppliedSessionRuntimeConfig {
             },
             SuppliedSessionRuntimeInput::Ready(SuppliedSessionCredential::SuppliedCookies(_))
             | SuppliedSessionRuntimeInput::FormLogin(_)
-            | SuppliedSessionRuntimeInput::OAuthCode(_) => {
+            | SuppliedSessionRuntimeInput::OAuthCode(_)
+            | SuppliedSessionRuntimeInput::OAuthAuthorization(_) => {
                 state.outcome = SuppliedSessionAuditOutcome::ResourceUnavailable;
                 state.add_not_dispatched(&resources);
                 let websocket_audit = supplied_session_websocket_not_run(
@@ -1811,6 +1909,7 @@ struct ExecutionState {
     renewal: Option<SuppliedSessionRenewalAudit>,
     oauth_code: Option<Box<SuppliedSessionOAuthCodeAudit>>,
     oauth_refresh: Option<Box<SuppliedSessionOAuthRefreshAudit>>,
+    oauth_authorization: Option<Box<SuppliedSessionOAuthAuthorizationAudit>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1833,6 +1932,8 @@ impl ExecutionState {
             epoch: 1,
             oauth_code: SuppliedSessionOAuthCodeAudit::selected(policy).map(Box::new),
             oauth_refresh: SuppliedSessionOAuthRefreshAudit::selected(policy).map(Box::new),
+            oauth_authorization: SuppliedSessionOAuthAuthorizationAudit::selected(policy)
+                .map(Box::new),
             renewal: policy
                 .renewal_after_resource_count()
                 .map(|after_resource_count| SuppliedSessionRenewalAudit {
@@ -2621,6 +2722,15 @@ impl ExecutionState {
                     )
                 }))
         );
+        let oauth_token_exchange = if policy.version() == SuppliedSessionPolicyVersion::V7 {
+            self.oauth_code.take().map(|audit| {
+                Box::new(SuppliedSessionOAuthInitiatedTokenAudit::from_exchange(
+                    *audit,
+                ))
+            })
+        } else {
+            None
+        };
         WebAssessmentSuppliedSessionAudit {
             schema: match policy.version() {
                 SuppliedSessionPolicyVersion::V1 => SUPPLIED_SESSION_AUDIT_SCHEMA,
@@ -2629,6 +2739,9 @@ impl ExecutionState {
                 SuppliedSessionPolicyVersion::V4 => SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V5 => SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
                 SuppliedSessionPolicyVersion::V6 => SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
+                SuppliedSessionPolicyVersion::V7 => {
+                    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA
+                },
             },
             capability_id: SUPPLIED_SESSION_CAPABILITY_ID,
             policy_reference: policy.policy_reference().to_owned(),
@@ -2671,6 +2784,8 @@ impl ExecutionState {
             renewal: self.renewal,
             oauth_code: self.oauth_code,
             oauth_refresh: self.oauth_refresh,
+            oauth_authorization: self.oauth_authorization,
+            oauth_token_exchange,
         }
     }
 }
@@ -2984,7 +3099,10 @@ async fn dispatch(
                     _ => false,
                 }
         })
-    } else if context.policy.version() == SuppliedSessionPolicyVersion::V5 {
+    } else if matches!(
+        context.policy.version(),
+        SuppliedSessionPolicyVersion::V5 | SuppliedSessionPolicyVersion::V7
+    ) {
         context.credential_acquisition.is_some_and(|receipt| {
             context.credential_epoch == 1
                 && context.credential_renewal.is_none()
@@ -3691,6 +3809,7 @@ fn health_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static str
         SuppliedSessionPolicyVersion::V4 => "supplied-session-health/v4",
         SuppliedSessionPolicyVersion::V5 => "supplied-session-health/v5",
         SuppliedSessionPolicyVersion::V6 => "supplied-session-health/v6",
+        SuppliedSessionPolicyVersion::V7 => "supplied-session-health/v7",
     }
 }
 
@@ -3702,6 +3821,7 @@ fn resource_commit_evidence_method(policy: &SuppliedSessionPolicy) -> &'static s
         SuppliedSessionPolicyVersion::V4 => "supplied-session-resource/v4",
         SuppliedSessionPolicyVersion::V5 => "supplied-session-resource/v5",
         SuppliedSessionPolicyVersion::V6 => "supplied-session-resource/v6",
+        SuppliedSessionPolicyVersion::V7 => "supplied-session-resource/v7",
     }
 }
 

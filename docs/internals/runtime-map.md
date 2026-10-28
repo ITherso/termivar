@@ -83,6 +83,21 @@ refresh and interactive OAuth/OIDC login are unsupported. The feature and
 curated bundle composition do not change. See the complete V5 limitations in
 `docs/internals/supplied-session-review.md`.
 
+V7 is a separate client-initiated public S256/state transaction, selected only
+by `--session-oauth-authorization-output` and strict V7 policy. The CLI owns a
+create-only private handoff file; runtime receives a bounded writer, not a path.
+An exact fixed numeric-loopback form-post listener is minted once by the same
+assessment authority. Its reception lease and raw ingress consume the same
+parent ledger but remain separate from outgoing session HTTP counts. The
+authorization wait is capped at 30s; callback qualification starts the unchanged
+at-most-10s session window without resetting the parent deadline. A successfully
+committed callback receipt is revalidated before the single IdP exchange and in
+the subsequent credential-acquisition receipt chain. Saved V7 data is display
+only. Reports distinguish state/issuer binding from OIDC nonce/identity/signature
+validation, which remain unperformed. No automatic user-agent opening, IdP
+discovery, refresh or WordPress/WebSocket composition is selected. Historical
+V5/V6 admission, digests, schemas and broker once bits retain their meanings.
+
 V6 additionally selects one scheduled opaque-Bearer refresh after the first
 committed resource and healthy boundary. Its separate sealed purpose requires
 the same assessment's exact committed code/resource/health evidence; a new

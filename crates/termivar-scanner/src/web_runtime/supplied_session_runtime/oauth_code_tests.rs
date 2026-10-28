@@ -879,6 +879,7 @@ fn receipt_fixture() -> (
     let id = EvidenceId::parse(&reference).unwrap();
     let expected_evidence = knowledge.inspect_evidence(&id, Clone::clone).unwrap();
     let receipt = CommittedOAuthCodeReceipt {
+        authorization: None,
         knowledge_authority: knowledge.authority().clone(),
         policy_reference: policy.policy_reference().to_owned(),
         application_reference: policy.application_reference().to_owned(),
@@ -910,6 +911,7 @@ pub(in super::super) fn synthetic_refresh_code_receipt(
     .unwrap();
     let id = EvidenceId::parse(&reference).unwrap();
     CommittedOAuthCodeReceipt {
+        authorization: None,
         knowledge_authority: knowledge.authority().clone(),
         policy_reference: policy.policy_reference().to_owned(),
         application_reference: policy.application_reference().to_owned(),

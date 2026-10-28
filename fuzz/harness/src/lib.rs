@@ -10,6 +10,8 @@ mod native_oast_adapter;
 mod oast_harness;
 mod semantic;
 mod ssrf_oast_review;
+mod supplied_session;
+pub use supplied_session::{check_supplied_session_inputs, MAX_SUPPLIED_SESSION_FUZZ_INPUT_BYTES};
 
 // Harness-local friend seam for the exact private adapter source below. The
 // product token is owned by `web_runtime::authority`; this parallel test-only

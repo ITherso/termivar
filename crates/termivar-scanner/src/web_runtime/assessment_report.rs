@@ -143,8 +143,8 @@ use super::{
     MAX_SUPPLIED_SESSION_CHECKPOINTS, MAX_SUPPLIED_SESSION_REQUESTS,
     MAX_SUPPLIED_SESSION_RESOURCES, SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
     SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
 };
 #[cfg(feature = "authorization-review")]
 use crate::authorization_review::{
@@ -2184,6 +2184,17 @@ fn validate_supplied_session_audit(
         return Ok(());
     };
     let oauth_code = audit.oauth_code();
+    let authorization_schema = audit.schema() == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA;
+    let authorization = audit.oauth_authorization();
+    let initiated_exchange = audit.oauth_token_exchange();
+    if authorization_schema != authorization.is_some()
+        || authorization_schema != initiated_exchange.is_some()
+        || authorization
+            .zip(initiated_exchange)
+            .is_some_and(|(a, e)| !e.is_consistent_for(audit, a))
+    {
+        return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
+    }
     let oauth_refresh_schema = audit.schema() == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA;
     let oauth_refresh = audit.oauth_refresh();
     if oauth_refresh_schema != oauth_refresh.is_some()
@@ -2198,8 +2209,9 @@ fn validate_supplied_session_audit(
     if oauth_schema != oauth_code.is_some() {
         return Err(AssessmentRunReportError::SuppliedSessionAuditMismatch);
     }
-    let oauth_request_count =
-        oauth_code.map_or(0, |code| usize::from(code.request_admitted_count()));
+    let oauth_request_count = oauth_code
+        .map_or(0, |code| usize::from(code.request_admitted_count()))
+        + initiated_exchange.map_or(0, |code| usize::from(code.request_admitted_count()));
     let oauth_refresh_health = oauth_refresh.and_then(|refresh| refresh.health());
     let oauth_refresh_requests = oauth_refresh.map_or(0, |refresh| {
         usize::from(refresh.request_admitted_count()) + usize::from(refresh.health().is_some())
@@ -2257,6 +2269,9 @@ fn validate_supplied_session_audit(
     let child_response_bytes = child_response_bytes
         .and_then(|bytes| bytes.checked_add(oauth_code.map_or(0, |code| code.response_bytes())))
         .and_then(|bytes| {
+            bytes.checked_add(initiated_exchange.map_or(0, |code| code.response_bytes()))
+        })
+        .and_then(|bytes| {
             bytes.checked_add(oauth_refresh.map_or(0, |refresh| refresh.response_bytes()))
         })
         .and_then(|bytes| {
@@ -2271,6 +2286,25 @@ fn validate_supplied_session_audit(
         audit.cookie_policy(),
         audit.cookie_lifecycle(),
     ) {
+        (
+            SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA,
+            SuppliedSessionCredentialMechanism::AuthorizationHeader,
+            None,
+            None,
+        ) => {
+            audit.credential_acquisition()
+                == SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce
+                && audit.login().is_none()
+                && renewal.is_none()
+                && oauth_code.is_none()
+                && oauth_refresh.is_none()
+                && (1..=3).contains(&selected_resource_count)
+                && audit.checkpoints().len() <= selected_resource_count + 1
+                && dispatched_request_count <= 2 + 2 * selected_resource_count
+                && authorization.is_some_and(|a| {
+                    dispatched_request_count + usize::from(a.reservation_count()) <= 9
+                })
+        },
         (
             SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA | SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA,
             SuppliedSessionCredentialMechanism::AuthorizationHeader,

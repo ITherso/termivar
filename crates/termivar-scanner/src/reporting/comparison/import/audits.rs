@@ -1,7 +1,15 @@
 //! Exact optional audit wire inventories; these snapshots are not evidence authority.
 
+mod supplied_session_oauth_authorization;
 mod supplied_session_oauth_code;
 mod supplied_session_oauth_refresh;
+
+pub(super) fn validate_supplied_session_oauth_authorization(
+    value: &Value,
+    items: &BTreeMap<String, ImportedItem>,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    supplied_session_oauth_authorization::validate(value, items)
+}
 
 pub(super) fn validate_supplied_session_oauth_refresh(
     value: &Value,
@@ -5490,6 +5498,9 @@ pub(super) fn validate_supplied_session(
 ) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
     let fields = object(value)?;
     let schema = string(fields, "schema")?;
+    if schema == "security.supplied-session-audit/v7" {
+        return validate_supplied_session_oauth_authorization(value, items);
+    }
     if schema == "security.supplied-session-audit/v6" {
         return validate_supplied_session_oauth_refresh(value, items);
     }
@@ -9914,9 +9925,12 @@ fn validate_wordpress_supplied_session_cross_links(
 ) -> Result<(), ComparisonError> {
     let page_context = object(&pages.context)?;
     let session_context = object(&supplied_session.context)?;
-    // V6 does not authorize WordPress supplied-session composition. In
+    // V6/V7 do not authorize WordPress supplied-session composition. In
     // particular, an early-failure epoch1 audit is not an exception.
-    check(string(session_context, "schema")? != "security.supplied-session-audit/v6")?;
+    check(!matches!(
+        string(session_context, "schema")?,
+        "security.supplied-session-audit/v6" | "security.supplied-session-audit/v7"
+    ))?;
     for field in [
         "policy_reference",
         "application_reference",

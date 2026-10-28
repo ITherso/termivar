@@ -754,6 +754,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
             "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
             "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
+            "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
             "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
@@ -804,10 +805,17 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "no OIDC identity or token signature validation",
         "exact committed private acquisition receipt",
         "owned-numeric-loopback-http/v1",
-        "No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass",
+        "No browser-profile import, form discovery, credential guessing, automatic OAuth/OIDC login, MFA bypass",
         "exploit, or impact validation",
         "WordPress supplied-session composition remains limited to V1/V2",
-        "V3/V4/V5/V6 are rejected before their secret files are read",
+        "V3/V4/V5/V6/V7 are rejected before their secret files are read",
+        "V7 alone initiates one public-client S256 authorization transaction",
+        "independent OS-random verifier and state",
+        "requires matching state and issuer",
+        "at most nine combined logical admissions",
+        "same parent request/byte ledger",
+        "not browser/sender authentication or proof of remote PKCE enforcement",
+        "V7 performs no OIDC nonce, identity or token signature validation",
         "scheduled-public-bearer-refresh/v1",
         "exactly two selected resources and eight session requests",
         "one refresh-token POST, immediate new-epoch health",
@@ -1049,6 +1057,11 @@ fn compiled_inventory_matches_the_actual_binary_help() {
         surface_state(&document, "option.supplied-session-review") == "compiled",
         scan.contains("--session-oauth-code-file"),
         "imported OAuth code source/help drift"
+    );
+    assert_eq!(
+        surface_state(&document, "option.supplied-session-review") == "compiled",
+        scan.contains("--session-oauth-authorization-output"),
+        "initiated OAuth private handoff/help drift"
     );
     for option in [
         "--jwt-public-jwk",

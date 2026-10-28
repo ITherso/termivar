@@ -1,6 +1,7 @@
 """Synthetic controller/consumer regressions, not captured Keycloak output."""
 
 import copy
+import dataclasses
 import hashlib
 import http.client
 import importlib.util
@@ -9,6 +10,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 import urllib.parse
@@ -32,6 +34,8 @@ ROLES = {
     "refresh-health-loss": ("health", "resource-one", "health", "health"),
 }
 CONTROLS = ("a-to-b-context", "refresh-a-to-b-context", "code-to-refresh-policy", "refresh-health-loss")
+AUTHORIZATION_NAMES = ("initiated-valid-a", "initiated-wrong-state", "initiated-wrong-issuer",
+                       "initiated-provider-error", "initiated-challenge-substitution")
 
 
 def literal_image_inspection(profile="legacy"):
@@ -217,6 +221,81 @@ def synthetic_self_comparison(source):
     return result
 
 
+def synthetic_authorization_audit(name):
+    """Independent literal V7 consumer fixture, not executable/provider output."""
+    positive = name == "initiated-valid-a"
+    exchange = name in ("initiated-valid-a", "initiated-challenge-substitution")
+    committed = name not in ("initiated-wrong-state", "initiated-wrong-issuer", "initiated-provider-error")
+    qualified = name not in ("initiated-wrong-state", "initiated-wrong-issuer")
+    source = synthetic_audit("valid-a" if positive else "wrong-verifier")
+    source.pop("oauth_code")
+    source.update({"schema": "security.supplied-session-audit/v7", "principal_alias": "canary-a",
+                   "principal_assurance": "operator_declared",
+                   "policy_reference": "supplied-session-policy-sha256:" + hashlib.sha256(name.encode()).hexdigest(),
+                   "credential_acquisition": "client_initiated_oauth_pkce",
+                   "outcome": "complete" if positive else "oauth_code_exchange_unavailable",
+                   "response_byte_limit": 65536, "dispatched_request_count": 6 if positive else int(exchange),
+                   "response_bytes": 612 if positive else 64 if exchange else 0})
+    for row in source["checkpoints"]:
+        row["epoch"] = 1
+    source["oauth_authorization"] = {
+        "profile": "loopback-form-post-state/v1",
+        "authorization_policy_reference": "oauth-authorization-policy-sha256:" + "a" * 64,
+        "configured_wait_ms": 30000, "reservation_count": 1, "listener_bound": True, "handoff_written": True,
+        "accepted_connection_count": 1, "completed_form_count": 1, "state_validated": qualified,
+        "issuer_validated": qualified, "callback_commit_count": int(committed), "ingress_bytes": 384,
+        "reply_bytes_written": 224, "elapsed_ms": 17, "listener_closed": True, "unknown_parameter_count": 1,
+        "provider_error_class": "invalid_scope" if name == "initiated-provider-error" else None,
+        "evidence_reference": "supplied-session-oauth-authorization-evidence-sha256:" + "b" * 64 if committed else None,
+        "oidc_nonce_validation_performed": False, "oidc_identity_validation_performed": False,
+        "token_signature_validation_performed": False,
+        "outcome": "provider_error" if name == "initiated-provider-error" else "callback_committed" if committed else "response_rejected",
+    }
+    source["oauth_token_exchange"] = {
+        "profile": "client-initiated-public-code-s256-bearer/v1",
+        "pkce_assurance": "client_generated_s256_not_remote_enforcement",
+        "transport_profile": "owned-numeric-loopback-http/v1",
+        "idp_reference": "oauth-code-policy-sha256:" + "c" * 64,
+        "token_interpretation": "opaque_bearer_not_oidc_identity",
+        "request_attempt_count": int(exchange), "request_admitted_count": int(exchange),
+        "response_completed_count": int(exchange), "credential_commit_count": int(positive),
+        "verifier_in_admitted_request": exchange, "status": 200 if positive else 400 if exchange else None,
+        "body_state": "complete" if exchange else "unavailable", "response_bytes": 512 if positive else 64 if exchange else 0,
+        "configured_token_response_byte_limit": 8192, "token_response_validated": positive,
+        "response_scope_matched": True if positive else None, "declared_token_lifetime_seconds": 180 if positive else None,
+        "refresh_token_returned": True if positive else None,
+        "evidence_reference": "supplied-session-oauth-code-evidence-sha256:" + "d" * 64 if positive else None,
+        "outcome": "credential_committed" if positive else "response_rejected" if exchange else "not_started",
+    }
+    return source
+
+
+def synthetic_authorization_source(name):
+    return {"schema": "venom-rendered-assessment/v1", "item_count": 1,
+            "items": [{"capability_id": "session.supplied-context-observed@1",
+                       "fingerprint": "sha256:" + hashlib.sha256(name.encode()).hexdigest()}],
+            "supplied_session": synthetic_authorization_audit(name)}
+
+
+def synthetic_authorization_trace(name):
+    positive = name == "initiated-valid-a"
+    target, idp = synthetic_trace("valid-a" if positive else "wrong-verifier")
+    if not positive and name != "initiated-challenge-substitution":
+        idp = []
+    for row in target + idp:
+        row["phase"] = name
+    return target, idp
+
+
+def synthetic_user_agent_result(name):
+    return {"post_count": 1, "request_bytes": 384, "reply_bytes": 224, "response_status": 200,
+            "credential_headers_sent": False, "handoff_preserved_before_submission": True,
+            "product_generated_request_used": True, "authorization_get_count": 1,
+            "controlled_challenge_substitution": name == "initiated-challenge-substitution",
+            "provider_error_class": "invalid_scope" if name == "initiated-provider-error" else None,
+            "interactive_login_performed": False}
+
+
 class FakeLab:
     instances = []
 
@@ -261,7 +340,8 @@ class FakeRunner:
             if not fixture.prepared or fixture.closed:
                 raise AssertionError("scan did not use active synthetic provider")
             target = TargetCapture.instances[-1]
-            rows, idp = synthetic_trace(name)
+            initiated = name in AUTHORIZATION_NAMES
+            rows, idp = synthetic_authorization_trace(name) if initiated else synthetic_trace(name)
             target.trace.extend(rows)
             fixture.relay.trace.extend(idp)
             if name in REFRESH_NAMES:
@@ -270,9 +350,16 @@ class FakeRunner:
                 fixture.relay._refresh_captures[name] = lab._RefreshCapture(
                     initial_refresh=refresh, initial_returned=True, refresh_responses=1,
                     replacement_returned=True, replacement_value_differs=True)
-            source = synthetic_source(name)
+            source = synthetic_authorization_source(name) if initiated else synthetic_source(name)
             if self.mutation is not None:
                 self.mutation(name, source)
+            if initiated:
+                self.authorization_driver_done = threading.Event()
+                handoff = Path(args[args.index("--session-oauth-authorization-output") + 1])
+                lab.private_write(handoff, b"synthetic-private-handoff-fixture-not-captured-native-output\n")
+                if not self.authorization_driver_done.wait(2):
+                    raise AssertionError("bounded synthetic user-agent driver did not reach the new execution path")
+                handoff.unlink()
             path = Path(args[args.index("--report-dir") + 1])
             self.sources[path] = source
             if self.publish_failures or name in ("option-off", "valid-a", "valid-b-context"):
@@ -292,7 +379,8 @@ class FakeRunner:
         elif label.endswith("-self-compare"):
             path = Path(args[args.index("--before") + 1]).parent
             value = synthetic_self_comparison(self.sources[path])
-        elif label in ("a-to-b-context-compare", "refresh-a-to-b-context-compare", "code-to-refresh-policy-compare"):
+        elif label in ("a-to-b-context-compare", "refresh-a-to-b-context-compare", "code-to-refresh-policy-compare",
+                       "external-code-to-initiated-compare"):
             before = self.sources[Path(args[args.index("--before") + 1]).parent]
             after = self.sources[Path(args[args.index("--after") + 1]).parent]
             value = {"schema": "termivar-report-comparison/v1", "only_in_after": after["items"],
@@ -348,7 +436,7 @@ class AcceptanceTests(unittest.TestCase):
                    mock.patch.object(lab, "obtain_code", side_effect=synthetic_grant))
         def replay_request(url, method, body=None, headers=None, **kwargs):
             fixture = FakeLab.instances[-1]
-            self.assertEqual(len(runner.scanner_arguments), 9, "controller replay preceded mandatory scanner cases")
+            self.assertEqual(len(runner.scanner_arguments), 14, "controller replay preceded mandatory scanner cases")
             self.assertFalse(fixture.closed)
             self.assertFalse(TargetCapture.instances[-1].stopped)
             self.assertTrue(fixture.relay.phase in ("controller-old-refresh-refresh-a", "controller-old-refresh-refresh-b-context"))
@@ -359,12 +447,23 @@ class AcceptanceTests(unittest.TestCase):
             self.assertTrue(fields == {"grant_type": "refresh_token", "client_id": "termivar-owned-public",
                                        "refresh_token": "synthetic-private-old-refresh-" + name, "scope": "canary-read"})
             self.assertEqual(set(headers), {"Content-Type", "Accept-Encoding"})
-            runner.controller_replays.append({"scenario": name, "scanner_cases_already_executed": 9})
+            runner.controller_replays.append({"scenario": name, "scanner_cases_already_executed": 14})
             if runner.replay_status == 400:
                 return 400, [], b'{"error":"invalid_grant"}'
             return 200, [], b'{"access_token":"synthetic-accepted-old-refresh-access","refresh_token":"synthetic-accepted-new-refresh-value"}'
 
-        with patches[0], patches[1], patches[2], mock.patch.object(lab, "request_bytes", side_effect=replay_request):
+        def user_agent(relay, opener, jar, handoff, redirect, name, private, stop):
+            lab._read_handoff(handoff, stop)
+            result = synthetic_user_agent_result(name)
+            runner.authorization_driver_done.set()
+            return result
+
+        replay = {"execution_class": "synthetic_controller_after_completed_product_flow",
+                  "connection_attempt_count": 1, "connection_accepted": False, "form_resubmitted": False}
+        with patches[0], patches[1], patches[2], mock.patch.object(lab, "request_bytes", side_effect=replay_request), \
+             mock.patch.object(lab, "prepare_initiated_sso", return_value=(None, None)), \
+             mock.patch.object(lab, "drive_initiated_authorization", side_effect=user_agent), \
+             mock.patch.object(lab, "closed_callback_replay_control", return_value=replay):
             result = lab.execute(binary, output, "a" * 40, "0.10.0-alpha.3", runner)
         return result, runner, output
 
@@ -472,14 +571,14 @@ max_token_response_bytes = 8192
         self.assertEqual(document["status"], "passed")
         self.assertEqual(tuple(document["scenarios"]), NAMES)
         self.assertEqual(set(document["offline"]["bundles"]), set(NAMES))
-        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-verify")]), 9)
-        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-self-compare")]), 9)
+        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-verify")]), 14)
+        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-self-compare")]), 14)
         self.assertEqual(tuple(document["offline"]["controlled_comparisons"]), CONTROLS)
-        self.assertEqual(runner.records[-1]["id"], "refresh-health-loss-compare")
-        self.assertEqual(len(runner.records), 32)
+        self.assertEqual(runner.records[-1]["id"], "external-code-to-initiated-compare")
+        self.assertEqual(len(runner.records), 48)
         self.assertEqual(runner.controller_replays,
-                         [{"scenario": "refresh-a", "scanner_cases_already_executed": 9},
-                          {"scenario": "refresh-b-context", "scanner_cases_already_executed": 9}])
+                         [{"scenario": "refresh-a", "scanner_cases_already_executed": 14},
+                          {"scenario": "refresh-b-context", "scanner_cases_already_executed": 14}])
         self.assertEqual(document["controller_refresh_replay"]["status"], "passed")
         self.assertTrue(document["controller_refresh_replay"]["all_scanner_scenarios_completed_before_controls"])
         self.assertTrue(document["offline"]["selected_input_bytes_preserved"])
@@ -495,7 +594,10 @@ max_token_response_bytes = 8192
         for args in runner.scanner_arguments:
             self.assertEqual(args[1], "scan")
             if "--session-policy" in args:
-                self.assertIn("--session-oauth-code-file", args)
+                if "--session-oauth-authorization-output" in args:
+                    self.assertNotIn("--session-oauth-code-file", args)
+                else:
+                    self.assertIn("--session-oauth-code-file", args)
                 self.assertNotIn("--session-authorization-file", args)
 
     def test_nonpublished_started_failure_not_relabelled_success(self):
@@ -818,6 +920,8 @@ max_token_response_bytes = 8192
                     name = label[:-5]
                     # Literal synthetic provider material, never captured IdP
                     # bytes. Keep the actual guard instead of mocking add().
+                    if name not in NAMES:
+                        return result
                     if name != "option-off":
                         for suffix in ("access", "refresh", "response"):
                             inner.private.add("synthetic-private-guarded-" + name + "-" + suffix)
@@ -833,7 +937,7 @@ max_token_response_bytes = 8192
         document, _, _ = self.execute_fake(successful)
         self.assertEqual(successful.guarded_scenarios, list(NAMES))
         self.assertEqual(document["status"], "passed")
-        self.assertEqual(len(successful.records), 32)
+        self.assertEqual(len(successful.records), 48)
         self.assertLessEqual(len(successful.private._values), 96)
 
         for fail_write in (False, True):
@@ -888,8 +992,8 @@ max_token_response_bytes = 8192
         current = RepresentativeCanaryRunner()
         result, _, _ = self.execute_fake(current)
         self.assertEqual(result["status"], "passed")
-        self.assertEqual(len(current.scanner_arguments), 9)
-        self.assertEqual(len(current.records), 32)
+        self.assertEqual(len(current.scanner_arguments), 14)
+        self.assertEqual(len(current.records), 48)
         self.assertEqual(len(current.private._owned_input_path_digests), 18)
         # 73 original canaries + two controller secrets + work root + the
         # deliberately wrong verifier + three synthetic initial RT values.
@@ -911,7 +1015,7 @@ max_token_response_bytes = 8192
             self.assertEqual(evidence["offline"]["status"], "passed")
             self.assertEqual(set(evidence["offline"]["bundles"]), set(NAMES))
             self.assertEqual(set(evidence["offline"]["controlled_comparisons"]), set(CONTROLS))
-            self.assertEqual(len(runner.records), 32)
+            self.assertEqual(len(runner.records), 48)
             self.assertNotIn(b"synthetic-accepted-old-refresh-access", payload)
             self.assertNotIn(b"synthetic-accepted-new-refresh-value", payload)
 
@@ -951,8 +1055,322 @@ max_token_response_bytes = 8192
         runner = MutatedAfterOffline()
         with self.assertRaisesRegex(lab.LabError, "offline_selected_input_modified"):
             self.execute_fake(runner)
-        self.assertEqual(len(runner.records), 32)
+        self.assertEqual(len(runner.records), 37)
         self.assertEqual(runner.records[-1]["id"], "refresh-health-loss-compare")
+
+
+class AuthorizationAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        FakeLab.instances.clear()
+        TargetCapture.instances.clear()
+
+    def test_separate_five_case_registry_reaches_all_bundles_and_new_control(self):
+        document, runner, _ = AcceptanceTests.execute_fake(self)
+        self.assertEqual(tuple(document["scenarios"]), NAMES)
+        self.assertEqual(tuple(document["authorization_scenarios"]), AUTHORIZATION_NAMES)
+        self.assertEqual(tuple(document["authorization_offline"]["bundles"]), AUTHORIZATION_NAMES)
+        self.assertEqual(tuple(document["authorization_offline"]["controlled_comparisons"]), ("external-code-to-initiated",))
+        self.assertTrue(document["authorization_offline"]["fixtures_stopped_before_execution"])
+        self.assertEqual(len(runner.records), 48)  # 1 version, 14 scan, 28 Verify/self, 5 controlled Compare.
+        positive = document["authorization_scenarios"]["initiated-valid-a"]
+        self.assertEqual((positive["ordinary_requests"], positive["outgoing_session_requests"],
+                          positive["callback_reception_reservations"], positive["evaluated_resources"]), (3, 6, 1, 2))
+        self.assertEqual(positive["reconciled_logical_parent_admissions"], 10)
+        self.assertIs(positive["closed_listener_replay_control"]["connection_accepted"], False)
+        for name in AUTHORIZATION_NAMES[1:4]:
+            summary = document["authorization_scenarios"][name]
+            self.assertEqual((summary["outgoing_session_requests"], summary["evaluated_resources"],
+                              summary["reconciled_logical_parent_admissions"]), (0, 0, 4))
+        substitution = document["authorization_scenarios"]["initiated-challenge-substitution"]
+        self.assertEqual((substitution["outgoing_session_requests"], substitution["evaluated_resources"]), (1, 0))
+        self.assertEqual(substitution["token_outcome"], "response_rejected")
+        self.assertEqual(document["privacy"]["raw_entry_cap_per_guard"], 96)
+        for args in runner.scanner_arguments[-5:]:
+            self.assertIn("--session-oauth-authorization-output", args)
+            self.assertNotIn("--session-oauth-code-file", args)
+
+    def test_five_literal_typed_cases_have_independent_expectations(self):
+        baseline = [{"method": "GET", "role": "ordinary", "entry_path": True}] * 3
+        for name, counts in zip(AUTHORIZATION_NAMES, ((6, 2, 1), (0, 0, 0), (0, 0, 0), (0, 0, 0), (1, 0, 1))):
+            target, idp = synthetic_authorization_trace(name)
+            result = lab.validate_authorization_case(name, synthetic_authorization_audit(name), target, idp,
+                                                       baseline, synthetic_user_agent_result(name))
+            self.assertEqual((result["outgoing_session_requests"], result["evaluated_resources"],
+                              synthetic_authorization_audit(name)["oauth_authorization"]["callback_commit_count"]), counts)
+
+    def test_missing_bool_wrong_counts_and_inflated_claims_fail_with_bounded_diagnostics(self):
+        mutations = (
+            ("oauth_authorization", "callback_commit_count", 0),
+            ("oauth_authorization", "reservation_count", True),
+            ("oauth_authorization", "ingress_bytes", 383),
+            ("oauth_authorization", "state_validated", False),
+            ("oauth_authorization", "issuer_validated", False),
+            ("oauth_authorization", "oidc_identity_validation_performed", True),
+            ("oauth_authorization", "listener_closed", False),
+            ("oauth_token_exchange", "request_attempt_count", True),
+            ("oauth_token_exchange", "credential_commit_count", 0),
+            ("oauth_token_exchange", "pkce_assurance", "server_enforcement_proven"),
+        )
+        baseline = [{"method": "GET", "role": "ordinary", "entry_path": True}] * 3
+        for section, key, value in mutations:
+            source = synthetic_authorization_audit("initiated-valid-a")
+            source[section][key] = value
+            target, idp = synthetic_authorization_trace("initiated-valid-a")
+            with self.subTest(section=section, key=key), self.assertRaises(lab.LabError) as raised:
+                lab.validate_authorization_case("initiated-valid-a", source, target, idp, baseline,
+                                                  synthetic_user_agent_result("initiated-valid-a"))
+            self.assertLess(len(json.dumps(raised.exception.diagnostic)), 4096)
+            self.assertNotIn("http://", json.dumps(raised.exception.diagnostic))
+        source = synthetic_authorization_audit("initiated-valid-a")
+        del source["oauth_authorization"]["reservation_count"]
+        target, idp = synthetic_authorization_trace("initiated-valid-a")
+        with self.assertRaises(lab.LabError) as raised:
+            lab.validate_authorization_case("initiated-valid-a", source, target, idp, baseline,
+                                              synthetic_user_agent_result("initiated-valid-a"))
+        self.assertEqual(raised.exception.diagnostic["actual"]["authorization"]["reservation_count"], {"state": "missing"})
+
+    def test_zero_work_negative_cannot_be_paired_as_a_positive_or_hide_extra_requests(self):
+        baseline = [{"method": "GET", "role": "ordinary", "entry_path": True}] * 3
+        target, idp = synthetic_authorization_trace("initiated-wrong-state")
+        for mutate in ("invented-token", "duplicated-resource", "substituted-evidence"):
+            source = synthetic_authorization_audit("initiated-wrong-state" if mutate == "invented-token" else "initiated-valid-a")
+            name = "initiated-wrong-state" if mutate == "invented-token" else "initiated-valid-a"
+            rows, provider = synthetic_authorization_trace(name)
+            if mutate == "invented-token": source["oauth_token_exchange"]["request_attempt_count"] = 1
+            elif mutate == "duplicated-resource": source["resources"][1]["resource_reference"] = source["resources"][0]["resource_reference"]
+            else: source["checkpoints"][1]["evidence_reference"] = source["checkpoints"][0]["evidence_reference"]
+            with self.subTest(mutation=mutate), self.assertRaises(lab.LabError):
+                lab.validate_authorization_case(name, source, rows, provider, baseline, synthetic_user_agent_result(name))
+        rows, provider = synthetic_authorization_trace("initiated-valid-a")
+        with self.assertRaisesRegex(lab.LabError, "authorization_idp_trace"):
+            lab.validate_authorization_case("initiated-valid-a", synthetic_authorization_audit("initiated-valid-a"),
+                                              rows, provider + provider[:1], baseline, synthetic_user_agent_result("initiated-valid-a"))
+        empty = synthetic_authorization_source("initiated-wrong-state")
+        empty["items"], empty["item_count"] = [], 0
+        self.assertEqual(lab._self_compare(synthetic_self_comparison(empty), empty),
+                         {"only_in_after": 0, "only_in_before": 0, "changed": 0, "unchanged": 0})
+
+    def test_real_execution_loop_retains_new_failure_before_cleanup_and_evidence_write(self):
+        def mutate(name, source):
+            if name == "initiated-valid-a":
+                source["supplied_session"]["oauth_authorization"]["callback_commit_count"] = 0
+        with tempfile.TemporaryDirectory(prefix="test-initiated-failure-", dir=ROOT) as directory:
+            output = Path(directory) / "evidence"
+            with self.assertRaisesRegex(lab.LabError, "authorization_callback_accounting"):
+                AcceptanceTests.execute_fake(self, FakeRunner(mutate), output)
+            saved = json.loads((output / "oauth-code-lab-acceptance.json").read_bytes())
+            self.assertEqual(tuple(saved["scenarios"]), tuple(sorted(NAMES)))  # JSON is deliberately key-sorted.
+            self.assertEqual(saved["failure"]["diagnostic"]["scenario"], "initiated-valid-a")
+            self.assertEqual(saved["failure"]["diagnostic"]["actual"]["authorization"]["callback_commit_count"], 0)
+            self.assertEqual(saved["authorization_offline"]["status"], "not_run")
+            self.assertTrue(saved["cleanup"]["private_work_removed"])
+
+    def test_two_private_guards_are_retained_without_expanding_either_limit(self):
+        first, second = lab.PrivateValues(), lab.PrivateValues()
+        for index in range(96):
+            first.add("synthetic-private-legacy-guard-" + str(index))
+            second.add("synthetic-private-initiated-guard-" + str(index))
+        combined = lab.CombinedOutputPrivacy(first, second)
+        for guard in (first, second):
+            with self.assertRaisesRegex(lab.LabError, "private_registry_limit"):
+                guard.add("synthetic-private-entry-ninety-seven")
+        for value in (first._values[0], second._values[0]):
+            with self.assertRaisesRegex(lab.LabError, "secret_in_output"):
+                combined.check(value)
+            with self.assertRaisesRegex(lab.LabError, "secret_digest_in_output"):
+                combined.check(hashlib.sha256(value).hexdigest().encode())
+        self.assertEqual((len(first._values), len(second._values)), (96, 96))
+
+    def test_post_driver_join_rechecks_late_registered_output_values_and_digests(self):
+        # The bounded fake child returns before a final canary registration.
+        # This exercises run_authorization_cases itself, not just PrivateValues.
+        original_join = lab.threading.Thread.join
+        for stream in ("stdout", "stderr"):
+            for hashed in (False, True):
+                private_value = b"synthetic-late-authorization-output-canary"
+
+                class LateRunner(FakeRunner):
+                    pending = False
+
+                    def run(self, args, *, label, **kwargs):
+                        result = super().run(args, label=label, **kwargs)
+                        if label == "initiated-valid-a-scan":
+                            emitted = hashlib.sha256(private_value).hexdigest().encode() if hashed else private_value
+                            # Demonstrate why the first capture-time check cannot
+                            # cover a value not yet registered by its owner.
+                            self.output_privacy.check(emitted)
+                            self.pending = True
+                            result = dataclasses.replace(result, **{stream: emitted})
+                        return result
+
+                runner = LateRunner()
+
+                def joined(thread, *args, **kwargs):
+                    result = original_join(thread, *args, **kwargs)
+                    if runner.pending:
+                        runner.pending = False
+                        runner.private.add(private_value.decode())
+                    return result
+
+                expected = "secret_digest_in_output" if hashed else "secret_in_output"
+                with self.subTest(stream=stream, hashed=hashed), \
+                     mock.patch.object(lab.threading.Thread, "join", new=joined), \
+                     self.assertRaisesRegex(lab.LabError, "^" + expected + "$"):
+                    AcceptanceTests.execute_fake(self, runner)
+
+    def test_product_generated_verifier_is_guarded_before_provider_dispatch(self):
+        private = lab.PrivateValues()
+        code, verifier = "synthetic-private-product-generated-code", "V" * 43
+        body = urllib.parse.urlencode({"grant_type": "authorization_code", "client_id": "termivar-owned-public",
+            "redirect_uri": "http://127.0.0.1:18500/termivar/oauth/callback", "code": code, "code_verifier": verifier}).encode()
+        self.assertEqual(lab.public_token_grant(body, "http://127.0.0.1:18500/termivar/oauth/callback", private), "authorization_code")
+        for value in (code.encode(), verifier.encode(), body):
+            with self.assertRaisesRegex(lab.LabError, "secret_in_output"): private.check(value)
+            with self.assertRaisesRegex(lab.LabError, "secret_digest_in_output"): private.check(hashlib.sha256(value).hexdigest().encode())
+
+    @staticmethod
+    def handoff(origin, redirect, scope="canary-read"):
+        fields = [("response_type", "code"), ("response_mode", "form_post"), ("client_id", "termivar-owned-public"),
+                  ("redirect_uri", redirect), ("scope", scope), ("state", "S" * 43),
+                  ("code_challenge", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"), ("code_challenge_method", "S256")]
+        return (origin + "/realms/termivar-owned-code/protocol/openid-connect/auth?" + urllib.parse.urlencode(fields) + "\n").encode()
+
+    def test_exact_eight_field_authorization_descriptor_never_relaxes_legacy_query_rule(self):
+        origin, redirect = "http://127.0.0.1:1234", "http://127.0.0.1:18500/termivar/oauth/callback"
+        raw = self.handoff(origin, redirect)
+        private = lab.PrivateValues()
+        descriptor = lab.initiated_authorization_request(raw, origin, redirect, "initiated-valid-a", private)
+        self.assertFalse(descriptor.substituted)
+        self.assertNotIn("S" * 43, repr(descriptor))
+        with self.assertRaisesRegex(lab.LabError, "relay_route_refused"):
+            lab._provider_route("GET", descriptor.target)
+        changed = lab.initiated_authorization_request(raw, origin, redirect, "initiated-challenge-substitution", private)
+        self.assertTrue(changed.substituted)
+        self.assertNotEqual(changed.code_challenge, descriptor.code_challenge)
+        for mutation in (raw.replace(b"response_type=code", b"response_type=token"),
+                         raw.replace(b"response_mode=form_post", b"response_mode=query"),
+                         raw.replace(b"code_challenge_method=S256", b"code_challenge_method=plain"),
+                         raw[:-1] + b"&jku=https%3A%2F%2Funrelated.invalid\n",
+                         raw.replace(b"127.0.0.1%3A18500", b"127.0.0.2%3A18500"),
+                         raw.replace(b"canary-read", b"openid"), raw[:-1], raw + b"\n"):
+            with self.subTest(mutation_bytes=len(mutation)), self.assertRaises(lab.LabError):
+                lab.initiated_authorization_request(mutation, origin, redirect, "initiated-valid-a", private)
+        for value in (descriptor.state, descriptor.code_challenge, raw[:-1].decode()):
+            with self.assertRaises(lab.LabError): private.check(value.encode())
+
+    def test_approved_query_descriptor_is_revalidated_at_private_upstream_dispatch(self):
+        owner, name, container, network = literal_owned_provider_boundary()
+        binding = lab.owned_idp_upstream(container, network, owner, name, "http://127.0.0.1:1234")
+        descriptor = lab.initiated_authorization_request(
+            self.handoff("http://127.0.0.1:1234", "http://127.0.0.1:18500/termivar/oauth/callback"),
+            "http://127.0.0.1:1234", "http://127.0.0.1:18500/termivar/oauth/callback", "initiated-valid-a", lab.PrivateValues())
+        headers = {"Host": "127.0.0.1:1234", "Accept-Encoding": "identity", "Cookie": "KEYCLOAK_IDENTITY=synthetic-owned-cookie"}
+        with mock.patch.object(lab.http.client, "HTTPConnection") as factory:
+            response = factory.return_value.getresponse.return_value
+            response.status, response.getheaders.return_value, response.read.return_value = 200, [], b"<form></form>"
+            binding.request_authorization(descriptor, headers)
+            factory.return_value.request.assert_called_once_with("GET", descriptor.target, None, headers)
+        for field, value in (("target", descriptor.target + "&extra=1"), ("_seal", object()), ("origin", "http://127.0.0.1:1235")):
+            forged = lab.dataclasses.replace(descriptor, **{field: value})
+            with mock.patch.object(lab.http.client, "HTTPConnection") as connection, self.assertRaises(lab.LabError):
+                binding.request_authorization(forged, headers)
+            connection.assert_not_called()
+
+    def test_new_user_agent_cookie_exception_binds_one_exact_query_not_a_prefix(self):
+        origin, redirect = "http://127.0.0.1:1234", "http://127.0.0.1:18500/termivar/oauth/callback"
+        descriptor = lab.initiated_authorization_request(self.handoff(origin, redirect), origin, redirect,
+                                                         "initiated-valid-a", lab.PrivateValues())
+        cookie = lab.http.cookiejar.Cookie(
+            version=0, name="KEYCLOAK_IDENTITY", value="synthetic-private-exact-query-cookie",
+            port=None, port_specified=False, domain="127.0.0.1", domain_specified=False,
+            domain_initial_dot=False, path="/realms/termivar-owned-code/", path_specified=True,
+            secure=True, expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
+        policy = lab.ControllerCookiePolicy(origin, owned_loopback_http=True, authorization_request=descriptor)
+        jar = lab.http.cookiejar.CookieJar(policy=policy)
+        jar.set_cookie(cookie)
+        admitted = origin + descriptor.target
+        request = lab.urllib.request.Request(admitted, method="GET")
+        jar.add_cookie_header(request)
+        self.assertTrue(request.get_header("Cookie") == "KEYCLOAK_IDENTITY=" + cookie.value)
+        self.assertTrue(cookie.secure)
+        for denied in (admitted + "&extra=1", admitted.replace("state=" + "S" * 43, "state=wrong"),
+                       admitted.replace(":1234", ":1235"), origin + "/realms/termivar-owned-code/protocol/openid-connect/auth"):
+            request = lab.urllib.request.Request(denied, method="GET")
+            jar.add_cookie_header(request)
+            self.assertIsNone(request.get_header("Cookie"))
+
+    def test_real_relay_controller_path_accepts_only_selected_authorization_get_once(self):
+        relay = lab.TokenRelay(lab.PrivateValues())
+        relay.authorization_private = lab.PrivateValues()
+        owner, name, container, network = literal_owned_provider_boundary()
+        relay.bind_upstream(lab.owned_idp_upstream(container, network, owner, name, relay.origin))
+        redirect = "http://127.0.0.1:18500/termivar/oauth/callback"
+        descriptor = lab.initiated_authorization_request(self.handoff(relay.origin, redirect), relay.origin, redirect,
+                                                         "initiated-valid-a", relay.authorization_private)
+        relay.phase = "controller-authorization-initiated-valid-a"
+        relay.select_authorization_request(descriptor)
+        relay.start()
+        try:
+            with mock.patch.object(lab._OwnedIdpUpstream, "request_authorization", return_value=(200, [], b"<form></form>")) as request:
+                first = lab.request_bytes(relay.origin + descriptor.target, "GET", headers={"Cookie": "KEYCLOAK_IDENTITY=synthetic"})
+                self.assertEqual(first[0], 200)
+                self.assertEqual(relay.trace[0]["role"], "controller-authorization")
+                self.assertEqual(relay.trace[0]["method"], "GET")
+                self.assertTrue(relay.authorization_request_used)
+                second = lab.request_bytes(relay.origin + descriptor.target, "GET")
+                self.assertEqual(second[0], 502)
+                request.assert_called_once()
+            self.assertEqual(relay.failure_causes, ["fixture_contract_failure"])
+        finally:
+            relay.stop()
+
+    def test_real_callback_submission_path_uses_product_handoff_and_inert_provider_form(self):
+        private = lab.PrivateValues()
+        relay = lab.TokenRelay(lab.PrivateValues())
+        self.addCleanup(relay.server.server_close)
+        received = []
+        class Callback(lab.http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def log_message(self, *_): pass
+            def do_POST(self):
+                received.append((self.path, dict(urllib.parse.parse_qsl(lab._read_request(self, 8192).decode()))))
+                lab._send(self, 200, b"synthetic inert callback acknowledgement", "text/plain")
+        callback = lab.OwnedHTTPServer(Callback)
+        callback.start()
+        try:
+            redirect = callback.origin + "/termivar/oauth/callback"
+            with tempfile.TemporaryDirectory(prefix="test-initiated-driver-", dir=ROOT) as directory:
+                handoff = Path(directory) / "handoff.txt"
+                lab.private_write(handoff, self.handoff(relay.origin, redirect))
+                raw = handoff.read_bytes()
+                class Response:
+                    status, headers = 200, {}
+                    def __enter__(self): return self
+                    def __exit__(self, *_): pass
+                    def read(self, maximum):
+                        body = ('<form method="post" action="' + redirect + '"><input name="state" value="' + "S" * 43
+                                + '"><input name="iss" value="' + relay.origin + '/realms/termivar-owned-code">'
+                                + '<input name="code" value="synthetic-controlled-provider-code"></form>').encode()
+                        return body[:maximum]
+                class Opener:
+                    def open(self, request, timeout):
+                        descriptor = relay.authorization_request
+                        descriptor.validate(lab.urllib.parse.urlsplit(relay.origin).netloc)
+                        if request.full_url != relay.origin + descriptor.target: raise AssertionError("exact handoff was not used")
+                        relay.authorization_request_used = True
+                        return Response()
+                result = lab.drive_initiated_authorization(relay, Opener(), lab.http.cookiejar.CookieJar(),
+                    handoff, redirect, "initiated-valid-a", private, threading.Event())
+                self.assertEqual(result["post_count"], 1)
+                self.assertTrue(result["product_generated_request_used"])
+                self.assertTrue(handoff.read_bytes() == raw)
+            self.assertEqual(len(received), 1)
+            self.assertEqual(received[0][0], "/termivar/oauth/callback")
+            self.assertTrue(received[0][1]["state"] == "S" * 43)
+            self.assertTrue(received[0][1]["code"] == "synthetic-controlled-provider-code")
+            self.assertIsNone(relay.authorization_request)
+        finally:
+            callback.stop()
 
 
 class ControllerTests(unittest.TestCase):

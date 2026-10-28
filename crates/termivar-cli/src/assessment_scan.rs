@@ -483,6 +483,12 @@ struct SuppliedSessionAuditRecord {
     login: Option<SuppliedSessionLoginRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     oauth_refresh: Option<Box<SuppliedSessionOAuthRefreshRecord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_authorization:
+        Option<Box<termivar_scanner::web_runtime::SuppliedSessionOAuthAuthorizationAudit>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oauth_token_exchange:
+        Option<Box<termivar_scanner::web_runtime::SuppliedSessionOAuthInitiatedTokenAudit>>,
     health_oracle: SuppliedSessionHealthOracleRecord,
     outcome: SuppliedSessionAuditOutcome,
     coverage: SuppliedSessionCoverage,
@@ -905,8 +911,11 @@ impl SuppliedSessionAuditRecord {
             principal_assurance: audit.principal_assurance(),
             credential_mechanism: audit.credential_mechanism(),
             credential_acquisition: matches!(audit.schema(), SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA
-                | termivar_scanner::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA)
+                | termivar_scanner::web_runtime::SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
+                | termivar_scanner::web_runtime::SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA)
                 .then(|| audit.credential_acquisition()),
+            oauth_authorization: audit.oauth_authorization().cloned().map(Box::new),
+            oauth_token_exchange: audit.oauth_token_exchange().cloned().map(Box::new),
             oauth_refresh: audit.oauth_refresh().map(|refresh|Box::new(SuppliedSessionOAuthRefreshRecord {
                 profile: "scheduled-public-bearer-refresh/v1",
                 refresh_policy_reference: refresh.refresh_policy_reference().to_owned(),
@@ -3279,6 +3288,8 @@ mod tests {
             credential_mechanism: SuppliedSessionCredentialMechanism::AuthorizationHeader,
             credential_acquisition: None,
             oauth_refresh: None,
+            oauth_authorization: None,
+            oauth_token_exchange: None,
             cookie_policy: None,
             cookie_lifecycle: None,
             login: None,

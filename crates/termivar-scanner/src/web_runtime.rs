@@ -131,6 +131,8 @@ pub(crate) use authority::SharedWebRuntimeAuthority;
 #[cfg(feature = "supplied-session-review")]
 pub(crate) use authority::{OAuthCodeMintToken, OAuthRefreshMintToken};
 #[cfg(feature = "supplied-session-review")]
+pub(crate) use supplied_session_runtime::OAuthAuthorizationDispatchPermit;
+#[cfg(feature = "supplied-session-review")]
 pub(crate) use supplied_session_runtime::OAuthRefreshDispatchPermit;
 #[cfg(feature = "tls-negotiation-review")]
 pub use tls_negotiation_review::{
@@ -232,14 +234,16 @@ pub use supplied_session_runtime::{
     SuppliedSessionCookiePolicyAudit, SuppliedSessionCoverage,
     SuppliedSessionHealthCheckpointPhase, SuppliedSessionHealthOracleAudit,
     SuppliedSessionHealthOracleKind, SuppliedSessionHealthOutcome, SuppliedSessionLoginFormOutcome,
-    SuppliedSessionLoginSubmitOutcome, SuppliedSessionOAuthCodeAudit,
-    SuppliedSessionOAuthCodeOutcome, SuppliedSessionOAuthRefreshAudit,
-    SuppliedSessionOAuthRefreshOutcome, SuppliedSessionPredicateOutcome,
-    SuppliedSessionPrincipalAssurance, SuppliedSessionResourceOutcome,
-    WebAssessmentSuppliedSessionAudit, WebAssessmentSuppliedSessionCheckpointAudit,
-    WebAssessmentSuppliedSessionResourceAudit, SUPPLIED_SESSION_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_CAPABILITY_ID, SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA,
-    SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
+    SuppliedSessionLoginSubmitOutcome, SuppliedSessionOAuthAuthorizationAudit,
+    SuppliedSessionOAuthAuthorizationOutcome, SuppliedSessionOAuthCodeAudit,
+    SuppliedSessionOAuthCodeOutcome, SuppliedSessionOAuthInitiatedTokenAudit,
+    SuppliedSessionOAuthRefreshAudit, SuppliedSessionOAuthRefreshOutcome,
+    SuppliedSessionPredicateOutcome, SuppliedSessionPrincipalAssurance,
+    SuppliedSessionResourceOutcome, WebAssessmentSuppliedSessionAudit,
+    WebAssessmentSuppliedSessionCheckpointAudit, WebAssessmentSuppliedSessionResourceAudit,
+    SUPPLIED_SESSION_AUDIT_SCHEMA, SUPPLIED_SESSION_CAPABILITY_ID,
+    SUPPLIED_SESSION_COOKIE_AUDIT_SCHEMA, SUPPLIED_SESSION_FORM_LOGIN_AUDIT_SCHEMA,
+    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA, SUPPLIED_SESSION_OAUTH_CODE_AUDIT_SCHEMA,
     SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA, SUPPLIED_SESSION_RENEWAL_AUDIT_SCHEMA,
 };
 #[cfg(feature = "tls-observation")]

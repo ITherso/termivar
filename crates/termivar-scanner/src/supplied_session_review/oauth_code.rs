@@ -24,6 +24,7 @@ use super::{
 };
 
 const PROFILE: &str = "external-public-code-s256-bearer/v1";
+const AUTHORIZATION_PROFILE: &str = "client-initiated-public-code-s256-bearer/v1";
 const HTTPS: &str = "verified-https/v1";
 const OWNED_HTTP: &str = "owned-numeric-loopback-http/v1";
 const MAX_URL_BYTES: usize = 2_048;
@@ -55,6 +56,7 @@ pub(super) struct WireOAuthCodePolicy {
 /// Validated non-secret configuration, not a network permit.
 #[derive(Clone)]
 pub(crate) struct OAuthCodePolicy {
+    profile: &'static str,
     issuer: Url,
     token_endpoint: Url,
     client_id: String,
@@ -66,11 +68,30 @@ pub(crate) struct OAuthCodePolicy {
 }
 
 impl OAuthCodePolicy {
-    pub(super) fn from_wire(
-        mut wire: WireOAuthCodePolicy,
+    pub(super) fn from_wire(wire: WireOAuthCodePolicy) -> Result<Self, SuppliedSessionPolicyError> {
+        Self::from_profile(wire, PROFILE)
+    }
+
+    /// Separate admission for a client-generated transaction. Historical
+    /// imported-code profiles retain their original HTTPS redirect rules.
+    pub(super) fn from_authorization_wire(
+        wire: WireOAuthCodePolicy,
     ) -> Result<Self, SuppliedSessionPolicyError> {
-        let invalid = || SuppliedSessionPolicyError::InvalidOAuthCode;
-        if wire.profile != PROFILE
+        Self::from_profile(wire, AUTHORIZATION_PROFILE)
+    }
+
+    fn from_profile(
+        mut wire: WireOAuthCodePolicy,
+        profile: &'static str,
+    ) -> Result<Self, SuppliedSessionPolicyError> {
+        let invalid = || {
+            if profile == AUTHORIZATION_PROFILE {
+                SuppliedSessionPolicyError::InvalidOAuthAuthorization
+            } else {
+                SuppliedSessionPolicyError::InvalidOAuthCode
+            }
+        };
+        if wire.profile != profile
             || !matches!(wire.transport_profile.as_str(), HTTPS | OWNED_HTTP)
             || wire.client_id.is_empty()
             || wire.client_id.len() > MAX_CLIENT_BYTES
@@ -90,8 +111,12 @@ impl OAuthCodePolicy {
         let issuer = safe_url(&wire.issuer, &wire.transport_profile).ok_or_else(invalid)?;
         let token_endpoint =
             safe_url(&wire.token_endpoint, &wire.transport_profile).ok_or_else(invalid)?;
-        let redirect_uri =
-            safe_url(&wire.redirect_uri, &wire.transport_profile).ok_or_else(invalid)?;
+        let redirect_uri = if profile == AUTHORIZATION_PROFILE {
+            authorization_callback_url(&wire.redirect_uri)
+        } else {
+            safe_url(&wire.redirect_uri, &wire.transport_profile)
+        }
+        .ok_or_else(invalid)?;
         if issuer.origin() != token_endpoint.origin()
             || !path_beneath(issuer.path(), token_endpoint.path())
         {
@@ -100,7 +125,7 @@ impl OAuthCodePolicy {
         let mut hasher = Sha256::new();
         hasher.update(b"security.supplied-session.oauth-code-policy.v1\0");
         for field in [
-            PROFILE,
+            profile,
             wire.transport_profile.as_str(),
             issuer.as_str(),
             token_endpoint.as_str(),
@@ -119,6 +144,7 @@ impl OAuthCodePolicy {
         let binding_reference =
             format!("oauth-code-policy-sha256:{}", super::hex(hasher.finalize()));
         Ok(Self {
+            profile,
             issuer,
             token_endpoint,
             client_id: wire.client_id,
@@ -132,6 +158,10 @@ impl OAuthCodePolicy {
 
     pub(crate) fn issuer(&self) -> &Url {
         &self.issuer
+    }
+
+    pub(super) fn is_client_initiated(&self) -> bool {
+        self.profile == AUTHORIZATION_PROFILE
     }
 
     pub(crate) fn token_endpoint(&self) -> &Url {
@@ -175,7 +205,7 @@ impl fmt::Debug for OAuthCodePolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("OAuthCodePolicy")
-            .field("profile", &PROFILE)
+            .field("profile", &self.profile)
             .field("transport_profile", &self.transport_profile)
             .field("scope_count", &self.scopes.len())
             .field("max_token_response_bytes", &self.max_token_response_bytes)
@@ -184,7 +214,7 @@ impl fmt::Debug for OAuthCodePolicy {
     }
 }
 
-fn safe_url(raw: &str, transport: &str) -> Option<Url> {
+pub(super) fn safe_url(raw: &str, transport: &str) -> Option<Url> {
     if raw.is_empty()
         || raw.len() > MAX_URL_BYTES
         || !raw.bytes().all(visible_ascii)
@@ -233,13 +263,25 @@ fn safe_url(raw: &str, transport: &str) -> Option<Url> {
     Some(parsed)
 }
 
-fn path_beneath(parent: &str, child: &str) -> bool {
+pub(super) fn path_beneath(parent: &str, child: &str) -> bool {
     let directory = parent.trim_end_matches('/');
     directory.is_empty()
         || child == directory
         || child
             .strip_prefix(directory)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn authorization_callback_url(raw: &str) -> Option<Url> {
+    // This exception applies ONLY to the public client's explicitly registered
+    // callback, never its issuer/token endpoint or credentialed application.
+    let callback = safe_url(raw, OWNED_HTTP)?;
+    let port = callback.port().filter(|port| *port >= 1_024)?;
+    (callback.scheme() == "http"
+        && callback.host() == Some(Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+        && callback.path() == "/termivar/oauth/callback"
+        && callback.as_str() == format!("http://127.0.0.1:{port}/termivar/oauth/callback"))
+    .then_some(callback)
 }
 
 fn visible_ascii(byte: u8) -> bool {
@@ -998,6 +1040,55 @@ max_token_response_bytes = 8192
         assert!(
             !original.is_valid_for_application(&Url::parse("http://127.0.0.1:8080/app/").unwrap())
         );
+    }
+
+    #[test]
+    fn client_authorization_factory_is_distinct_and_does_not_relax_imported_profiles() {
+        let callback = "http://127.0.0.1:18443/termivar/oauth/callback";
+        let mut imported = wire();
+        imported.redirect_uri = callback.to_owned();
+        assert!(OAuthCodePolicy::from_wire(imported).is_err());
+        let mut initiated = wire();
+        initiated.profile = AUTHORIZATION_PROFILE.to_owned();
+        initiated.redirect_uri = callback.to_owned();
+        let initiated = OAuthCodePolicy::from_authorization_wire(initiated).unwrap();
+        assert!(initiated.is_client_initiated());
+        assert_eq!(initiated.transport_profile(), "verified-https/v1");
+        assert_eq!(initiated.issuer().as_str(), "https://issuer.test/realm");
+        assert_eq!(initiated.redirect_uri().as_str(), callback);
+        assert!(
+            !initiated.is_valid_for_application(&Url::parse("http://127.0.0.1:8080/app/").unwrap())
+        );
+        assert!(!oauth().is_client_initiated());
+        assert!(OAuthCodePolicy::from_authorization_wire(wire()).is_err());
+        for callback in [
+            "https://127.0.0.1:18443/termivar/oauth/callback",
+            "http://localhost:18443/termivar/oauth/callback",
+            "http://127.0.0.2:18443/termivar/oauth/callback",
+            "http://[::1]:18443/termivar/oauth/callback",
+            "http://127.0.0.1:1023/termivar/oauth/callback",
+            "http://127.0.0.1:0/termivar/oauth/callback",
+            "http://127.0.0.1:18443/termivar/oauth/%63allback",
+            "http://127.0.0.1:18443/termivar/oauth/callback?state=secret",
+            "http://127.0.0.1:18443/termivar/oauth/callback/",
+            "http://127.0.0.1:18443/other",
+        ] {
+            let mut value = wire();
+            value.profile = AUTHORIZATION_PROFILE.to_owned();
+            value.redirect_uri = callback.to_owned();
+            assert!(OAuthCodePolicy::from_authorization_wire(value).is_err());
+        }
+        for endpoint in [
+            "http://127.0.0.1:18444/realm/token",
+            "https://foreign.test/realm/token",
+            "https://issuer.test/realm-evil/token",
+        ] {
+            let mut value = wire();
+            value.profile = AUTHORIZATION_PROFILE.to_owned();
+            value.redirect_uri = callback.to_owned();
+            value.token_endpoint = endpoint.to_owned();
+            assert!(OAuthCodePolicy::from_authorization_wire(value).is_err());
+        }
     }
 
     #[test]

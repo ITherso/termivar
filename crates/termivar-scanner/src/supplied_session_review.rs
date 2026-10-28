@@ -15,6 +15,7 @@ use thiserror::Error;
 use url::{Host, Url};
 use zeroize::Zeroizing;
 
+pub(crate) mod oauth_authorization;
 pub(crate) mod oauth_code;
 pub(crate) mod oauth_refresh;
 pub use oauth_code::{OAuthCodeInputError, SuppliedSessionOAuthGrant};
@@ -32,6 +33,9 @@ pub const SUPPLIED_SESSION_OAUTH_CODE_POLICY_SCHEMA: &str = "security.supplied-s
 /// Strict V6 imported-code acquisition and one explicitly scheduled IdP refresh.
 pub const SUPPLIED_SESSION_OAUTH_REFRESH_POLICY_SCHEMA: &str =
     "security.supplied-session-policy/v6";
+/// Strict V7 client-initiated S256 transaction with one loopback form response.
+pub const SUPPLIED_SESSION_OAUTH_AUTHORIZATION_POLICY_SCHEMA: &str =
+    "security.supplied-session-policy/v7";
 /// Maximum accepted policy bytes.
 pub const HARD_MAX_SUPPLIED_SESSION_POLICY_BYTES: usize = 64 * 1024;
 /// Maximum accepted supplied-cookie secret bytes.
@@ -119,6 +123,8 @@ pub enum SuppliedSessionPolicyVersion {
     V5,
     /// Imported code acquisition with one declared same-IdP refresh boundary.
     V6,
+    /// Client-generated public-code/S256 transaction and one exact loopback response.
+    V7,
 }
 
 impl SuppliedSessionPolicyVersion {
@@ -131,6 +137,7 @@ impl SuppliedSessionPolicyVersion {
             Self::V4 => SUPPLIED_SESSION_RENEWAL_POLICY_SCHEMA,
             Self::V5 => SUPPLIED_SESSION_OAUTH_CODE_POLICY_SCHEMA,
             Self::V6 => SUPPLIED_SESSION_OAUTH_REFRESH_POLICY_SCHEMA,
+            Self::V7 => SUPPLIED_SESSION_OAUTH_AUTHORIZATION_POLICY_SCHEMA,
         }
     }
 }
@@ -149,6 +156,9 @@ pub enum SuppliedSessionCredentialAcquisition {
     /// One imported external code/PKCE transaction was selected for redemption.
     #[serde(rename = "imported_oauth_code_pkce")]
     ImportedOAuthCodePkce,
+    /// The client generated the state/verifier and receives one bound response.
+    #[serde(rename = "client_initiated_oauth_pkce")]
+    ClientInitiatedOAuthPkce,
 }
 
 impl SuppliedSessionCredentialAcquisition {
@@ -159,6 +169,7 @@ impl SuppliedSessionCredentialAcquisition {
             Self::SuppliedCookieJar => "supplied_cookie_jar",
             Self::BoundedFormLogin => "bounded_form_login",
             Self::ImportedOAuthCodePkce => "imported_oauth_code_pkce",
+            Self::ClientInitiatedOAuthPkce => "client_initiated_oauth_pkce",
         }
     }
 }
@@ -278,6 +289,9 @@ pub enum SuppliedSessionPolicyError {
     /// A selected OAuth refresh profile, boundary or replacement policy was invalid.
     #[error("supplied-session OAuth refresh policy is invalid or unsupported")]
     InvalidOAuthRefresh,
+    /// The client-initiated profile, fixed callback or authorization binding is invalid.
+    #[error("supplied-session OAuth authorization policy is invalid or unsupported")]
+    InvalidOAuthAuthorization,
     /// A policy limit was zero, inconsistent, or above a compiled maximum.
     #[error("supplied-session limits are invalid")]
     InvalidLimits,
@@ -962,6 +976,7 @@ pub struct SuppliedSessionPolicy {
     // Keep the new optional payload out of every legacy policy's inline layout.
     oauth_code: Option<Box<oauth_code::OAuthCodePolicy>>,
     oauth_refresh: Option<Box<oauth_refresh::OAuthRefreshPolicy>>,
+    oauth_authorization: Option<Box<oauth_authorization::OAuthAuthorizationPolicy>>,
     policy_reference: String,
     application_reference: String,
     principal_reference: String,
@@ -986,6 +1001,8 @@ pub enum SuppliedSessionRuntimeInput {
     FormLogin(SuppliedSessionFormCredential),
     /// One guarded, externally obtained authorization code/PKCE transaction.
     OAuthCode(SuppliedSessionOAuthGrant),
+    /// One explicitly selected, bounded private handoff writer; no secret import.
+    OAuthAuthorization(Box<SuppliedSessionOAuthAuthorization>),
 }
 
 impl SuppliedSessionRuntimeInput {
@@ -996,10 +1013,12 @@ impl SuppliedSessionRuntimeInput {
                 policy.version() != SuppliedSessionPolicyVersion::V3
                     && policy.version() != SuppliedSessionPolicyVersion::V5
                     && policy.version() != SuppliedSessionPolicyVersion::V6
+                    && policy.version() != SuppliedSessionPolicyVersion::V7
                     && policy.credential_mechanism() == credential.mechanism()
             },
             Self::FormLogin(credential) => credential.matches_policy(policy),
             Self::OAuthCode(grant) => grant.matches_policy(policy),
+            Self::OAuthAuthorization(authorization) => authorization.matches_policy(policy),
         }
     }
 }
@@ -1034,6 +1053,12 @@ impl From<SuppliedSessionOAuthGrant> for SuppliedSessionRuntimeInput {
     }
 }
 
+impl From<SuppliedSessionOAuthAuthorization> for SuppliedSessionRuntimeInput {
+    fn from(value: SuppliedSessionOAuthAuthorization) -> Self {
+        Self::OAuthAuthorization(Box::new(value))
+    }
+}
+
 impl fmt::Debug for SuppliedSessionRuntimeInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1044,7 +1069,110 @@ impl fmt::Debug for SuppliedSessionRuntimeInput {
             Self::OAuthCode(_) => {
                 formatter.write_str("SuppliedSessionRuntimeInput::OAuthCode(<redacted>)")
             },
+            Self::OAuthAuthorization(_) => {
+                formatter.write_str("SuppliedSessionRuntimeInput::OAuthAuthorization(<redacted>)")
+            },
         }
+    }
+}
+
+/// Static errors from the selected private OAuth handoff sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum OAuthAuthorizationInputError {
+    /// The selected policy does not admit client-initiated authorization.
+    #[error("OAuth authorization handoff does not match the selected policy")]
+    PolicyMismatch,
+    /// A handoff attempt already consumed this writer, including a failed write.
+    #[error("OAuth authorization handoff was already attempted")]
+    AlreadyAttempted,
+    /// The generated one-line URI did not satisfy the fixed sink bound.
+    #[error("OAuth authorization handoff URI is invalid")]
+    InvalidUrl,
+    /// The private writer could not complete and flush the bounded handoff.
+    #[error("OAuth authorization handoff could not be written")]
+    WriteFailed,
+}
+
+/// Move-only, explicitly selected private authorization-URI output.
+///
+/// The caller owns destination creation, permissions and cleanup. The runtime
+/// receives no pathname or filesystem authority. This is a sensitive operator
+/// handoff, never an assessment report or public diagnostic. A successful write
+/// does not establish that a user agent opened it or authenticated a principal.
+pub struct SuppliedSessionOAuthAuthorization {
+    writer: Box<dyn std::io::Write + Send + Sync>,
+    policy_reference: String,
+    authorization_prefix: String,
+    attempted: bool,
+}
+
+impl SuppliedSessionOAuthAuthorization {
+    /// Binds one private writer to a validated V7 policy without reading secrets.
+    pub fn new(
+        policy: &SuppliedSessionPolicy,
+        writer: impl std::io::Write + Send + Sync + 'static,
+    ) -> Result<Self, OAuthAuthorizationInputError> {
+        let authorization = policy
+            .oauth_authorization_policy()
+            .filter(|_| {
+                policy.version() == SuppliedSessionPolicyVersion::V7
+                    && policy.credential_acquisition()
+                        == SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce
+                    && policy.oauth_refresh_policy().is_none()
+            })
+            .ok_or(OAuthAuthorizationInputError::PolicyMismatch)?;
+        Ok(Self {
+            writer: Box::new(writer),
+            policy_reference: policy.policy_reference().to_owned(),
+            authorization_prefix: format!("{}?", authorization.authorization_endpoint()),
+            attempted: false,
+        })
+    }
+
+    pub(crate) fn matches_policy(&self, policy: &SuppliedSessionPolicy) -> bool {
+        !self.attempted
+            && policy.version() == SuppliedSessionPolicyVersion::V7
+            && policy.credential_acquisition()
+                == SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce
+            && self.policy_reference == policy.policy_reference()
+            && policy
+                .oauth_authorization_policy()
+                .is_some_and(|authorization| {
+                    self.authorization_prefix
+                        == format!("{}?", authorization.authorization_endpoint())
+                })
+    }
+
+    /// Emits one bounded generated URI plus a newline. Mark the attempt before
+    /// validation or I/O so partial/error paths cannot silently retry the handoff.
+    pub(crate) fn write_authorization_url(
+        &mut self,
+        url: &str,
+    ) -> Result<(), OAuthAuthorizationInputError> {
+        if std::mem::replace(&mut self.attempted, true) {
+            return Err(OAuthAuthorizationInputError::AlreadyAttempted);
+        }
+        if url.len() > 4_096
+            || !url.starts_with(&self.authorization_prefix)
+            || url.len() == self.authorization_prefix.len()
+            || !url.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
+        {
+            return Err(OAuthAuthorizationInputError::InvalidUrl);
+        }
+        let mut output = Zeroizing::new(Vec::with_capacity(url.len() + 1));
+        output.extend_from_slice(url.as_bytes());
+        output.push(b'\n');
+        self.writer
+            .write_all(&output)
+            .and_then(|()| self.writer.flush())
+            .map_err(|_| OAuthAuthorizationInputError::WriteFailed)
+    }
+}
+
+impl fmt::Debug for SuppliedSessionOAuthAuthorization {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SuppliedSessionOAuthAuthorization(<redacted>)")
     }
 }
 
@@ -1269,6 +1397,11 @@ impl SuppliedSessionPolicy {
                     .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
                     .and_then(|wire| Self::from_v6_wire(application_url, wire))
             },
+            SUPPLIED_SESSION_OAUTH_AUTHORIZATION_POLICY_SCHEMA => {
+                toml::from_str::<WireOAuthAuthorizationPolicy>(source)
+                    .map_err(|_| SuppliedSessionPolicyError::MalformedPolicy)
+                    .and_then(|wire| Self::from_v7_wire(application_url, wire))
+            },
             _ => Err(SuppliedSessionPolicyError::UnsupportedSchema),
         }
     }
@@ -1347,6 +1480,7 @@ impl SuppliedSessionPolicy {
             renewal: None,
             oauth_code: None,
             oauth_refresh: None,
+            oauth_authorization: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1494,6 +1628,7 @@ impl SuppliedSessionPolicy {
             renewal: None,
             oauth_code: None,
             oauth_refresh: None,
+            oauth_authorization: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1599,6 +1734,7 @@ impl SuppliedSessionPolicy {
             renewal: None,
             oauth_code: None,
             oauth_refresh: None,
+            oauth_authorization: None,
             policy_reference,
             application_reference: reference(
                 APPLICATION_REFERENCE_DOMAIN,
@@ -1803,6 +1939,80 @@ impl SuppliedSessionPolicy {
         Ok(policy)
     }
 
+    fn from_v7_wire(
+        application_url: &Url,
+        wire: WireOAuthAuthorizationPolicy,
+    ) -> Result<Self, SuppliedSessionPolicyError> {
+        let outbound_requests = wire
+            .resources
+            .len()
+            .checked_mul(2)
+            .and_then(|count| count.checked_add(2))
+            .ok_or(SuppliedSessionPolicyError::InvalidLimits)?;
+        // One separately reported callback-reception lease plus the code,
+        // startup and resource/checkpoint schedule fit the existing nine-attempt
+        // ceiling. The ordinary session window remains at most ten seconds;
+        // the explicit authorization wait is a separate child of the SAME parent.
+        if wire.schema != SUPPLIED_SESSION_OAUTH_AUTHORIZATION_POLICY_SCHEMA
+            || wire.credential_acquisition != "client_initiated_oauth_pkce"
+            || wire.resources.is_empty()
+            || wire.resources.len() > 3
+            || usize::from(wire.max_session_requests) != outbound_requests
+            || outbound_requests
+                .checked_add(1)
+                .is_none_or(|count| count > usize::from(MAX_SUPPLIED_SESSION_REQUESTS))
+        {
+            return Err(SuppliedSessionPolicyError::InvalidOAuthAuthorization);
+        }
+        let oauth_code = oauth_code::OAuthCodePolicy::from_authorization_wire(wire.oauth_code)?;
+        let oauth_authorization = oauth_authorization::OAuthAuthorizationPolicy::from_wire(
+            wire.oauth_authorization,
+            &oauth_code,
+        )?;
+        if !oauth_code.is_valid_for_application(application_url)
+            || oauth_code.max_token_response_bytes() > wire.max_response_body_bytes
+            || u64::try_from(oauth_code.max_token_response_bytes()).unwrap_or(u64::MAX)
+                > wire.max_total_response_bytes
+        {
+            return Err(SuppliedSessionPolicyError::InvalidOAuthAuthorization);
+        }
+        let mut policy = Self::from_v1_wire(
+            application_url,
+            WirePolicy {
+                schema: SUPPLIED_SESSION_POLICY_SCHEMA.to_owned(),
+                principal_alias: wire.principal_alias,
+                credential_mechanism: wire.credential_mechanism,
+                health_path: wire.health_path,
+                health_json_field: wire.health_json_field,
+                resources: wire.resources,
+                max_session_requests: wire.max_session_requests,
+                max_total_response_bytes: wire.max_total_response_bytes,
+                max_response_body_bytes: wire.max_response_body_bytes,
+                max_wall_time_ms: wire.max_wall_time_ms,
+            },
+        )?;
+        let mut digest = Sha256::new();
+        digest.update(b"security.supplied-session-policy.reference.v7\0");
+        hash_field(&mut digest, policy.policy_reference.as_bytes());
+        hash_field(&mut digest, oauth_code.binding_reference().as_bytes());
+        hash_field(
+            &mut digest,
+            oauth_authorization.binding_reference().as_bytes(),
+        );
+        hash_field(
+            &mut digest,
+            b"client_initiated_oauth_pkce;one_loopback_form_post;one_exchange;no_oidc",
+        );
+        policy.policy_reference =
+            format!("supplied-session-policy-sha256:{}", hex(digest.finalize()));
+        policy.version = SuppliedSessionPolicyVersion::V7;
+        policy.credential_acquisition =
+            SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce;
+        policy.oauth_code = Some(Box::new(oauth_code));
+        policy.oauth_authorization = Some(Box::new(oauth_authorization));
+        Ok(policy)
+    }
+
     /// Policy schema generation.
     pub const fn version(&self) -> SuppliedSessionPolicyVersion {
         self.version
@@ -1894,6 +2104,12 @@ impl SuppliedSessionPolicy {
         self.oauth_refresh.as_deref()
     }
 
+    pub(crate) fn oauth_authorization_policy(
+        &self,
+    ) -> Option<&oauth_authorization::OAuthAuthorizationPolicy> {
+        self.oauth_authorization.as_deref()
+    }
+
     pub(crate) fn health_json_field(&self) -> &str {
         &self.health_json_field
     }
@@ -1979,6 +2195,10 @@ impl fmt::Debug for SuppliedSessionPolicy {
             .field(
                 "oauth_refresh",
                 &self.oauth_refresh.as_ref().map(|_| "<validated>"),
+            )
+            .field(
+                "oauth_authorization",
+                &self.oauth_authorization.as_ref().map(|_| "<validated>"),
             )
             .field("policy_reference", &self.policy_reference)
             .field("application_reference", &self.application_reference)
@@ -2292,6 +2512,24 @@ struct WireOAuthRefreshPolicy {
     max_wall_time_ms: u64,
     oauth_code: oauth_code::WireOAuthCodePolicy,
     oauth_refresh: oauth_refresh::WireOAuthRefreshPolicy,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireOAuthAuthorizationPolicy {
+    schema: String,
+    principal_alias: String,
+    credential_mechanism: String,
+    credential_acquisition: String,
+    health_path: String,
+    health_json_field: String,
+    resources: Vec<String>,
+    max_session_requests: u8,
+    max_total_response_bytes: u64,
+    max_response_body_bytes: usize,
+    max_wall_time_ms: u64,
+    oauth_code: oauth_code::WireOAuthCodePolicy,
+    oauth_authorization: oauth_authorization::WireOAuthAuthorizationPolicy,
 }
 
 #[derive(Deserialize)]
@@ -2970,6 +3208,305 @@ fn http_token_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Original non-secret V7 fixture. Expected request counts are specified
+    // independently: one code POST, one startup health and two per resource.
+    fn authorization_source() -> String {
+        r#"schema = "security.supplied-session-policy/v7"
+principal_alias = "authorization-canary-a"
+credential_mechanism = "authorization_header"
+credential_acquisition = "client_initiated_oauth_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/private/one", "/app/private/two"]
+max_session_requests = 6
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+[oauth_code]
+profile = "client-initiated-public-code-s256-bearer/v1"
+transport_profile = "verified-https/v1"
+issuer = "https://issuer.test/realm"
+token_endpoint = "https://issuer.test/realm/token"
+client_id = "termivar-owned-public"
+redirect_uri = "http://127.0.0.1:18443/termivar/oauth/callback"
+scopes = ["canary-read"]
+max_token_response_bytes = 8192
+[oauth_authorization]
+profile = "loopback-form-post-state/v1"
+authorization_endpoint = "https://issuer.test/realm/authorize"
+max_wait_ms = 20000
+"#
+        .to_owned()
+    }
+
+    fn authorization_policy() -> SuppliedSessionPolicy {
+        SuppliedSessionPolicy::parse_toml(
+            &Url::parse("https://application.test/app/").unwrap(),
+            authorization_source().as_bytes(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn oauth_authorization_v7_has_separate_explicit_acquisition_and_finite_phases() {
+        let policy = authorization_policy();
+        assert_eq!(policy.version(), SuppliedSessionPolicyVersion::V7);
+        assert_eq!(policy.schema(), "security.supplied-session-policy/v7");
+        assert_eq!(
+            policy.credential_acquisition(),
+            SuppliedSessionCredentialAcquisition::ClientInitiatedOAuthPkce
+        );
+        assert_eq!(
+            policy.credential_acquisition().as_str(),
+            "client_initiated_oauth_pkce"
+        );
+        assert_eq!(policy.resource_count(), 2);
+        assert_eq!(policy.max_session_requests(), 6);
+        assert_eq!(policy.max_wall_time_ms(), 10_000);
+        assert_eq!(
+            policy.oauth_authorization_policy().unwrap().max_wait_ms(),
+            20_000
+        );
+        assert!(policy.oauth_refresh_policy().is_none());
+        assert!(policy.oauth_code_policy().unwrap().is_client_initiated());
+        assert!(SuppliedSessionOAuthGrant::parse_tsv(&policy, Vec::new(), 0).is_err());
+        let ready = SuppliedSessionRuntimeInput::from(
+            SuppliedSessionAuthorization::new(b"Bearer SYNTHETIC".to_vec()).unwrap(),
+        );
+        assert!(!ready.matches_policy(&policy));
+        for (resource_list, outgoing) in [
+            (r#"["/app/private/one"]"#, 4),
+            (r#"["/app/private/one", "/app/private/two"]"#, 6),
+            (
+                r#"["/app/private/one", "/app/private/two", "/app/private/three"]"#,
+                8,
+            ),
+        ] {
+            let source = authorization_source()
+                .replace(r#"["/app/private/one", "/app/private/two"]"#, resource_list)
+                .replace(
+                    "max_session_requests = 6",
+                    &format!("max_session_requests = {outgoing}"),
+                );
+            let selected = SuppliedSessionPolicy::parse_toml(
+                &Url::parse("https://application.test/app/").unwrap(),
+                source.as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(selected.max_session_requests(), outgoing);
+            assert!(selected.max_session_requests() < 9);
+        }
+    }
+
+    #[test]
+    fn oauth_authorization_v7_rejects_cross_profile_scope_and_limit_mutations() {
+        let source = authorization_source();
+        for (from, to) in [
+            ("client_initiated_oauth_pkce", "imported_oauth_code_pkce"),
+            ("authorization_header", "cookie_jar"),
+            (
+                "client-initiated-public-code-s256-bearer/v1",
+                "external-public-code-s256-bearer/v1",
+            ),
+            ("loopback-form-post-state/v1", "automatic-browser-login/v1"),
+            ("max_wait_ms = 20000", "max_wait_ms = 0"),
+            ("max_wait_ms = 20000", "max_wait_ms = 30001"),
+            ("max_wait_ms = 20000", "max_wait_ms = true"),
+            ("max_session_requests = 6", "max_session_requests = 5"),
+            ("max_session_requests = 6", "max_session_requests = 7"),
+            ("max_wall_time_ms = 10000", "max_wall_time_ms = 10001"),
+            (
+                "max_response_body_bytes = 8192",
+                "max_response_body_bytes = 8191",
+            ),
+            (
+                "https://issuer.test/realm/authorize",
+                "https://foreign.test/realm/authorize",
+            ),
+            (
+                "http://127.0.0.1:18443/termivar/oauth/callback",
+                "http://localhost:18443/termivar/oauth/callback",
+            ),
+            (
+                "http://127.0.0.1:18443/termivar/oauth/callback",
+                "http://127.0.0.2:18443/termivar/oauth/callback",
+            ),
+            (
+                "http://127.0.0.1:18443/termivar/oauth/callback",
+                "http://127.0.0.1:18443/other",
+            ),
+            ("scopes = [\"canary-read\"]", "scopes = [\"openid\"]"),
+        ] {
+            let changed = source.replace(from, to);
+            assert_ne!(changed, source, "mutation must change its literal input");
+            assert!(
+                SuppliedSessionPolicy::parse_toml(
+                    &Url::parse("https://application.test/app/").unwrap(),
+                    changed.as_bytes(),
+                )
+                .is_err(),
+                "invalid V7 policy admitted"
+            );
+        }
+        for extra in ["unknown = true", "max_wait_ms = 1"] {
+            assert!(SuppliedSessionPolicy::parse_toml(
+                &Url::parse("https://application.test/app/").unwrap(),
+                format!("{source}{extra}\n").as_bytes(),
+            )
+            .is_err());
+        }
+        let missing = source.split("[oauth_authorization]").next().unwrap();
+        assert!(SuppliedSessionPolicy::parse_toml(
+            &Url::parse("https://application.test/app/").unwrap(),
+            missing.as_bytes(),
+        )
+        .is_err());
+        assert!(
+            SuppliedSessionPolicy::parse_toml(
+                &Url::parse("http://127.0.0.1:8080/app/").unwrap(),
+                source.as_bytes(),
+            )
+            .is_err(),
+            "callback HTTP exception must not authorize an HTTP application"
+        );
+    }
+
+    #[test]
+    fn oauth_authorization_binding_preserves_application_identity_and_changes_with_policy() {
+        let first = authorization_policy();
+        let second = SuppliedSessionPolicy::parse_toml(
+            &Url::parse("https://application.test/app/").unwrap(),
+            authorization_source()
+                .replace("max_wait_ms = 20000", "max_wait_ms = 19999")
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_ne!(first.policy_reference(), second.policy_reference());
+        assert_eq!(
+            first.application_reference(),
+            second.application_reference()
+        );
+        assert_ne!(
+            first
+                .oauth_authorization_policy()
+                .unwrap()
+                .binding_reference(),
+            second
+                .oauth_authorization_policy()
+                .unwrap()
+                .binding_reference(),
+        );
+        let legacy = renewal_policy();
+        assert!(legacy.oauth_authorization_policy().is_none());
+        assert!(SuppliedSessionOAuthAuthorization::new(&legacy, std::io::sink()).is_err());
+    }
+
+    #[derive(Clone)]
+    struct AuthorizationTestWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for AuthorizationTestWriter {
+        fn write(&mut self, source: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(source);
+            Ok(source.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn oauth_authorization_writer_is_policy_bound_move_only_and_one_attempt() {
+        let selected = authorization_policy();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut sink = SuppliedSessionOAuthAuthorization::new(
+            &selected,
+            AuthorizationTestWriter(captured.clone()),
+        )
+        .unwrap();
+        assert!(sink.matches_policy(&selected));
+        let changed = SuppliedSessionPolicy::parse_toml(
+            &Url::parse("https://application.test/app/").unwrap(),
+            authorization_source()
+                .replace("max_wait_ms = 20000", "max_wait_ms = 19999")
+                .as_bytes(),
+        )
+        .unwrap();
+        assert!(!sink.matches_policy(&changed));
+        let now = std::time::Instant::now();
+        let transaction = oauth_authorization::PendingOAuthAuthorization::generate(
+            selected.oauth_code_policy().unwrap(),
+            selected.oauth_authorization_policy().unwrap(),
+            selected.policy_reference(),
+            selected.principal_alias(),
+            now + std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        let url = transaction.authorization_url().unwrap();
+        assert_eq!(
+            format!("{sink:?}"),
+            "SuppliedSessionOAuthAuthorization(<redacted>)"
+        );
+        sink.write_authorization_url(&url).unwrap();
+        assert!(!sink.matches_policy(&selected));
+        assert_eq!(
+            sink.write_authorization_url(&url).unwrap_err(),
+            OAuthAuthorizationInputError::AlreadyAttempted
+        );
+        let bytes = captured.lock().unwrap();
+        assert_eq!(&bytes[..bytes.len() - 1], url.as_bytes());
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert!(bytes.len() <= 4_097);
+        let input = SuppliedSessionRuntimeInput::from(
+            SuppliedSessionOAuthAuthorization::new(&selected, std::io::sink()).unwrap(),
+        );
+        assert!(input.matches_policy(&selected));
+        assert!(!input.matches_policy(&renewal_policy()));
+        assert_eq!(
+            format!("{input:?}"),
+            "SuppliedSessionRuntimeInput::OAuthAuthorization(<redacted>)"
+        );
+    }
+
+    #[test]
+    fn oauth_authorization_writer_burns_invalid_or_failed_attempts_without_error_text() {
+        struct FailedWriter;
+        impl std::io::Write for FailedWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("PRIVATE_WRITER_ERROR_SENTINEL"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let selected = authorization_policy();
+        let url = "https://issuer.test/realm/authorize?state=SYNTHETIC-HANDOFF";
+        for invalid in [
+            "https://foreign.test/realm/authorize?state=SYNTHETIC",
+            "https://issuer.test/realm/authorize?",
+            "https://issuer.test/realm/authorize?state=SYNTHETIC\nINJECTION",
+        ] {
+            let mut sink =
+                SuppliedSessionOAuthAuthorization::new(&selected, std::io::sink()).unwrap();
+            assert_eq!(
+                sink.write_authorization_url(invalid).unwrap_err(),
+                OAuthAuthorizationInputError::InvalidUrl
+            );
+            assert_eq!(
+                sink.write_authorization_url(url).unwrap_err(),
+                OAuthAuthorizationInputError::AlreadyAttempted
+            );
+        }
+        let mut sink = SuppliedSessionOAuthAuthorization::new(&selected, FailedWriter).unwrap();
+        let error = sink.write_authorization_url(url).unwrap_err();
+        assert_eq!(error, OAuthAuthorizationInputError::WriteFailed);
+        assert!(!format!("{error:?}: {error}").contains("PRIVATE_WRITER_ERROR_SENTINEL"));
+        assert_eq!(
+            sink.write_authorization_url(url).unwrap_err(),
+            OAuthAuthorizationInputError::AlreadyAttempted
+        );
+    }
 
     #[test]
     fn oauth_optional_policy_storage_is_indirect_for_legacy_contexts() {

@@ -85,6 +85,8 @@ const BOUNDED_RUNTIME_SOURCES: &[&str] = &[
     SUPPLIED_SESSION_RUNTIME_SOURCE,
     SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE,
     SUPPLIED_SESSION_OAUTH_REFRESH_RUNTIME_SOURCE,
+    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE,
+    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE,
     WORDPRESS_RUNTIME_SOURCE,
     WORDPRESS_DISCOVERY_RUNTIME_SOURCE,
     WORDPRESS_FINGERPRINT_RUNTIME_SOURCE,
@@ -148,6 +150,10 @@ const SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_code.rs";
 const SUPPLIED_SESSION_OAUTH_REFRESH_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_refresh.rs";
+const SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE: &str =
+    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_authorization.rs";
+const SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE: &str =
+    "crates/termivar-scanner/src/supplied_session_review/oauth_authorization.rs";
 const WORDPRESS_RUNTIME_SOURCE: &str =
     "crates/termivar-scanner/src/web_runtime/wordpress_runtime.rs";
 const WORDPRESS_DISCOVERY_RUNTIME_SOURCE: &str =
@@ -443,6 +449,7 @@ const DIRECT_CLIENT_SOURCE_ALLOWLIST: &[&str] = &[
     RECON_CT_PROVIDER_RUNTIME_SOURCE,
     TLS_NEGOTIATION_RUNTIME_SOURCE,
     WEBSOCKET_RUNTIME_SOURCE,
+    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE,
     TRANSPORT_OWNER_SOURCE,
     "crates/termivar-scanner/src/sdk.rs",
 ];
@@ -1997,6 +2004,10 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
     let code_dispatch = oauth_dispatch
         .and_then(|body| body.split_once("    pub(crate) async fn collect("))
         .map(|(_, body)| body);
+    let authorized_dispatch = oauth_dispatch
+        .and_then(|body| body.split_once("    pub(crate) async fn collect_authorized("))
+        .and_then(|(_, tail)| tail.split_once("    pub(crate) async fn collect_refresh("))
+        .map(|(body, _)| body);
     let refresh_dispatch = oauth_dispatch
         .and_then(|body| body.split_once("    pub(crate) async fn collect_refresh("))
         .and_then(|(_, tail)| tail.split_once("    pub(crate) async fn collect("))
@@ -2044,6 +2055,7 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
             || body.contains(".cookie_store(")
     }) || oauth_dispatch.is_none_or(|body| {
         body.matches("    pub(crate) async fn collect(").count() != 1
+            || body.matches("    pub(crate) async fn collect_authorized(").count() != 1
             || body.matches("    pub(crate) async fn collect_refresh(").count() != 1
             || body.matches(".post(").count() != 2
             || body.matches(".header(").count() != 6
@@ -2061,6 +2073,17 @@ fn inspect_assessment_transport_markers(http_evidence: &str, broker: &str) -> Ve
          "oauth_json_representation(&response)", "Zeroizing::new(std::mem::take(&mutresponse.body))"]
             .iter().any(|marker| !compact.contains(marker))
             || !private_post_is_exact(body)
+    }) || authorized_dispatch.is_none_or(|body| {
+        let compact = body.split_whitespace().collect::<String>();
+        [
+            "if!self.mint.is_valid_for(policy)||!descriptor.validate_against(policy)||!permit.is_valid_for(policy,&self.mint)||self.broker.validate_target(&descriptor.target).is_err(){returnErr(OAuthCodeRequestError::InvalidDescriptor);}",
+            "ifself.attempted.compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst,).is_err(){returnErr(OAuthCodeRequestError::AlreadyAttempted);}",
+            "letform=permit.compose_form_body(policy).map_err(|_|OAuthCodeRequestError::InvalidDescriptor)?;",
+            "self.collect_code_form(descriptor,form.as_bytes(),limits).await",
+        ].iter().any(|marker| !compact.contains(marker))
+            || body.contains(".post(")
+            || body.contains(".get(")
+            || body.contains(".send(")
     }) || refresh_dispatch.is_none_or(|body| {
         let compact = body.split_whitespace().collect::<String>();
         [
@@ -11473,6 +11496,19 @@ fn validate_policy_inventory() -> Vec<String> {
                 .to_owned(),
         );
     }
+    if !bounded.contains(SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE)
+        || !bounded.contains(SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE)
+        || !DIRECT_CLIENT_SOURCE_ALLOWLIST
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE)
+        || DIRECT_CLIENT_SOURCE_ALLOWLIST
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE)
+        || UNMETERED_STANDALONE_FACADE_SOURCES
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE)
+        || UNMETERED_STANDALONE_FACADE_SOURCES
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE)
+    {
+        violations.push("OAuth authorization must retain one bounded callback-listener owner and a separate transport-free codec; neither owns an unmetered broker".to_owned());
+    }
     if bounded.contains(TRANSPORT_OWNER_SOURCE) {
         violations.push(format!(
             "transport owner {TRANSPORT_OWNER_SOURCE} must remain separate from bounded consumers"
@@ -12877,6 +12913,8 @@ fn is_native_oast_runtime_budget_error_variant(segments: &[String], index: usize
 impl OwnershipVisitor<'_> {
     fn inspect_segments(&mut self, segments: &[String]) {
         if segments.is_empty()
+            || (self.source == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE
+                && is_oauth_callback_address_value_path(segments))
             || (is_http_evidence_contract_source(self.source) && allowed_http_facade_path(segments))
             || (self.source == HTTP_REVIEW_RESPONSE_SOURCE
                 && allowed_review_response_metadata_path(segments))
@@ -13024,9 +13062,29 @@ impl OwnershipVisitor<'_> {
                 || segments
                     .first()
                     .is_some_and(|root| normalize_identifier(root) == "tokio_rustls"));
+        let reviewed_oauth_callback_transport = self.source
+            == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE
+            && (segments
+                .iter()
+                .map(|segment| normalize_identifier(segment))
+                .eq(["tokio", "net", "TcpListener"])
+                || segments
+                    .iter()
+                    .map(|segment| normalize_identifier(segment))
+                    .eq(["tokio", "net", "TcpStream"]));
+        if self.source == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE
+            && segments
+                .iter()
+                .any(|segment| normalize_identifier(segment) == "connect")
+        {
+            self.violations.insert(
+                "OAuth callback reception cannot initiate an outbound connection".to_owned(),
+            );
+        }
         if !reviewed_recon_provider_reqwest
             && !reviewed_websocket_transport
             && !reviewed_tls_negotiation_transport
+            && !reviewed_oauth_callback_transport
             && (reqwest || is_direct_transport_path(segments) || legacy_client_path)
         {
             self.violations.insert(format!(
@@ -13139,6 +13197,8 @@ impl OwnershipVisitor<'_> {
             };
             let member = ident_name(member);
             let forbidden_transport_member = member == "client"
+                || (member == "connect"
+                    && self.source == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE)
                 || (member == "send"
                     && self.source != RECON_CT_PROVIDER_RUNTIME_SOURCE
                     && self.source != WEBSOCKET_RUNTIME_SOURCE)
@@ -13312,6 +13372,10 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
                 | (
                     "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs",
                     "oauth_refresh"
+                )
+                | (
+                    "crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs",
+                    "oauth_authorization"
                 )
                 | (
                     "crates/termivar-scanner/src/web_runtime.rs",
@@ -13514,6 +13578,12 @@ impl<'ast> Visit<'ast> for OwnershipVisitor<'_> {
 
     fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
         let method = ident_name(&expression.method);
+        if method == "connect" && self.source == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE
+        {
+            self.violations.insert(
+                "OAuth callback reception cannot initiate an outbound connection".to_owned(),
+            );
+        }
         if method == "send"
             && self.source != RECON_CT_PROVIDER_RUNTIME_SOURCE
             && self.source != WEBSOCKET_RUNTIME_SOURCE
@@ -14075,6 +14145,15 @@ fn is_direct_transport_path(segments: &[String]) -> bool {
     }
 }
 
+// This is a parsed socket address value, not a listener/client capability.
+// Keep the exception local to the pure authorization codec, not every module.
+fn is_oauth_callback_address_value_path(segments: &[String]) -> bool {
+    segments
+        .iter()
+        .map(|segment| normalize_identifier(segment))
+        .eq(["std", "net", "SocketAddrV4"])
+}
+
 fn is_nondeterministic_strategy_path(segments: &[String]) -> bool {
     let Some(root) = segments
         .first()
@@ -14148,10 +14227,15 @@ fn direct_client_sources(workspace_root: &Path) -> Result<BTreeSet<String>, Box<
     let mut direct = BTreeSet::new();
     for path in sources {
         let syntax = syn::parse_file(&fs::read_to_string(&path)?)?;
-        let mut visitor = DirectCapabilityVisitor::default();
+        let source_name = relative_source_name(workspace_root, &path)?;
+        let mut visitor = DirectCapabilityVisitor {
+            allow_oauth_callback_address_value: source_name
+                == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE,
+            ..DirectCapabilityVisitor::default()
+        };
         visitor.visit_file(&syntax);
         if visitor.found {
-            direct.insert(relative_source_name(workspace_root, &path)?);
+            direct.insert(source_name);
         }
     }
     Ok(direct)
@@ -14160,10 +14244,15 @@ fn direct_client_sources(workspace_root: &Path) -> Result<BTreeSet<String>, Box<
 #[derive(Default)]
 struct DirectCapabilityVisitor {
     found: bool,
+    allow_oauth_callback_address_value: bool,
 }
 
 impl DirectCapabilityVisitor {
     fn inspect_segments(&mut self, segments: &[String]) {
+        if self.allow_oauth_callback_address_value && is_oauth_callback_address_value_path(segments)
+        {
+            return;
+        }
         self.found |= is_direct_transport_path(segments);
     }
 
@@ -14512,6 +14601,121 @@ mod tests {
             );
         }
         assert!(!violations.contains("TcpListener"));
+    }
+
+    #[test]
+    fn oauth_authorization_codec_address_is_a_value_not_a_transport_exception() {
+        let codec = include_str!(
+            "../../../crates/termivar-scanner/src/supplied_session_review/oauth_authorization.rs"
+        );
+        assert!(
+            inspect_bounded_source(SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE, codec)
+                .unwrap()
+                .is_empty()
+        );
+        let mut direct = DirectCapabilityVisitor {
+            allow_oauth_callback_address_value: true,
+            ..DirectCapabilityVisitor::default()
+        };
+        direct.visit_file(&syn::parse_file(codec).unwrap());
+        assert!(!direct.found);
+        assert!(!DIRECT_CLIENT_SOURCE_ALLOWLIST
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE));
+        for source in [
+            "use std::net::TcpStream;",
+            "use tokio::net::TcpListener;",
+            "use reqwest::Client;",
+            "use std::net::*;",
+        ] {
+            let mut direct = DirectCapabilityVisitor {
+                allow_oauth_callback_address_value: true,
+                ..DirectCapabilityVisitor::default()
+            };
+            direct.visit_file(&syn::parse_file(source).unwrap());
+            assert!(direct.found, "codec address exception admitted {source}");
+            assert!(
+                !inspect_bounded_source(SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE, source)
+                    .unwrap()
+                    .is_empty(),
+                "codec admitted {source}"
+            );
+        }
+        let value = "use std::net::SocketAddrV4;";
+        assert!(
+            inspect_bounded_source(SUPPLIED_SESSION_OAUTH_AUTHORIZATION_CODEC_SOURCE, value)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !inspect_bounded_source(SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE, value)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn oauth_callback_socket_owner_cannot_gain_an_outbound_client_or_escape_its_module() {
+        let runtime = include_str!("../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime/oauth_authorization.rs");
+        assert!(inspect_bounded_source(
+            SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE,
+            runtime
+        )
+        .unwrap()
+        .is_empty());
+        assert!(DIRECT_CLIENT_SOURCE_ALLOWLIST
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE));
+        assert!(!UNMETERED_STANDALONE_FACADE_SOURCES
+            .contains(&SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE));
+        for source in [
+            "use reqwest::Client;",
+            "use tokio::net::UdpSocket;",
+            "use tokio::net::*;",
+            "async fn escape() { TcpStream::connect(address()).await; }",
+            "async fn escape(stream: Stream) { stream.connect(address()).await; }",
+            "async fn escape() { tokio::select! { result = TcpStream::connect(address()) => {} } }",
+        ] {
+            assert!(
+                !inspect_bounded_source(
+                    SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE,
+                    source
+                )
+                .unwrap()
+                .is_empty(),
+                "callback source admitted {source}"
+            );
+        }
+        let listener = "use tokio::net::{TcpListener, TcpStream};";
+        assert!(inspect_bounded_source(
+            SUPPLIED_SESSION_OAUTH_AUTHORIZATION_RUNTIME_SOURCE,
+            listener
+        )
+        .unwrap()
+        .is_empty());
+        assert!(
+            !inspect_bounded_source(SUPPLIED_SESSION_OAUTH_CODE_RUNTIME_SOURCE, listener)
+                .unwrap()
+                .is_empty()
+        );
+        let parent = include_str!(
+            "../../../crates/termivar-scanner/src/web_runtime/supplied_session_runtime.rs"
+        );
+        assert!(
+            inspect_bounded_source(SUPPLIED_SESSION_RUNTIME_SOURCE, parent)
+                .unwrap()
+                .is_empty()
+        );
+        for source in [
+            "mod oauth_authorization_other;",
+            "pub mod oauth_authorization;",
+            "#[path = \"other.rs\"] mod oauth_authorization;",
+        ] {
+            assert!(
+                !inspect_bounded_source(SUPPLIED_SESSION_RUNTIME_SOURCE, source)
+                    .unwrap()
+                    .is_empty(),
+                "callback module registration admitted {source}"
+            );
+        }
     }
 
     #[test]
@@ -19837,6 +20041,31 @@ mod tests {
         let baseline = inspect_assessment_transport_markers(&http, broker).join("\n");
         assert!(!baseline.contains(needle), "{baseline}");
         for (start, from, to) in [
+            (
+                "    pub(crate) async fn collect_authorized(",
+                "!self.mint.is_valid_for(policy)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_authorized(",
+                "!descriptor.validate_against(policy)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_authorized(",
+                "!permit.is_valid_for(policy, &self.mint)",
+                "false",
+            ),
+            (
+                "    pub(crate) async fn collect_authorized(",
+                ".compare_exchange(",
+                ".swap(",
+            ),
+            (
+                "    pub(crate) async fn collect_authorized(",
+                "self.broker.validate_target(&descriptor.target).is_err()",
+                "false",
+            ),
             (
                 "    pub(crate) async fn collect(",
                 "!self.mint.is_valid_for(policy)",

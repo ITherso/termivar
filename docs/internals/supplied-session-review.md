@@ -3,8 +3,9 @@
 The non-default `supplied-session-review` feature adds one deliberately narrow
 authenticated collection path to an explicit `web-review` assessment. It is a
 development Preview, is not compiled into the curated `release-bundle`, and
-does nothing unless the operator supplies both a policy and one out-of-band
-credential source.
+does nothing unless the operator supplies a policy and its matching explicit
+acquisition selection. V1–V6 use an out-of-band credential source; V7 instead
+selects a private authorization-URI handoff and creates its own transaction.
 
 The V1 policy accepts one complete `Authorization` header value. The V2 policy
 accepts one small scanner-owned cookie jar from an explicit local file. The V3
@@ -665,6 +666,106 @@ deadline and accounting; it does not create a fresh session-request allowance.
 Health checkpoints qualify only the bounded declared context window and do not
 establish continuous authentication.
 
+## Policy V7: client-initiated public-client authorization
+
+V7 generates independent 32-byte OS-random PKCE verifier, state and opaque
+transaction reference. It supports only S256, the explicitly configured issuer
+and authorization/token endpoints, and one previously registered IPv4 callback
+`http://127.0.0.1:<fixed-unprivileged-port>/termivar/oauth/callback`. It does not
+register a client, open a browser, discover endpoints or read a browser profile.
+The operator completes any login, MFA and consent in their own user agent.
+No OIDC nonce, identity or token-signature validation is performed.
+
+With an owned application and an already configured public client, the CLI is:
+
+```text
+termivar scan https://application.example/app/ --profile web-review \
+  --session-policy initiated-policy.toml \
+  --session-oauth-authorization-output private-authorization.txt \
+  --report-dir assessment
+```
+
+The policy is a complete strict V7 document, not an imported code transaction:
+
+```toml
+schema = "security.supplied-session-policy/v7"
+principal_alias = "operator-declared-user"
+credential_mechanism = "authorization_header"
+credential_acquisition = "client_initiated_oauth_pkce"
+health_path = "/app/health"
+health_json_field = "authenticated"
+resources = ["/app/read-only-one", "/app/read-only-two"]
+max_session_requests = 6
+max_total_response_bytes = 65536
+max_response_body_bytes = 8192
+max_wall_time_ms = 10000
+[oauth_code]
+profile = "client-initiated-public-code-s256-bearer/v1"
+transport_profile = "verified-https/v1"
+issuer = "https://identity.example/issuer"
+token_endpoint = "https://identity.example/issuer/token"
+client_id = "previously-registered-public-client"
+redirect_uri = "http://127.0.0.1:43123/termivar/oauth/callback"
+scopes = ["read-only"]
+max_token_response_bytes = 8192
+[oauth_authorization]
+profile = "loopback-form-post-state/v1"
+authorization_endpoint = "https://identity.example/issuer/authorize"
+max_wait_ms = 30000
+```
+
+This example is not a supplied endpoint permit or a claim that an external
+provider was tested. The health endpoint must implement the operator's protected
+JSON predicate; status 200 alone does not qualify it. Real issuer/token/target
+connections require normal verified HTTPS. The cleartext exception above is
+only the numeric-loopback response receiver. The separately selected
+`owned-numeric-loopback-http/v1` issuer profile remains an owned-test exception,
+not RFC 9207 HTTPS conformance. `openid` is not supported by this token profile.
+
+The output is create-only, outside the report bundle, in a trusted private local
+directory. It contains one authorization URI plus a newline; it contains state
+and challenge, never the verifier. The file is usable only while the command
+waits. Unix creation is mode 0600; Windows inherits the directory ACL. No claim
+is made that ancestor checks form an atomic snapshot or that an arbitrary host
+library writer is interruptible. Only the still-owned file is removed; a
+replacement or unverifiable residual is retained with a static warning.
+
+The listener is bound before handoff, receives at most one connection and closes
+before token acquisition/report composition. Only an exact Host/path, bounded
+complete `application/x-www-form-urlencoded` POST can qualify. A present Origin
+must match; a missing Origin is not itself a protocol error. Duplicate known
+form parameters, wrong/missing state or issuer, ambiguous framing, credential
+headers, oversized/partial input and stale responses fail closed without another
+accept or token retry. Unknown bounded form extensions are ignored and counted.
+Provider errors retain only a closed class, never descriptions or redirects.
+
+There is one parent runtime and immutable deadline. Authorization wait is at
+most 30 seconds under that parent; after a qualified callback the existing
+session window remains at most ten seconds and the smaller remaining parent
+time wins. One callback reception reservation consumes a parent logical attempt,
+even if no connection arrives. Raw received framing/form bytes are charged to
+parent response accounting, not outgoing token request-body accounting. A fixed
+inert reply has a separate actual-write counter, not a peer-receipt assertion.
+The session's `2 + 2 * resource_count` outgoing requests remain separately
+reported; at most three resources plus the callback reservation fit the existing
+nine-admission ceiling. No WordPress/WebSocket composition or refresh is selected
+by V7. Generic anonymous subject processing is not suppressed.
+
+Only exact committed callback evidence authorizes the existing once-only IdP
+token POST. Every subsequent health/resource credential use revalidates the
+callback → token evidence chain in the same knowledge authority. Saved reports
+and imported V5/V6 TSV files cannot mint that authority. Matching state/issuer
+and a redeemed opaque Bearer credential do not authenticate a browser, principal,
+token signature or remote PKCE enforcement. Session health still qualifies only
+its checkpoints and bounded coverage window.
+
+V7 saves separate `oauth_authorization` and `oauth_token_exchange` audit sections;
+it does not relabel the historical external-transaction `oauth_code` audit.
+Codes, verifier, state, raw forms, URI/query and local paths are not report data.
+Verify remains an integrity check. Compare distinguishes policy/methodology,
+coverage and accounting; per-run proof references and elapsed time do not become
+stable principal identity or target-change evidence.
+
 ## Secret boundary
 
 Policy validation happens before the selected secret source is read. File input
@@ -691,3 +792,12 @@ the domain/path/Secure and ordering rules used from [RFC
 narrower application authority; V3 narrows this further to declared host-only
 session cookies. These references define protocol expectations, not proof that
 an observed principal or session is authentic.
+
+V7's public-client transaction uses [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)
+S256, [RFC 9207](https://www.rfc-editor.org/rfc/rfc9207) issuer comparison and the
+[OAuth form-post response mode](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html).
+Its fixed numeric-loopback callback is a deliberately narrower profile than
+general [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252) native-client support;
+it supports neither dynamic redirect rewriting nor a browser launch mechanism.
+The [OAuth security BCP](https://www.rfc-editor.org/rfc/rfc9700) informs these
+boundaries without establishing general provider or OIDC compatibility.

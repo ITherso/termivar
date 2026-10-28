@@ -255,6 +255,145 @@ impl SuppliedSessionOAuthCodeAudit {
     }
 }
 
+/// V7 exposes only token-exchange facts, without relabelling the historical
+/// external-transaction audit or asserting OIDC nonce/signature validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppliedSessionOAuthInitiatedTokenAudit {
+    inner: SuppliedSessionOAuthCodeAudit,
+}
+
+impl SuppliedSessionOAuthInitiatedTokenAudit {
+    pub(super) fn from_exchange(inner: SuppliedSessionOAuthCodeAudit) -> Self {
+        Self { inner }
+    }
+    pub fn idp_reference(&self) -> &str {
+        self.inner.idp_reference()
+    }
+    pub const fn request_attempt_count(&self) -> u8 {
+        self.inner.request_attempt_count()
+    }
+    pub const fn request_admitted_count(&self) -> u8 {
+        self.inner.request_admitted_count()
+    }
+    pub const fn credential_commit_count(&self) -> u8 {
+        self.inner.credential_commit_count()
+    }
+    pub const fn response_bytes(&self) -> u64 {
+        self.inner.response_bytes()
+    }
+    pub const fn outcome(&self) -> SuppliedSessionOAuthCodeOutcome {
+        self.inner.outcome()
+    }
+    pub(crate) fn is_consistent(&self) -> bool {
+        self.inner.is_consistent()
+    }
+
+    pub(crate) fn is_consistent_for(
+        &self,
+        audit: &super::WebAssessmentSuppliedSessionAudit,
+        authorization: &super::SuppliedSessionOAuthAuthorizationAudit,
+    ) -> bool {
+        use super::SuppliedSessionOAuthAuthorizationOutcome as A;
+        let a = &self.inner;
+        if !a.is_consistent()
+            || !authorization.is_consistent()
+            || a.configured_token_response_byte_limit() > audit.response_byte_limit()
+            || (a.request_attempt_count() > 0 && authorization.callback_commit_count() != 1)
+        {
+            return false;
+        }
+        if a.credential_commit_count() == 1 {
+            authorization.callback_commit_count() == 1
+                && matches!(
+                    audit.outcome(),
+                    SuppliedSessionAuditOutcome::Complete
+                        | SuppliedSessionAuditOutcome::StartupUnhealthy
+                        | SuppliedSessionAuditOutcome::SessionLost
+                        | SuppliedSessionAuditOutcome::ResourceUnavailable
+                        | SuppliedSessionAuditOutcome::RuntimeLimit
+                        | SuppliedSessionAuditOutcome::Cancelled
+                )
+        } else {
+            audit.checkpoints().is_empty()
+                && audit
+                    .resources()
+                    .iter()
+                    .all(|r| r.outcome() == super::SuppliedSessionResourceOutcome::NotDispatched)
+                && audit.coverage() == super::SuppliedSessionCoverage::None
+                && if authorization.callback_commit_count() == 0 {
+                    a.request_attempt_count() == 0
+                        && a.outcome() == SuppliedSessionOAuthCodeOutcome::NotDispatched
+                        && match authorization.outcome() {
+                            A::Cancelled => {
+                                audit.outcome() == SuppliedSessionAuditOutcome::Cancelled
+                            },
+                            A::RuntimeLimit => {
+                                audit.outcome() == SuppliedSessionAuditOutcome::RuntimeLimit
+                            },
+                            _ => {
+                                audit.outcome()
+                                    == SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable
+                            },
+                        }
+                } else {
+                    match a.outcome() {
+                        SuppliedSessionOAuthCodeOutcome::Cancelled => {
+                            audit.outcome() == SuppliedSessionAuditOutcome::Cancelled
+                        },
+                        SuppliedSessionOAuthCodeOutcome::RuntimeLimit => {
+                            audit.outcome() == SuppliedSessionAuditOutcome::RuntimeLimit
+                        },
+                        _ => {
+                            audit.outcome()
+                                == SuppliedSessionAuditOutcome::OAuthCodeExchangeUnavailable
+                        },
+                    }
+                }
+        }
+    }
+}
+
+impl Serialize for SuppliedSessionOAuthInitiatedTokenAudit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let a = &self.inner;
+        let mut s = serializer.serialize_struct("SuppliedSessionOAuthInitiatedTokenAudit", 20)?;
+        s.serialize_field("profile", "client-initiated-public-code-s256-bearer/v1")?;
+        s.serialize_field(
+            "pkce_assurance",
+            "client_generated_s256_not_remote_enforcement",
+        )?;
+        s.serialize_field("transport_profile", &a.transport_profile)?;
+        s.serialize_field("idp_reference", &a.idp_reference)?;
+        s.serialize_field("token_interpretation", &a.token_interpretation)?;
+        s.serialize_field("request_attempt_count", &a.request_attempt_count)?;
+        s.serialize_field("request_admitted_count", &a.request_admitted_count)?;
+        s.serialize_field("response_completed_count", &a.response_completed_count)?;
+        s.serialize_field("credential_commit_count", &a.credential_commit_count)?;
+        s.serialize_field(
+            "verifier_in_admitted_request",
+            &a.verifier_in_admitted_request,
+        )?;
+        s.serialize_field("status", &a.status)?;
+        s.serialize_field("body_state", &a.body_state)?;
+        s.serialize_field("response_bytes", &a.response_bytes)?;
+        s.serialize_field(
+            "configured_token_response_byte_limit",
+            &a.configured_token_response_byte_limit,
+        )?;
+        s.serialize_field("token_response_validated", &a.token_response_validated)?;
+        s.serialize_field("response_scope_matched", &a.response_scope_matched)?;
+        s.serialize_field(
+            "declared_token_lifetime_seconds",
+            &a.declared_token_lifetime_seconds,
+        )?;
+        s.serialize_field("refresh_token_returned", &a.refresh_token_returned)?;
+        s.serialize_field("evidence_reference", &a.evidence_reference)?;
+        s.serialize_field("outcome", &a.outcome)?;
+        s.end()
+    }
+}
+
 /// A saved string cannot construct this health-loop qualification.
 pub(super) struct CommittedOAuthCodeReceipt {
     knowledge_authority: crate::knowledge::KnowledgeAuthority,
@@ -264,6 +403,7 @@ pub(super) struct CommittedOAuthCodeReceipt {
     evidence_reference: String,
     principal_alias: String,
     expected_evidence: Evidence,
+    authorization: Option<Box<super::oauth_authorization::CommittedOAuthAuthorizationReceipt>>,
 }
 
 impl CommittedOAuthCodeReceipt {
@@ -279,8 +419,17 @@ impl CommittedOAuthCodeReceipt {
         self.knowledge_authority.is_same_as(knowledge.authority())
             && matches!(
                 policy.version(),
-                SuppliedSessionPolicyVersion::V5 | SuppliedSessionPolicyVersion::V6
+                SuppliedSessionPolicyVersion::V5
+                    | SuppliedSessionPolicyVersion::V6
+                    | SuppliedSessionPolicyVersion::V7
             )
+            && match policy.version() {
+                SuppliedSessionPolicyVersion::V7 => self
+                    .authorization
+                    .as_ref()
+                    .is_some_and(|receipt| receipt.is_valid_for(policy, knowledge)),
+                _ => self.authorization.is_none(),
+            }
             && policy.policy_reference() == self.policy_reference
             && policy.application_reference() == self.application_reference
             && policy.principal_alias() == self.principal_alias
@@ -323,6 +472,32 @@ pub(super) async fn acquire(
     SuppliedSessionOAuthCodeAudit,
     Result<AcquiredOAuthCodeCredential, SuppliedSessionAuditOutcome>,
 ) {
+    acquire_from(context, AcquisitionSource::Imported(grant)).await
+}
+
+pub(super) async fn acquire_authorized(
+    context: OAuthCodeAcquisitionContext<'_>,
+    permit: super::oauth_authorization::OAuthAuthorizationDispatchPermit,
+) -> (
+    SuppliedSessionOAuthCodeAudit,
+    Result<AcquiredOAuthCodeCredential, SuppliedSessionAuditOutcome>,
+) {
+    acquire_from(context, AcquisitionSource::Authorized(Box::new(permit))).await
+}
+
+enum AcquisitionSource<'a> {
+    Imported(&'a SuppliedSessionOAuthGrant),
+    Authorized(Box<super::oauth_authorization::OAuthAuthorizationDispatchPermit>),
+}
+
+async fn acquire_from(
+    context: OAuthCodeAcquisitionContext<'_>,
+    source: AcquisitionSource<'_>,
+) -> (
+    SuppliedSessionOAuthCodeAudit,
+    Result<AcquiredOAuthCodeCredential, SuppliedSessionAuditOutcome>,
+) {
+    let initiated = matches!(&source, AcquisitionSource::Authorized(_));
     let mut audit = SuppliedSessionOAuthCodeAudit::selected(context.policy)
         .expect("only a validated V5 policy reaches code acquisition");
     if context.authority.cancellation().is_cancelled() {
@@ -345,13 +520,31 @@ pub(super) async fn acquire(
     let body_limit = remaining.min(audit.configured_token_response_byte_limit);
     let before = context.authority.request_accounting().snapshot();
     audit.request_attempt_count = 1;
-    let execution = super::boxed_dispatch_execution(|| {
-        context.requests.collect(
-            context.descriptor,
-            context.policy,
-            grant,
-            DecisionExecutionLimits::new().with_max_response_body_bytes(body_limit),
-        )
+    let execution = super::boxed_dispatch_execution(|| async {
+        match &source {
+            AcquisitionSource::Imported(grant) => {
+                context
+                    .requests
+                    .collect(
+                        context.descriptor,
+                        context.policy,
+                        grant,
+                        DecisionExecutionLimits::new().with_max_response_body_bytes(body_limit),
+                    )
+                    .await
+            },
+            AcquisitionSource::Authorized(permit) => {
+                context
+                    .requests
+                    .collect_authorized(
+                        context.descriptor,
+                        context.policy,
+                        permit,
+                        DecisionExecutionLimits::new().with_max_response_body_bytes(body_limit),
+                    )
+                    .await
+            },
+        }
     });
     let result = super::super::await_execution(
         context.authority.cancellation(),
@@ -472,18 +665,31 @@ pub(super) async fn acquire(
     audit.response_scope_matched = Some(true);
     audit.declared_token_lifetime_seconds = Some(lifetime);
     audit.refresh_token_returned = Some(refresh_returned);
+    let transaction_context = if initiated {
+        "client_initiated_committed_callback"
+    } else {
+        "operator_declared_external"
+    };
     let binding = format!(
-        "policy={};application={};idp={};purpose=oauth_code_exchange;status=200;body_state=complete;response_bytes={};scope=exact_supported_echo;declared_lifetime={lifetime};refresh_returned={refresh_returned};context=operator_declared_external;token=opaque_bearer;outcome=credential_committed",
+        "policy={};application={};idp={};purpose=oauth_code_exchange;status=200;body_state=complete;response_bytes={};scope=exact_supported_echo;declared_lifetime={lifetime};refresh_returned={refresh_returned};context={transaction_context};token=opaque_bearer;outcome=credential_committed",
         context.policy.policy_reference(), context.policy.application_reference(),
         idp.binding_reference(), audit.response_bytes,
     );
+    let authorization_receipt = match source {
+        AcquisitionSource::Imported(_) => None,
+        AcquisitionSource::Authorized(permit) => Some(Box::new((*permit).into_receipt())),
+    };
     let receipt = commit_value_safe_evidence(
         context.policy,
         idp.binding_reference(),
         b"security.supplied-session-oauth-code-evidence.v1\0",
         "supplied-session-oauth-code-evidence-sha256",
         ACQUISITION_PREDICATE,
-        "descriptor-bound-imported-code-exchange",
+        if initiated {
+            "descriptor-bound-client-initiated-code-exchange"
+        } else {
+            "descriptor-bound-imported-code-exchange"
+        },
         binding,
         context.authority.knowledge(),
     )
@@ -501,6 +707,7 @@ pub(super) async fn acquire(
             principal_alias: context.policy.principal_alias().to_owned(),
             evidence_reference: reference,
             expected_evidence,
+            authorization: authorization_receipt,
         };
         receipt
             .is_valid_for(context.policy, context.authority.knowledge())

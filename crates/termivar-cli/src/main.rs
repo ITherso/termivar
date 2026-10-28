@@ -25,6 +25,8 @@ mod assessment_scan;
 mod auth_input;
 mod capabilities;
 mod decision_scan;
+#[cfg(feature = "supplied-session-review")]
+mod oauth_authorization_output;
 mod progress;
 #[cfg(feature = "recon-ct-provider")]
 mod recon_ct_input;
@@ -316,6 +318,10 @@ fn scan_wordpress_supplied_session_policy_conflict(
     version: termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,
 ) -> Option<&'static str> {
     if selected
+        && version == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V7
+    {
+        Some("`--wordpress-supplied-session` does not support client-initiated OAuth policies")
+    } else if selected
         && matches!(
             version,
             termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5
@@ -1070,11 +1076,12 @@ struct ScanArgs {
     oast_admin_token_stdin: bool,
     /// Read one strict bounded supplied-session policy (Authorization V1,
     /// supplied-cookie V2, one bounded form-login V3, or bounded supplied-cookie
-    /// renewal V4, or imported external code/PKCE Bearer acquisition V5).
+    /// renewal V4, imported code/PKCE V5, scheduled Bearer refresh V6, or
+    /// client-initiated S256 authorization V7).
     /// The policy selects one bounded credential acquisition, a small exact set
     /// of operator-authorized resources for bodyless GETs, and a structured
-    /// session-health oracle. It is inert without exactly one matching
-    /// out-of-band credential source.
+    /// session-health oracle. It requires exactly one matching explicit input:
+    /// an out-of-band credential for V1-V6, or a private handoff output for V7.
     #[cfg(feature = "supplied-session-review")]
     #[arg(
         long,
@@ -1192,6 +1199,19 @@ struct ScanArgs {
         "session_cookie_file", "session_login_file"
     ])]
     session_oauth_code_file: Option<PathBuf>,
+    /// Initiate the V7 public-code/S256 transaction and write its sensitive
+    /// authorization URI to one new private file. Open it manually in your own
+    /// user agent; no browser is opened automatically. Receives one bounded
+    /// form POST on the policy's exact numeric-loopback callback, then performs
+    /// one IdP exchange and the existing health/resource loop. The handoff is
+    /// outside the report bundle and removed only while its ownership matches.
+    /// Does not validate OIDC identity, authenticate the user alias or refresh.
+    #[cfg(feature = "supplied-session-review")]
+    #[arg(long, value_name = "FILE", requires = "session_policy", conflicts_with_all = [
+        "session_auth_env", "session_auth_file", "session_auth_stdin",
+        "session_cookie_file", "session_login_file", "session_oauth_code_file"
+    ])]
+    session_oauth_authorization_output: Option<PathBuf>,
     /// Select the centralized typed assessment renderer. Valid only with
     /// `--profile web-review`. Without this option, text maps to Markdown
     /// and JSON maps to JSON for completed web-review reports.
@@ -1598,6 +1618,8 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         session_login_file,
         #[cfg(feature = "supplied-session-review")]
         session_oauth_code_file,
+        #[cfg(feature = "supplied-session-review")]
+        session_oauth_authorization_output,
         report_format,
         report_output,
         report_dir,
@@ -1830,14 +1852,16 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         || session_auth_stdin
         || session_cookie_file.is_some()
         || session_login_file.is_some()
-        || session_oauth_code_file.is_some();
+        || session_oauth_code_file.is_some()
+        || session_oauth_authorization_output.is_some();
     #[cfg(feature = "supplied-session-review")]
     let supplied_session_credential_selected = session_auth_env.is_some()
         || session_auth_file.is_some()
         || session_auth_stdin
         || session_cookie_file.is_some()
         || session_login_file.is_some()
-        || session_oauth_code_file.is_some();
+        || session_oauth_code_file.is_some()
+        || session_oauth_authorization_output.is_some();
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
     if let Some(message) = scan_wordpress_supplied_session_flags_conflict(
         profile,
@@ -2025,7 +2049,20 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
         ),
     )?;
     #[cfg(feature = "supplied-session-review")]
-    let supplied_session_input = if let Some(code_file) = session_oauth_code_file {
+    let supplied_session_input = if let Some(output) = session_oauth_authorization_output {
+        auth_input::SuppliedSessionInput::select_with_oauth_authorization(
+            session_policy,
+            auth_input::AuthorizationSourceOptions::new(
+                session_auth_env,
+                session_auth_file,
+                session_auth_stdin,
+            ),
+            session_cookie_file,
+            session_login_file,
+            session_oauth_code_file,
+            output,
+        )?
+    } else if let Some(code_file) = session_oauth_code_file {
         auth_input::SuppliedSessionInput::select_with_oauth_code(
             session_policy,
             auth_input::AuthorizationSourceOptions::new(
@@ -2266,7 +2303,34 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             .map(|input| input.prepare(&target))
             .transpose()?;
         preflight_report_output(report_output.as_deref())?;
+        #[cfg(feature = "supplied-session-review")]
+        let prepared_oauth_authorization_output = prepared_supplied_session_review
+            .as_ref()
+            .and_then(auth_input::PreparedSuppliedSessionInput::authorization_output)
+            .map(|path| {
+                oauth_authorization_output::PreparedAuthorizationOutput::prepare(
+                    path,
+                    report_output.as_deref(),
+                    report_dir.as_deref(),
+                )
+            })
+            .transpose()?;
         let mut report_bundle = report_bundle::reserve_report_bundle(report_dir.as_deref())?;
+        #[cfg(feature = "supplied-session-review")]
+        let mut oauth_authorization_output = prepared_oauth_authorization_output
+            .map(oauth_authorization_output::PreparedAuthorizationOutput::reserve)
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
+        #[cfg(feature = "supplied-session-review")]
+        let oauth_authorization_writer = oauth_authorization_output
+            .as_ref()
+            .map(oauth_authorization_output::AuthorizationOutput::writer)
+            .transpose()
+            .inspect_err(|_| {
+                abort_report_bundle_after_failure(&mut report_bundle);
+            })?;
         // All flag, profile, target, and obvious report-output checks above
         // precede every selected secret-source read in the CLI.
         let root_authorization_context = authorization_source
@@ -2284,7 +2348,10 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             })?;
         #[cfg(feature = "supplied-session-review")]
         let supplied_session_review = prepared_supplied_session_review
-            .map(auth_input::PreparedSuppliedSessionInput::load)
+            .map(|prepared| match oauth_authorization_writer {
+                Some(writer) => prepared.load_with_authorization_writer(writer),
+                None => prepared.load(),
+            })
             .transpose()
             .inspect_err(|_| {
                 abort_report_bundle_after_failure(&mut report_bundle);
@@ -2328,7 +2395,7 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
             };
 
         eprintln!("{DETERMINISTIC_SCAN_WARNING}");
-        let execution = match assessment_scan::run_profile_scan(
+        let execution_result = assessment_scan::run_profile_scan(
             target,
             profile,
             output_request,
@@ -2379,8 +2446,15 @@ async fn run_deterministic_scan(invocation: ScanArgs) -> Result<(), Box<dyn std:
                 wordpress_supplied_session,
             },
         )
-        .await
+        .await;
+        #[cfg(feature = "supplied-session-review")]
+        if oauth_authorization_output
+            .as_mut()
+            .is_some_and(|output| output.cleanup().is_err())
         {
+            eprintln!("OAuth authorization output cleanup was incomplete; inspect the private destination");
+        }
+        let execution = match execution_result {
             Ok(execution) => execution,
             Err(error) => {
                 abort_report_bundle_after_failure(&mut report_bundle);
@@ -2955,6 +3029,7 @@ mod tests {
             assert_eq!(args.session_auth_file, None);
             assert!(!args.session_auth_stdin);
             assert_eq!(args.session_cookie_file, None);
+            assert_eq!(args.session_oauth_authorization_output, None);
             assert_eq!(args.session_login_file, None);
         }
         assert!(DETERMINISTIC_SCAN_WARNING.contains("bounded deterministic"));

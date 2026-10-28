@@ -18,6 +18,13 @@ use super::{render_serializable_json, write_markdown_code_span, RenderBuffer, Re
 mod html;
 mod import;
 
+#[cfg(feature = "supplied-session-review")]
+pub(super) fn validate_supplied_session_oauth_authorization(
+    value: &Value,
+) -> Result<ImportedSuppliedSessionAudit, ComparisonError> {
+    import::validate_supplied_session_oauth_authorization(value)
+}
+
 /// Apply the same closed feature-independent V6 contract before publication.
 #[cfg(feature = "supplied-session-review")]
 pub(super) fn validate_supplied_session_oauth_refresh(
@@ -852,9 +859,25 @@ fn compare_supplied_sessions(
     if before.is_none() && after.is_none() {
         return None;
     }
+    let contains_oauth_methodology = [before, after].into_iter().flatten().any(|audit| {
+        audit
+            .context
+            .get("schema")
+            .and_then(Value::as_str)
+            .is_some_and(|schema| {
+                matches!(
+                    schema,
+                    "security.supplied-session-audit/v6" | "security.supplied-session-audit/v7"
+                )
+            })
+    });
     let contains_oauth_refresh = [before, after].into_iter().flatten().any(|audit| {
         audit.context.get("schema").and_then(Value::as_str)
             == Some("security.supplied-session-audit/v6")
+    });
+    let contains_oauth_authorization = [before, after].into_iter().flatten().any(|audit| {
+        audit.context.get("schema").and_then(Value::as_str)
+            == Some("security.supplied-session-audit/v7")
     });
     let (status, reason, context_status, facet_status) = match (before, after) {
         (Some(before), Some(after)) if before.context == after.context => (
@@ -872,18 +895,23 @@ fn compare_supplied_sessions(
                 before.context.get("principal_alias") != after.context.get("principal_alias");
             let epoch_changed =
                 before.context.get("session_epoch") != after.context.get("session_epoch");
-            let methodology_changed = ["schema", "oauth_code_policy", "oauth_refresh_policy"]
-                .into_iter()
-                .any(|field| before.context.get(field) != after.context.get(field));
+            let methodology_changed = [
+                "schema",
+                "oauth_code_policy",
+                "oauth_refresh_policy",
+                "oauth_authorization_policy",
+            ]
+            .into_iter()
+            .any(|field| before.context.get(field) != after.context.get(field));
             let reason = if application_changed {
                 "application_scope_changed"
             } else if policy_changed {
                 "session_policy_changed"
             } else if principal_alias_changed {
                 "operator_declared_principal_changed"
-            } else if contains_oauth_refresh && methodology_changed {
+            } else if contains_oauth_methodology && methodology_changed {
                 "session_methodology_changed"
-            } else if contains_oauth_refresh && epoch_changed {
+            } else if contains_oauth_methodology && epoch_changed {
                 "session_epoch_changed"
             } else {
                 "declared_session_context_changed"
@@ -944,7 +972,9 @@ fn compare_supplied_sessions(
             "Policy and application digests identify declared values; they do not authenticate the target, source, account, role, or tenant.",
             "Different contexts are not paired as target changes, and missing or reduced coverage is not remediation.",
             "Health checkpoints establish only their recorded predicate at bounded moments, not continuous authentication.",
-            if contains_oauth_refresh {
+            if contains_oauth_authorization {
+                "Selected client-generated authorization is qualified only where callback facts were recorded; it does not authenticate a browser or sender, verify OIDC nonce/identity/signatures, or establish remote PKCE enforcement. A reception reservation is not an outgoing token request."
+            } else if contains_oauth_refresh {
                 "Only the recorded explicitly scheduled renewal was assessed; replacement value inequality does not establish server revocation, replay detection, or identity. No exploit, impact validation, or anonymous fallback was performed."
             } else {
                 "Exploit execution, impact validation, automatic refresh, and anonymous fallback were not performed by this audit."
