@@ -54,6 +54,14 @@ const MAX_FIXTURE_REQUEST_BYTES: usize = 96 * 1_024;
 const MAX_PARSER_OUTPUT_BYTES: usize = 4 * 1_024;
 const MAX_TERMIVAR_OUTPUT_BYTES: usize = 2 * 1_024 * 1_024;
 const PARSER_TIMEOUT: Duration = Duration::from_secs(5);
+const PARSER_SUCCESS_PHASES: &[u8] = concat!(
+    "owned_https_parser_phase stage=started\n",
+    "owned_https_parser_phase stage=input_read\n",
+    "owned_https_parser_phase stage=input_complete\n",
+    "owned_https_parser_phase stage=parse_complete\n",
+    "owned_https_parser_phase stage=result_written\n",
+)
+.as_bytes();
 const TERMIVAR_TIMEOUT: Duration = Duration::from_secs(45);
 const XML_MEDIA_TYPE: &str = "application/xml; charset=utf-8";
 const POST_RESPONSE_SENTINEL: &[u8] = b"OWNED_XML_POST_RESPONSE_MUST_NOT_LEAK_5E3A91C7";
@@ -958,6 +966,9 @@ enum TargetFailureStage {
     RequestRead,
     Parser,
     ResponseWrite,
+    ResponseHeadWrite,
+    ResponseBodyWrite,
+    ResponseShutdown,
 }
 
 fn target_failure_fact(stage: TargetFailureStage, kind: io::ErrorKind) -> String {
@@ -966,6 +977,9 @@ fn target_failure_fact(stage: TargetFailureStage, kind: io::ErrorKind) -> String
         TargetFailureStage::RequestRead => "request_read",
         TargetFailureStage::Parser => "expat_parser",
         TargetFailureStage::ResponseWrite => "response_write",
+        TargetFailureStage::ResponseHeadWrite => "response_head_write",
+        TargetFailureStage::ResponseBodyWrite => "response_body_write",
+        TargetFailureStage::ResponseShutdown => "response_shutdown",
     };
     format!("owned_https_target_failure stage={stage} kind={kind:?}")
 }
@@ -1258,12 +1272,59 @@ struct ParserPipeObservation {
     eof: AtomicBool,
 }
 
+// Only match the fixed helper's diagnostic prefix. Arbitrary stderr is never
+// retained by this observation, reflected into diagnostics, or runtime evidence.
+#[derive(Default)]
+struct ParserProgressObservation {
+    matched_bytes: AtomicUsize,
+    invalid: AtomicBool,
+}
+
+impl ParserProgressObservation {
+    fn observe(&self, bytes: &[u8]) {
+        if self.invalid.load(Ordering::SeqCst) {
+            return;
+        }
+        let offset = self.matched_bytes.load(Ordering::SeqCst);
+        let matched = bytes
+            .iter()
+            .zip(&PARSER_SUCCESS_PHASES[offset..])
+            .take_while(|(actual, expected)| actual == expected)
+            .count();
+        self.matched_bytes.store(offset + matched, Ordering::SeqCst);
+        if matched != bytes.len() {
+            self.invalid.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn last_complete_phase(&self) -> &'static str {
+        let offset = self.matched_bytes.load(Ordering::SeqCst);
+        let completed = PARSER_SUCCESS_PHASES[..offset]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count();
+        [
+            "not_observed",
+            "started",
+            "input_read",
+            "input_complete",
+            "parse_complete",
+            "result_written",
+        ][completed]
+    }
+}
+
+fn parser_phase_trace_is_complete(bytes: &[u8]) -> bool {
+    bytes == PARSER_SUCCESS_PHASES
+}
+
 // Only the parser's existing bounded stdout/stderr readers use this wrapper.
 // Zero observed bytes does not establish that the child produced no output:
 // bytes not yet polled from a pipe are deliberately unknown.
 struct ObservedParserPipe<R> {
     inner: R,
     observation: Arc<ParserPipeObservation>,
+    progress: Option<Arc<ParserProgressObservation>>,
 }
 
 impl<R: AsyncRead + Unpin> AsyncRead for ObservedParserPipe<R> {
@@ -1278,6 +1339,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for ObservedParserPipe<R> {
         let result = Pin::new(&mut this.inner).poll_read(context, buffer);
         let observed = buffer.filled().len().saturating_sub(before);
         this.observation.bytes.fetch_add(observed, Ordering::SeqCst);
+        if let Some(progress) = &this.progress {
+            progress.observe(&buffer.filled()[before..]);
+        }
         if had_capacity && observed == 0 && matches!(&result, Poll::Ready(Ok(()))) {
             this.observation.eof.store(true, Ordering::SeqCst);
         }
@@ -1299,6 +1363,22 @@ fn note_parser_output_to(
         stdout.eof.load(Ordering::SeqCst),
         stderr.bytes.load(Ordering::SeqCst),
         stderr.eof.load(Ordering::SeqCst),
+    ));
+    error
+}
+
+fn note_parser_progress_to(
+    progress: &ParserProgressObservation,
+    error: io::Error,
+    output: &mut impl std::io::Write,
+) -> io::Error {
+    // These are complete fixed markers actually read from stderr, not proof of
+    // process startup time, absent buffered output, or the watchdog's cause.
+    let _ = output.write_fmt(format_args!(
+        "owned_https_parser_progress last_complete={} matched_bytes={} invalid={}\n",
+        progress.last_complete_phase(),
+        progress.matched_bytes.load(Ordering::SeqCst),
+        progress.invalid.load(Ordering::SeqCst),
     ));
     error
 }
@@ -1406,13 +1486,16 @@ async fn run_expat_with_interpreter(
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "parser stderr"))?;
     let stdout_observation = Arc::new(ParserPipeObservation::default());
     let stderr_observation = Arc::new(ParserPipeObservation::default());
+    let progress = Arc::new(ParserProgressObservation::default());
     let stdout = ObservedParserPipe {
         inner: stdout,
         observation: Arc::clone(&stdout_observation),
+        progress: None,
     };
     let stderr = ObservedParserPipe {
         inner: stderr,
         observation: Arc::clone(&stderr_observation),
+        progress: Some(Arc::clone(&progress)),
     };
 
     let mut phase = ParserExecutionPhase::InputWrite;
@@ -1440,12 +1523,13 @@ async fn run_expat_with_interpreter(
                 &mut std::io::stderr(),
             );
             let error = note_parser_timeout_to(phase, child_state, error, &mut std::io::stderr());
+            let error = note_parser_progress_to(&progress, error, &mut std::io::stderr());
             let _ = child.kill().await;
             let _ = child.wait().await;
             return Err(error);
         },
     };
-    if !status.success() || !stderr.is_empty() {
+    if !status.success() || !parser_phase_trace_is_complete(&stderr) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "parser rejected document",
@@ -1497,13 +1581,31 @@ async fn write_response<S>(stream: &mut S, content_type: &str, body: &[u8]) -> i
 where
     S: AsyncWrite + Unpin,
 {
+    write_response_to(stream, content_type, body, &mut std::io::stderr()).await
+}
+
+async fn write_response_to<S>(
+    stream: &mut S,
+    content_type: &str,
+    body: &[u8],
+    diagnostics: &mut impl std::io::Write,
+) -> io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(body).await?;
-    stream.shutdown().await
+    stream.write_all(head.as_bytes()).await.map_err(|error| {
+        note_target_error_to(TargetFailureStage::ResponseHeadWrite, error, diagnostics)
+    })?;
+    stream.write_all(body).await.map_err(|error| {
+        note_target_error_to(TargetFailureStage::ResponseBodyWrite, error, diagnostics)
+    })?;
+    stream.shutdown().await.map_err(|error| {
+        note_target_error_to(TargetFailureStage::ResponseShutdown, error, diagnostics)
+    })
 }
 
 fn policy(target_url: &str) -> String {
@@ -1957,6 +2059,175 @@ async fn parser_input_propagates_flush_error_without_claiming_close() {
 }
 
 #[test]
+fn parser_progress_requires_exact_ordered_complete_markers() {
+    // Original literal oracle, not generated through the observer or helper.
+    let markers: [&[u8]; 5] = [
+        b"owned_https_parser_phase stage=started\n",
+        b"owned_https_parser_phase stage=input_read\n",
+        b"owned_https_parser_phase stage=input_complete\n",
+        b"owned_https_parser_phase stage=parse_complete\n",
+        b"owned_https_parser_phase stage=result_written\n",
+    ];
+    let expected = markers.concat();
+    assert_eq!(PARSER_SUCCESS_PHASES, expected);
+    assert!(parser_phase_trace_is_complete(&expected));
+    let names = [
+        "started",
+        "input_read",
+        "input_complete",
+        "parse_complete",
+        "result_written",
+    ];
+    let observation = ParserProgressObservation::default();
+    assert_eq!(observation.last_complete_phase(), "not_observed");
+    let mut prefix_length = 0;
+    for (marker, name) in markers.into_iter().zip(names) {
+        for byte in &marker[..marker.len() - 1] {
+            observation.observe(std::slice::from_ref(byte));
+        }
+        observation.observe(b"\n");
+        prefix_length += marker.len();
+        assert_eq!(observation.last_complete_phase(), name);
+        assert_eq!(
+            observation.matched_bytes.load(Ordering::SeqCst),
+            prefix_length
+        );
+        assert!(!observation.invalid.load(Ordering::SeqCst));
+    }
+    for invalid in [
+        Vec::new(),
+        expected[..expected.len() - 1].to_vec(),
+        markers[1..].concat(),
+        [markers[0], markers[0], markers[2], markers[3], markers[4]].concat(),
+        [markers[1], markers[0], markers[2], markers[3], markers[4]].concat(),
+        [expected.as_slice(), b"PRIVATE_EXTRA_OUTPUT_SENTINEL"].concat(),
+        b"owned_https_parser_phase stage=PRIVATE_UNKNOWN_SENTINEL\n".to_vec(),
+        expected
+            .iter()
+            .flat_map(|byte| {
+                if *byte == b'\n' {
+                    vec![b'\r', b'\n']
+                } else {
+                    vec![*byte]
+                }
+            })
+            .collect(),
+    ] {
+        assert!(!parser_phase_trace_is_complete(&invalid));
+    }
+}
+
+#[tokio::test]
+async fn parser_progress_pipe_observes_markers_without_changing_read_limits() {
+    let literal = b"owned_https_parser_phase stage=started\nowned_https_parser_phase stage=input_read\nowned_https_parser_phase stage=input_complete\nowned_https_parser_phase stage=parse_complete\nowned_https_parser_phase stage=result_written\n";
+    let observation = Arc::new(ParserPipeObservation::default());
+    let progress = Arc::new(ParserProgressObservation::default());
+    let reader = ObservedParserPipe {
+        inner: literal.as_slice(),
+        observation: Arc::clone(&observation),
+        progress: Some(Arc::clone(&progress)),
+    };
+    assert_eq!(
+        read_bounded_pipe(reader, MAX_PARSER_OUTPUT_BYTES)
+            .await
+            .unwrap(),
+        literal
+    );
+    assert_eq!(progress.last_complete_phase(), "result_written");
+    assert!(!progress.invalid.load(Ordering::SeqCst));
+    assert!(observation.eof.load(Ordering::SeqCst));
+
+    let observation = Arc::new(ParserPipeObservation::default());
+    let progress = Arc::new(ParserProgressObservation::default());
+    let reader = ObservedParserPipe {
+        inner: literal.as_slice(),
+        observation: Arc::clone(&observation),
+        progress: Some(Arc::clone(&progress)),
+    };
+    assert_eq!(
+        read_bounded_pipe(reader, 3).await.unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(observation.bytes.load(Ordering::SeqCst), 4);
+    assert!(!observation.eof.load(Ordering::SeqCst));
+    assert_eq!(progress.last_complete_phase(), "not_observed");
+    assert_eq!(progress.matched_bytes.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn parser_progress_watchdog_keeps_only_complete_observed_phases() {
+    let literal =
+        b"owned_https_parser_phase stage=started\nowned_https_parser_phase stage=input_read\n";
+    let (mut writer, reader) = tokio::io::duplex(256);
+    writer.write_all(literal).await.unwrap();
+    // Deliberately leave this original synthetic producer open, modelling an
+    // observed input-read marker followed by no further child/pipe progress.
+    // This is not a reproduction or assertion of the CI timeout's cause.
+    let observation = Arc::new(ParserPipeObservation::default());
+    let progress = Arc::new(ParserProgressObservation::default());
+    let reader = ObservedParserPipe {
+        inner: reader,
+        observation: Arc::clone(&observation),
+        progress: Some(Arc::clone(&progress)),
+    };
+    let reading = read_bounded_pipe(reader, MAX_PARSER_OUTPUT_BYTES);
+    tokio::pin!(reading);
+    assert!(
+        std::future::poll_fn(|context| {
+            Poll::Ready(std::future::Future::poll(reading.as_mut(), context).is_pending())
+        })
+        .await
+    );
+    assert_eq!(progress.last_complete_phase(), "input_read");
+    assert!(timeout(Duration::from_millis(50), reading).await.is_err());
+    assert_eq!(observation.bytes.load(Ordering::SeqCst), literal.len());
+    assert!(!observation.eof.load(Ordering::SeqCst));
+    assert_eq!(progress.last_complete_phase(), "input_read");
+    assert!(!progress.invalid.load(Ordering::SeqCst));
+    drop(writer);
+}
+
+#[test]
+fn parser_progress_diagnostic_rejects_unknown_bytes_and_preserves_original_error() {
+    let progress = ParserProgressObservation::default();
+    progress.observe(b"owned_https_parser_phase stage=started\n");
+    progress.observe(b"PRIVATE_PARSER_PROGRESS_SENTINEL");
+    progress.observe(b"owned_https_parser_phase stage=input_read\n");
+    assert_eq!(progress.last_complete_phase(), "started");
+    assert!(progress.invalid.load(Ordering::SeqCst));
+    let mut output = Vec::new();
+    let original = note_parser_progress_to(
+        &progress,
+        io::Error::new(io::ErrorKind::TimedOut, "PRIVATE_ORIGINAL_ERROR_SENTINEL"),
+        &mut output,
+    );
+    assert_eq!(
+        output,
+        format!(
+            "owned_https_parser_progress last_complete=started matched_bytes={} invalid=true\n",
+            b"owned_https_parser_phase stage=started\n".len()
+        )
+        .as_bytes()
+    );
+    assert!(output.len() <= 160);
+    assert!(!output.windows(7).any(|part| part == b"PRIVATE"));
+    assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(original.to_string(), "PRIVATE_ORIGINAL_ERROR_SENTINEL");
+    struct FailedDiagnostic;
+    impl std::io::Write for FailedDiagnostic {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    let original = note_parser_progress_to(&progress, original, &mut FailedDiagnostic);
+    assert_eq!(original.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(original.to_string(), "PRIVATE_ORIGINAL_ERROR_SENTINEL");
+}
+
+#[test]
 fn parser_output_diagnostic_is_closed_and_preserves_original_error() {
     let stdout = ParserPipeObservation::default();
     stdout.bytes.store(7, Ordering::SeqCst);
@@ -2008,6 +2279,7 @@ async fn parser_output_observation_requires_real_eof_with_available_capacity() {
     let mut reader = ObservedParserPipe {
         inner: b"".as_slice(),
         observation: Arc::clone(&empty),
+        progress: None,
     };
     let mut storage = [];
     let mut zero_capacity = ReadBuf::new(&mut storage);
@@ -2024,6 +2296,7 @@ async fn parser_output_observation_requires_real_eof_with_available_capacity() {
     let reader = ObservedParserPipe {
         inner: b"fixed".as_slice(),
         observation: Arc::clone(&complete),
+        progress: None,
     };
     assert_eq!(read_bounded_pipe(reader, 8).await.unwrap(), b"fixed");
     assert_eq!(complete.bytes.load(Ordering::SeqCst), 5);
@@ -2036,6 +2309,7 @@ async fn parser_output_observation_keeps_limit_plus_one_without_inventing_eof() 
     let reader = ObservedParserPipe {
         inner: b"12345".as_slice(),
         observation: Arc::clone(&observed),
+        progress: None,
     };
     let error = read_bounded_pipe(reader, 3).await.unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -2071,6 +2345,7 @@ async fn parser_output_observation_retains_pending_prefix_without_claiming_eof()
             remaining: b"prefix",
         },
         observation: Arc::clone(&observed),
+        progress: None,
     };
     let reading = read_bounded_pipe(reader, 8);
     tokio::pin!(reading);
@@ -2150,6 +2425,9 @@ fn target_stage_diagnostic_is_bounded_value_free_and_preserves_the_original_erro
         TargetFailureStage::RequestRead,
         TargetFailureStage::Parser,
         TargetFailureStage::ResponseWrite,
+        TargetFailureStage::ResponseHeadWrite,
+        TargetFailureStage::ResponseBodyWrite,
+        TargetFailureStage::ResponseShutdown,
     ] {
         let error = io::Error::new(io::ErrorKind::TimedOut, "PRIVATE_FIXTURE_ERROR_SENTINEL");
         let fact = target_failure_fact(stage, error.kind());
@@ -2182,6 +2460,85 @@ fn target_stage_diagnostic_is_bounded_value_free_and_preserves_the_original_erro
     );
     assert_eq!(original.kind(), io::ErrorKind::TimedOut);
     assert_eq!(original.to_string(), "ORIGINAL_FIXTURE_ERROR");
+}
+
+#[tokio::test]
+async fn response_stage_failures_preserve_each_original_error_without_suppressing_reset() {
+    struct FailingResponse {
+        operation: usize,
+        fail_at: usize,
+        partial_at: Option<usize>,
+    }
+    impl AsyncWrite for FailingResponse {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let this = self.get_mut();
+            this.operation += 1;
+            if this.operation == this.fail_at {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "PRIVATE_RESPONSE_ERROR_SENTINEL",
+                )))
+            } else if this.partial_at == Some(this.operation) {
+                Poll::Ready(Ok(bytes.len().min(2)))
+            } else {
+                Poll::Ready(Ok(bytes.len()))
+            }
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            this.operation += 1;
+            if this.operation == this.fail_at {
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::ConnectionReset,
+                    "PRIVATE_RESPONSE_ERROR_SENTINEL",
+                )))
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        }
+    }
+    for (fail_at, partial_at, expected) in [
+        (1, None, "response_head_write"),
+        (2, None, "response_body_write"),
+        (3, None, "response_shutdown"),
+        (2, Some(1), "response_head_write"),
+        (3, Some(2), "response_body_write"),
+    ] {
+        let mut writer = FailingResponse {
+            operation: 0,
+            fail_at,
+            partial_at,
+        };
+        let mut diagnostics = Vec::new();
+        let error = write_response_to(&mut writer, "text/plain", b"fixed", &mut diagnostics)
+            .await
+            .unwrap_err();
+        assert_eq!(writer.operation, fail_at);
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
+        assert_eq!(error.to_string(), "PRIVATE_RESPONSE_ERROR_SENTINEL");
+        assert_eq!(
+            diagnostics,
+            format!("owned_https_target_failure stage={expected} kind=ConnectionReset\n")
+                .as_bytes()
+        );
+        assert!(!diagnostics.windows(7).any(|part| part == b"PRIVATE"));
+    }
+    let mut writer = FailingResponse {
+        operation: 0,
+        fail_at: 4,
+        partial_at: None,
+    };
+    write_response(&mut writer, "text/plain", b"fixed")
+        .await
+        .unwrap();
+    assert_eq!(writer.operation, 3);
 }
 
 #[test]

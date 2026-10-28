@@ -8,12 +8,38 @@ caller-selected destinations are used.
 
 from __future__ import annotations
 
+import sys
+
+
+_PHASE_MARKERS = {
+    "started": b"owned_https_parser_phase stage=started\n",
+    "input_read": b"owned_https_parser_phase stage=input_read\n",
+    "input_complete": b"owned_https_parser_phase stage=input_complete\n",
+    "parse_complete": b"owned_https_parser_phase stage=parse_complete\n",
+    "result_written": b"owned_https_parser_phase stage=result_written\n",
+}
+
+
+def _emit_phase(stage: str) -> None:
+    try:
+        marker = _PHASE_MARKERS[stage]
+    except KeyError:
+        raise ValueError("phase") from None
+    # Binary writes preserve the literal LF contract on Windows too. Only this
+    # closed vocabulary is emitted; input, paths and exception text stay absent.
+    if sys.stderr.buffer.write(marker) != len(marker):
+        raise OSError("phase_write")
+    sys.stderr.buffer.flush()
+
+
+if __name__ == "__main__":
+    _emit_phase("started")
+
 import argparse
 import base64
 import json
 import socket
 import ssl
-import sys
 from urllib.parse import urlsplit
 from xml.parsers import expat
 
@@ -163,8 +189,11 @@ def _main() -> int:
     if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12):
         raise OracleError("runtime")
     arguments = _arguments()
+    _emit_phase("input_read")
     document = _read_xml()
+    _emit_phase("input_complete")
     resolutions = _parse(document, arguments.mode, arguments.provider_port)
+    _emit_phase("parse_complete")
     result = {
         "external_entity_count": resolutions,
         "mode": arguments.mode,
@@ -174,7 +203,11 @@ def _main() -> int:
     encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > 1024:
         raise OracleError("result_bound")
-    sys.stdout.buffer.write(encoded + b"\n")
+    output = encoded + b"\n"
+    if sys.stdout.buffer.write(output) != len(output):
+        raise OracleError("result_write")
+    sys.stdout.buffer.flush()
+    _emit_phase("result_written")
     return 0
 
 
