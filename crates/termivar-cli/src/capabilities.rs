@@ -1891,6 +1891,7 @@ mod tests {
                 "V4: --session-cookie-file FILE and explicit scheduled renewal policy",
                 "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
                 "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
+                "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
                 "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
                 "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
             ]
@@ -1948,9 +1949,21 @@ mod tests {
             "Failed or ambiguous renewal stops without retry or old-token fallback",
             "V6 performs no interactive authorization, OIDC identity or token signature validation",
             "no WordPress or WebSocket composition",
-            "No browser-profile import, form discovery, credential guessing, interactive OAuth/OIDC login, MFA bypass",
+            "V7 alone initiates one public-client S256 authorization transaction",
+            "independent OS-random verifier and state",
+            "private one-shot authorization-URI handoff outside the report",
+            "accepts one bounded form_post response, requires matching state and issuer",
+            "callback reception reservation and framing/form ingress consume the same parent request/byte ledger",
+            "At most 30 seconds of authorization wait",
+            "neither extends the immutable parent deadline",
+            "Only exact committed callback evidence authorizes the existing once-only IdP token POST",
+            "at most nine combined logical admissions",
+            "private handoff contains state/challenge but never the verifier",
+            "An observed matching issuer/state is not browser/sender authentication or proof of remote PKCE enforcement",
+            "V7 performs no OIDC nonce, identity or token signature validation",
+            "No browser-profile import, form discovery, credential guessing, automatic OAuth/OIDC login, MFA bypass",
             "WordPress supplied-session composition remains limited to V1/V2",
-            "V3/V4/V5/V6 are rejected before their secret files are read",
+            "V3/V4/V5/V6/V7 are rejected before their secret files are read",
         ] {
             assert!(
                 session.limitation.contains(required),
@@ -2145,27 +2158,49 @@ mod tests {
     fn render_contains_no_host_or_runtime_metadata() {
         let json = String::from_utf8(render(&build_document(), CapabilitiesFormat::Json).unwrap())
             .unwrap();
-        // This one reviewed, static prerequisite names a protocol mechanism,
-        // not an Authorization value. Every other Bearer-space occurrence
-        // remains forbidden; do not allow arbitrary token-shaped prose.
-        let public_mechanism = "scheduled Bearer refresh policy";
-        assert_eq!(json.matches(public_mechanism).count(), 1);
-        let privacy_view = json.replacen(public_mechanism, "scheduled Bearer-refresh policy", 1);
-        for forbidden in [
-            "CARGO_FEATURE_",
-            "target_triple",
-            "rustc_version",
-            "build_timestamp",
+        let privacy_contract = |text: &str| {
+            // These independent exact literals name public protocol profiles,
+            // not a runtime host or an Authorization value. Only one occurrence
+            // of each is exempt; every additional host/token occurrence fails.
+            let mechanism = "scheduled Bearer refresh policy";
+            let callback = "The exact registered IPv4 http://127.0.0.1 unprivileged-port callback accepts one bounded form_post response, requires matching state and issuer, and closes before composition.";
+            if text.matches(mechanism).count() != 1 || text.matches(callback).count() != 1 {
+                return false;
+            }
+            let view = text
+                .replacen(mechanism, "REVIEWED_PUBLIC_MECHANISM", 1)
+                .replacen(callback, "REVIEWED_FIXED_CALLBACK_PROFILE", 1);
+            [
+                "CARGO_FEATURE_",
+                "target_triple",
+                "rustc_version",
+                "build_timestamp",
+                "source_commit",
+                "binary_hash",
+                "127.0.0.1",
+                "Authorization:",
+                "Cookie:",
+                "Bearer ",
+                "Basic ",
+            ]
+            .iter()
+            .all(|forbidden| !view.contains(forbidden))
+        };
+        assert!(privacy_contract(&json));
+        for private_extra in [
+            "127.0.0.1:43123",
+            "Bearer SYNTHETIC_PRIVATE_VALUE",
+            "Authorization: SYNTHETIC_PRIVATE_VALUE",
             "source_commit",
-            "binary_hash",
-            "127.0.0.1",
-            "Authorization:",
-            "Cookie:",
-            "Bearer ",
-            "Basic ",
         ] {
-            assert!(!privacy_view.contains(forbidden), "leaked {forbidden}");
+            assert!(!privacy_contract(&format!("{json}{private_extra}")));
         }
+        let changed = json.replace(
+            "http://127.0.0.1 unprivileged-port",
+            "http://127.0.0.2 unprivileged-port",
+        );
+        assert_ne!(changed, json);
+        assert!(!privacy_contract(&changed));
         assert!(json.contains(INVENTORY_NOTICE));
         assert!(json.contains(BUILD_ORIGIN_LIMITATION));
     }
