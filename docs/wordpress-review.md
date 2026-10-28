@@ -138,8 +138,9 @@ or remediation.
 
 ### Reuse one supplied-session context without forwarding it
 
-An executable compiled with both review features exposes a separate initial
-integration for explicitly selected supplied-session resources:
+An executable compiled with both `wordpress-review` and
+`supplied-session-review` exposes a separate integration for explicitly selected
+V1/V2/V3 supplied-session resources. This V2 example uses an owned fixture:
 
 ```bash
 termivar scan http://127.0.0.1:8088/ \
@@ -158,6 +159,34 @@ existing env/file/stdin source instead of the cookie file. All selected resource
 GETs remain operator-authorized and application-defined GET handlers may have
 server-side effects.
 
+For an owned V3-conforming fixture, prepare a strict V3 policy and a private
+regular TSV with exactly the `username` and `password` rows, then use the
+existing login-file input instead of the cookie file:
+
+```bash
+termivar scan http://127.0.0.1:8088/ \
+  --profile web-review \
+  --wordpress-review \
+  --wordpress-discovery \
+  --wordpress-supplied-session \
+  --session-policy ./owned-wp-form-policy.toml \
+  --session-login-file ./owned-wp-form.secret.tsv \
+  --report-dir ./assessment-wordpress-form-login
+```
+
+This command requires that exact owned fixture and its matching inputs; it is
+not a command for a real site or native `wp-login.php`. The task-owned fixture
+route is `/termivar-session-login/` under the selected home path, with configured
+`user`, `pass` and hidden `csrf` fields, one cookie-free form GET and at most one
+bounded POST. The policy declares its exact logged-in cookie metadata, health
+path and protected resource; no form or cookie-name discovery is performed.
+WordPress password authentication must match the exact low-privilege user before
+the route releases a genuine logged-in cookie. Its later health predicate
+independently checks the actual logged-in user and expected principal. The lab
+preallocates the session token as a private redaction oracle; V3 receives only
+username/password, and this does not establish fresh session creation or
+session-fixation prevention. No execution of this example is implied.
+
 This option is valid only with the explicit review, discovery, supplied-session
 policy/credential and `web-review` profile. The runtime first commits the
 anonymous entry evidence and freezes its application/layout. It then reduces a
@@ -168,6 +197,21 @@ credential mechanism, epoch and opaque resource/page references stay linked in
 a separate audit. Login-shaped, incompatible, unsupported, truncated,
 health-unqualified and uncommitted responses cannot nominate metadata.
 
+The schema remains `security.wordpress-discovery-audit/v4`. V1/V2 preserve
+`termivar.wordpress-supplied-session-metadata-discovery/v1`, mode
+`committed_supplied_session_resources` and epoch one. V3 uses collection policy
+`termivar.wordpress-supplied-session-metadata-discovery/v2` and mode
+`form_login_supplied_session_resources`, without changing the field shape. Its
+nested `session_epoch` records the actual final established-session epoch, zero
+or one. Failed acquisition or unhealthy startup retains epoch zero, even if the
+POST acquired a cookie. Epoch zero allows only empty planned pages marked
+`not_established` / `not_evaluated`, zero dispatched resources, zero
+committed/interpreted activity and no supporting component evidence. S01's
+undispatched planned resource rows retain epoch one. Wrong-principal startup
+failure has final epoch zero; health loss after successful startup retains epoch
+one. Neither invents committed pages. V4–V7 remain refused
+before their secret inputs are acquired.
+
 Accepted component hints can nominate only the existing public metadata work.
 Those GETs are anonymous, exact-origin and broker-owned inside the same twelve
 WordPress-attempt allowance; neither Cookie nor Authorization is forwarded.
@@ -175,7 +219,10 @@ The session traffic retains its separate S01 request/health accounting inside
 the same assessment parent budget. Authenticated-page JS/CSS does not authorize
 fingerprint acquisition in this initial slice, and the audit records that work
 as not selected. Existing anonymous entry, observed-page and fingerprint paths
-are unchanged when the option is absent.
+are unchanged when the option is absent. Private page URLs are not promoted into
+the ordinary crawl, and no flag, feature or request budget is added. A selected
+fingerprint catalogue can therefore have a valid empty audit with zero resource
+acquisitions and zero evaluated components for this private-page-only context.
 
 A component seen only in this context remains an observed identity. Plugin
 `Stable tag`, URL `ver`, catalogue candidates and any separately supplied
@@ -1014,6 +1061,8 @@ audit, the output includes an optional `wordpress_review_comparison` section
 with nested schema `termivar-wordpress-review-comparison/v1`, additive `/v2`
 when either input carries discovery source content such as page-scoped records,
 or additive `/v3` when either input carries a validated asset-fingerprint audit.
+Additive `/v4` is used when either input carries a validated WordPress
+supplied-session context.
 The outer `termivar-report-comparison/v1` schema and its four existing item
 groups are unchanged. The section is absent when neither report has a WordPress
 audit.
@@ -1039,6 +1088,15 @@ one selected application is a methodology/source/coverage change, not a newly
 installed component or verified remediation. For v3, page mode and association
 coverage are methodology/coverage data, while page-to-component source edges
 are source content; a lost page representation is not a component removal.
+
+For supplied-session discovery v4, the ready V1/V2 collection policy `/v1` and
+form-login V3 collection policy `/v2` remain distinct. The reader validates the
+mode, actual final epoch and S01 resource cross-links before comparing them.
+With WordPress session integration selected on only one side, Compare emits
+`status=not_compared` and `reason=supplied_session_context_unknown`, even for the
+same application and V3 policy. Methodology and coverage facets still report
+their changes, but component/advisory pairing stays empty. This does not block
+the separate top-level item comparison when both root S01 contexts match.
 
 The section reports component evidence, advisory content, affected ranges,
 source-declared fix/remediation, methodology, provenance, coverage, and

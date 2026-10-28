@@ -22,7 +22,8 @@ use url::Url;
 use crate::http_evidence::CollectedHttpResponse;
 #[cfg(feature = "supplied-session-review")]
 use crate::supplied_session_review::{
-    SuppliedSessionCredentialMechanism, SuppliedSessionPolicy, SuppliedSessionRequestDescriptor,
+    SuppliedSessionCredentialMechanism, SuppliedSessionPolicy, SuppliedSessionPolicyVersion,
+    SuppliedSessionRequestDescriptor,
 };
 use crate::{
     http_evidence::WordPressRestIndexAdvertisement,
@@ -41,6 +42,7 @@ use super::assessment_item::{
 #[cfg(feature = "supplied-session-review")]
 use super::supplied_session_runtime::{
     CommittedSuppliedSessionResourceReceipt, SuppliedSessionCommittedResourceObserver,
+    WebAssessmentSuppliedSessionAudit,
 };
 use super::wordpress_fingerprint_runtime::{
     execute_wordpress_asset_fingerprints, WordPressAssetFingerprintAllowance,
@@ -58,7 +60,8 @@ use super::wordpress_discovery::{
     discovery_seed_fingerprint, execute_wordpress_discovery, WordPressDiscoveryAssociation,
     WordPressDiscoveryExecutionError, WordPressDiscoveryExecutionInput,
     WordPressDiscoveryLayoutAudit, WordPressDiscoveryLayoutBasis, WordPressDiscoveryLayoutRole,
-    WordPressDiscoveryLayoutStatus, WordPressDiscoverySeed, MAX_WORDPRESS_DISCOVERY_CANDIDATES,
+    WordPressDiscoveryLayoutStatus, WordPressDiscoverySeed,
+    WordPressSuppliedSessionPageAcquisition, MAX_WORDPRESS_DISCOVERY_CANDIDATES,
     MAX_WORDPRESS_DISCOVERY_CANDIDATE_IDENTITIES, MAX_WORDPRESS_DISCOVERY_PLUGIN_REQUESTS,
     MAX_WORDPRESS_DISCOVERY_REST_REQUESTS, MAX_WORDPRESS_DISCOVERY_THEME_REQUESTS,
     MAX_WORDPRESS_PAGE_CANDIDATES, MAX_WORDPRESS_PAGE_INTERPRETED_BYTES,
@@ -119,6 +122,8 @@ struct CollectedSignals {
 }
 
 struct CollectedSuppliedSessionPages {
+    acquisition: Option<WordPressSuppliedSessionPageAcquisition>,
+    epoch: u8,
     pending_entry_layout: Option<(FrozenWordPressPageLayout, Vec<EvidenceId>)>,
     frozen_layout: Option<FrozenWordPressPageLayout>,
     policy_reference: Option<String>,
@@ -142,6 +147,8 @@ enum PendingSuppliedSessionInterpretation {
 impl CollectedSuppliedSessionPages {
     fn new() -> Self {
         Self {
+            acquisition: None,
+            epoch: 1,
             pending_entry_layout: None,
             frozen_layout: None,
             policy_reference: None,
@@ -907,6 +914,13 @@ impl WordPressSignalCollector {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let session = state.supplied_session.as_mut().ok_or(())?;
+        let acquisition = match policy.version() {
+            SuppliedSessionPolicyVersion::V1 | SuppliedSessionPolicyVersion::V2 => {
+                WordPressSuppliedSessionPageAcquisition::Ready
+            },
+            SuppliedSessionPolicyVersion::V3 => WordPressSuppliedSessionPageAcquisition::FormLogin,
+            _ => return Err(()),
+        };
         if session.failed
             || session.frozen_layout.is_none()
             || session.policy_reference.is_some()
@@ -917,6 +931,12 @@ impl WordPressSignalCollector {
             return Err(());
         }
         session.policy_reference = Some(policy.policy_reference().to_owned());
+        session.acquisition = Some(acquisition);
+        session.epoch = if acquisition == WordPressSuppliedSessionPageAcquisition::FormLogin {
+            0
+        } else {
+            1
+        };
         session.application_reference = Some(policy.application_reference().to_owned());
         session.principal_reference = Some(policy.principal_reference().to_owned());
         session.credential_mechanism = Some(match policy.credential_mechanism() {
@@ -1155,6 +1175,54 @@ impl WordPressSignalCollector {
         }
     }
 
+    #[cfg(feature = "supplied-session-review")]
+    fn complete_supplied_session_observation(
+        &self,
+        audit: &WebAssessmentSuppliedSessionAudit,
+    ) -> Result<(), ()> {
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = state.supplied_session.as_mut().ok_or(())?;
+        if session.failed
+            || session.policy_reference.as_deref() != Some(audit.policy_reference())
+            || session.application_reference.as_deref() != Some(audit.application_reference())
+            || session.principal_reference.as_deref() != Some(audit.principal_reference())
+            || usize::from(audit.selected_resource_count()) != session.pages.len()
+        {
+            session.failed = true;
+            return Err(());
+        }
+        let epoch = match (session.acquisition, audit.schema()) {
+            (
+                Some(WordPressSuppliedSessionPageAcquisition::Ready),
+                "security.supplied-session-audit/v1" | "security.supplied-session-audit/v2",
+            ) => 1,
+            (
+                Some(WordPressSuppliedSessionPageAcquisition::FormLogin),
+                "security.supplied-session-audit/v3",
+            ) => audit.cookie_lifecycle().ok_or(())?.final_epoch(),
+            _ => return Err(()),
+        };
+        if epoch > 1
+            || (epoch == 0
+                && (audit.dispatched_resource_count() != 0
+                    || audit.committed_resource_count() != 0
+                    || session.pages.values().any(|page| {
+                        page.resource_evidence_reference.is_some()
+                            || !page.evidence_ids.is_empty()
+                            || page.interpreted_response_bytes != 0
+                            || page.outcome != WordPressSuppliedSessionPageOutcome::NotEvaluated
+                    })))
+        {
+            session.failed = true;
+            return Err(());
+        }
+        session.epoch = epoch;
+        Ok(())
+    }
+
     fn finish_supplied_session_pages(
         &self,
     ) -> Result<Option<WordPressSuppliedSessionPageScopeAudit>, WordPressReviewError> {
@@ -1183,6 +1251,9 @@ impl WordPressSignalCollector {
             total.checked_add(page.interpreted_response_bytes)
         });
         Ok(Some(WordPressSuppliedSessionPageScopeAudit {
+            acquisition: session
+                .acquisition
+                .ok_or(WordPressReviewError::SignalLimitExceeded)?,
             policy_reference: session
                 .policy_reference
                 .take()
@@ -1199,7 +1270,7 @@ impl WordPressSignalCollector {
                 .credential_mechanism
                 .take()
                 .ok_or(WordPressReviewError::SignalLimitExceeded)?,
-            epoch: 1,
+            epoch: session.epoch,
             selected_count: u8::try_from(pages.len())
                 .map_err(|_| WordPressReviewError::SignalLimitExceeded)?,
             committed_count: count(|page| page.resource_evidence_reference.is_some())?,
@@ -1245,6 +1316,13 @@ pub(super) struct WordPressSuppliedSessionObservationBinding {
     collector: WordPressSignalCollector,
     frozen_layout: FrozenWordPressPageLayout,
     root_subject: EntityId,
+}
+
+#[cfg(feature = "supplied-session-review")]
+impl WordPressSuppliedSessionObservationBinding {
+    pub(super) fn complete(&self, audit: &WebAssessmentSuppliedSessionAudit) -> Result<(), ()> {
+        self.collector.complete_supplied_session_observation(audit)
+    }
 }
 
 #[cfg(feature = "supplied-session-review")]

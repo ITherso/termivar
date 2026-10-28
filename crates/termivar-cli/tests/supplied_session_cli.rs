@@ -20,6 +20,10 @@ use std::{
 
 use serde_json::Value;
 
+#[cfg(feature = "wordpress-review")]
+#[path = "supplied_session_cli/wordpress_form_login.rs"]
+mod wordpress_form_login;
+
 const AUTHORIZATION: &str = "Bearer SESSION-PROCESS-CANARY-0123456789ABCDEF";
 const RESPONSE_CANARY: &str = "PRIVATE-RESPONSE-CANARY-MUST-NOT-LEAK";
 #[cfg(feature = "secret-exposure-review")]
@@ -1174,7 +1178,7 @@ fn form_login_policy_mismatch_precedes_output_reservation_and_secret_acquisition
 
 #[cfg(feature = "wordpress-review")]
 #[test]
-fn wordpress_form_login_policy_conflict_precedes_output_and_login_secret_acquisition() {
+fn wordpress_form_login_missing_secret_precedes_output_and_network_acquisition() {
     let directory = tempfile::tempdir().expect("create private WordPress form-login fixture");
     let policy_path = directory.path().join("form-login-policy.toml");
     let missing_login = directory
@@ -1203,14 +1207,14 @@ fn wordpress_form_login_policy_conflict_precedes_output_and_login_secret_acquisi
         .arg("--report-dir")
         .arg(&blocked_destination)
         .output()
-        .expect("run WordPress form-login policy refusal");
+        .expect("run WordPress form-login missing-secret refusal");
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("bounded UTF-8 diagnostic");
     assert!(
-        stderr.contains("does not support bounded form-login policies"),
-        "WordPress/V3 policy conflict was not reported: {stderr}"
+        stderr.contains("supplied-session credential source could not be loaded"),
+        "missing V3 secret did not precede output and network acquisition: {stderr}"
     );
     assert!(!stderr.contains("PRIVATE-MISSING-WORDPRESS-FORM-LOGIN"));
     assert_eq!(

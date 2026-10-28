@@ -362,9 +362,11 @@ termivar scan https://app.example.test/app/ \
 ```
 
 The policy and credential acquisition mechanism must agree, and exactly one
-credential source is required. V1/V2/V3/V4/V5/V6 source mismatches and V3/V4/V5/V6 combined with
+matching credential source is required for V1–V6; V7 instead selects its private
+authorization-URI handoff. Source mismatches and V4–V7 combined with
 `--wordpress-supplied-session` are rejected after policy validation but before
-output reservation or secret-file acquisition. There is no raw credential
+output reservation or secret-file acquisition. The WordPress consumer accepts
+only V1/V2/V3. There is no raw credential
 argument, cookie environment source, browser import, or cookie stdin source.
 HTTP is refused except for numeric-loopback development fixtures; `Secure`
 cookies still require HTTPS, including on loopback.
@@ -538,9 +540,10 @@ the selected scheme, `HttpOnly`, `SameSite=Strict|Lax`, and no expiry. The
 operator's application scope remains narrower than cookie protocol scope. A
 cookie response, successful status or familiar page text does not establish
 login success. After the form transition, the existing complete JSON startup
-health predicate is the sole success oracle. Only then does the lifecycle move
-from pre-authentication epoch zero to authenticated epoch one and begin resource
-collection.
+health predicate is the sole success oracle. Only a valid declared-cookie
+transition followed by healthy startup advances the credential lifecycle from
+epoch zero to epoch one and allows resource collection. Acquiring a cookie alone
+does not advance the epoch or establish the expected principal.
 
 ## Execution and evidence
 
@@ -551,8 +554,10 @@ bounded login transition to the exact selected application and never forwards
 them across a redirect. It does not enable reqwest's automatic cookie store.
 V1/V2 start with the supplied credential at epoch one. V3 records its anonymous
 login-page GET and explicit login POST separately, starts at epoch zero without
-a cookie, and can reach epoch one only after a valid cookie transition and the
-independent startup JSON health check. Each dispatched resource is followed by
+a cookie, and reaches epoch one only after a valid cookie transition and the
+independent startup JSON health check. A cookie acquired for the wrong principal
+therefore retains epoch zero when startup is unhealthy and qualifies no
+resource. Each dispatched resource is followed by
 a deterministic health checkpoint before it can become committed authenticated
 coverage; loss stops later supplied-session work. There is no silent anonymous
 retry, POST retry or automatic refresh.
@@ -612,15 +617,33 @@ When the executable is compiled with both `supplied-session-review` and
   --wordpress-supplied-session
 ```
 
-The usual V1 or V2 supplied-session policy and exactly one matching credential
-source remain mandatory. V3 is rejected before its login secret is opened; its
-WordPress consumer is intentionally deferred to S02. The current composition
-interprets only complete selected resource
+One V1, V2 or V3 supplied-session policy and exactly one matching credential
+source remain mandatory. V3 uses the existing `--session-login-file`, not an
+imported cookie file. V4–V7 remain refused before secret acquisition. The
+composition interprets only complete selected resource
 HTML whose immediately following health checkpoint and S01 resource evidence
 were committed. It binds the observation to the policy, application, principal,
-credential mechanism and fixed epoch. A login response, incompatible application,
-unsupported representation, truncated body, health loss or uncommitted evidence
+credential mechanism and actual final session epoch. A login response,
+incompatible application, unsupported representation, truncated body, health loss or uncommitted evidence
 cannot nominate WordPress metadata.
+
+The discovery schema remains `security.wordpress-discovery-audit/v4` with the
+same field shape. Historical V1/V2 documents retain collection policy
+`termivar.wordpress-supplied-session-metadata-discovery/v1`, mode
+`committed_supplied_session_resources` and epoch one. V3 instead selects policy
+`termivar.wordpress-supplied-session-metadata-discovery/v2` and mode
+`form_login_supplied_session_resources`. Its nested `session_epoch` is the
+actual final epoch: zero unless acquisition and startup health established the
+session, otherwise one. A received cookie followed by unhealthy startup still
+has final epoch zero. Epoch
+zero permits only empty, `not_established` / `not_evaluated` planned page rows,
+zero dispatched resources, zero committed/interpreted activity, and no
+supporting component evidence.
+The S01 planned resource rows still use epoch one; they are not rewritten to
+zero. Wrong-principal startup failure retains epoch zero; health loss after
+successful startup retains epoch one. Neither invents committed WordPress pages. Strict writers and offline
+readers cross-link the new mode, policy and actual lifecycle while preserving
+the historical V1/V2 meanings.
 
 Eligible component hints may nominate only the existing public WordPress
 metadata requests. Those requests remain anonymous, same-origin and broker-owned
@@ -629,6 +652,10 @@ is forwarded. Authenticated-page JS/CSS does not nominate fingerprint acquisitio
 in this initial integration. The authenticated page ledger is separate from the
 anonymous observed-page collection, and a different principal or epoch is a
 context change rather than evidence of installation change or remediation.
+Private resource URLs do not become ordinary crawl targets. There are no new
+flags, features or request allowances. A task-owned V3-shaped WordPress login
+route is not native `wp-login.php` compatibility; see the
+[owned-fixture invocation](../wordpress-review.md#reuse-one-supplied-session-context-without-forwarding-it).
 
 ### Explicit WebSocket consumer
 

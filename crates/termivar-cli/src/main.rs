@@ -334,12 +334,7 @@ fn scan_wordpress_supplied_session_policy_conflict(
     {
         Some("`--wordpress-supplied-session` does not support renewal policies")
     } else {
-        (selected
-            && version
-                == termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3)
-            .then_some(
-                "`--wordpress-supplied-session` does not support bounded form-login policies",
-            )
+        None
     }
 }
 
@@ -6149,7 +6144,7 @@ mod tests {
                 true,
                 termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3,
             ),
-            Some("`--wordpress-supplied-session` does not support bounded form-login policies")
+            None
         );
         assert_eq!(
             scan_wordpress_supplied_session_policy_conflict(

@@ -592,6 +592,8 @@ const WORDPRESS_DISCOVERY_POLICY_V2: &str =
 const WORDPRESS_DISCOVERY_POLICY_V3: &str = "termivar.wordpress-page-scoped-metadata-discovery/v1";
 const WORDPRESS_DISCOVERY_POLICY_V4: &str =
     "termivar.wordpress-supplied-session-metadata-discovery/v1";
+const WORDPRESS_FORM_LOGIN_DISCOVERY_POLICY: &str =
+    "termivar.wordpress-supplied-session-metadata-discovery/v2";
 const WORDPRESS_ASSET_FINGERPRINT_AUDIT_SCHEMA: &str =
     "security.wordpress-asset-fingerprint-audit/v1";
 const WORDPRESS_ASSET_FINGERPRINT_CATALOG_SCHEMA: &str =
@@ -7436,6 +7438,7 @@ struct ValidatedWordPressSuppliedSessionPage {
 
 #[derive(Debug, Clone)]
 struct ValidatedWordPressSuppliedSessionPages {
+    form_login: bool,
     context: Value,
     selected_count: u64,
     committed_count: u64,
@@ -7503,7 +7506,15 @@ pub(super) fn validate_wordpress_discovery(
                 (false, false, false) => WORDPRESS_DISCOVERY_POLICY_V1,
                 (true, false, false) => WORDPRESS_DISCOVERY_POLICY_V2,
                 (true, true, false) => WORDPRESS_DISCOVERY_POLICY_V3,
-                (true, false, true) => WORDPRESS_DISCOVERY_POLICY_V4,
+                (true, false, true) => {
+                    match string(object(required(fields, "supplied_session_pages")?)?, "mode")? {
+                        "committed_supplied_session_resources" => WORDPRESS_DISCOVERY_POLICY_V4,
+                        "form_login_supplied_session_resources" => {
+                            WORDPRESS_FORM_LOGIN_DISCOVERY_POLICY
+                        },
+                        _ => return Err(ComparisonError::InvalidDocument),
+                    }
+                },
                 _ => return Err(ComparisonError::InvalidDocument),
             },
     )?;
@@ -8897,10 +8908,14 @@ fn validate_wordpress_supplied_session_pages(
         ],
         &[],
     )?;
-    check(
-        token(fields, "mode", &["committed_supplied_session_resources"])?
-            == "committed_supplied_session_resources",
-    )?;
+    let form_login = token(
+        fields,
+        "mode",
+        &[
+            "committed_supplied_session_resources",
+            "form_login_supplied_session_resources",
+        ],
+    )? == "form_login_supplied_session_resources";
     let policy_reference = text(fields, "policy_reference", MAX_IDENTIFIER_BYTES)?;
     let application_reference = text(fields, "application_reference", MAX_IDENTIFIER_BYTES)?;
     let principal_reference = text(fields, "principal_reference", MAX_IDENTIFIER_BYTES)?;
@@ -8916,7 +8931,7 @@ fn validate_wordpress_supplied_session_pages(
         &["authorization_header", "cookie_jar"],
     )?;
     let session_epoch = number(fields, "session_epoch", 1)?;
-    check(session_epoch == 1)?;
+    check(form_login || session_epoch == 1)?;
     let selected_count = number(
         fields,
         "selected_count",
@@ -9013,6 +9028,22 @@ fn validate_wordpress_supplied_session_pages(
             && actual_not_evaluated_count == not_evaluated_count
             && actual_interpreted_bytes == interpreted_response_bytes,
     )?;
+    if session_epoch == 0 {
+        check(
+            form_login
+                && committed_count == 0
+                && accepted_count == 0
+                && rejected_count == 0
+                && not_established_count == selected_count
+                && not_evaluated_count == selected_count
+                && interpreted_response_bytes == 0
+                && validated_pages.iter().all(|page| {
+                    page.outcome == "not_evaluated"
+                        && page.resource_evidence_reference.is_none()
+                        && page.evidence_references.is_empty()
+                }),
+        )?;
+    }
     let context = selected_object(
         fields,
         &[
@@ -9025,6 +9056,7 @@ fn validate_wordpress_supplied_session_pages(
         &[],
     )?;
     Ok(ValidatedWordPressSuppliedSessionPages {
+        form_login,
         context,
         selected_count,
         committed_count,
@@ -9925,12 +9957,18 @@ fn validate_wordpress_supplied_session_cross_links(
 ) -> Result<(), ComparisonError> {
     let page_context = object(&pages.context)?;
     let session_context = object(&supplied_session.context)?;
-    // V6/V7 do not authorize WordPress supplied-session composition. In
-    // particular, an early-failure epoch1 audit is not an exception.
-    check(!matches!(
-        string(session_context, "schema")?,
-        "security.supplied-session-audit/v6" | "security.supplied-session-audit/v7"
-    ))?;
+    // A new form-login policy never reinterprets the historical ready-session
+    // contract. Renewal and OAuth policies remain unsupported in both modes.
+    let schema = string(session_context, "schema")?;
+    check(if pages.form_login {
+        schema == "security.supplied-session-audit/v3"
+            && string(page_context, "credential_mechanism")? == "cookie_jar"
+    } else {
+        matches!(
+            schema,
+            "security.supplied-session-audit/v1" | "security.supplied-session-audit/v2"
+        )
+    })?;
     for field in [
         "policy_reference",
         "application_reference",
@@ -9956,6 +9994,18 @@ fn validate_wordpress_supplied_session_cross_links(
             && pages.pages.len() == supplied_session.resources.len(),
     )?;
 
+    let epoch = number(page_context, "session_epoch", 1)?;
+    if epoch == 0 {
+        check(
+            pages.form_login
+                && pages.committed_count == 0
+                && number(
+                    object(&supplied_session.accounting)?,
+                    "dispatched_resource_count",
+                    MAX_SUPPLIED_SESSION_RESOURCES,
+                )? == 0,
+        )?;
+    }
     let mut resource_references = BTreeSet::new();
     for page in &pages.pages {
         check(resource_references.insert(page.resource_reference.clone()))?;
@@ -9963,9 +10013,14 @@ fn validate_wordpress_supplied_session_cross_links(
             .resources
             .get(&page.resource_reference)
             .ok_or(ComparisonError::InvalidDocument)?;
+        let planned_before_session = pages.form_login
+            && epoch == 0
+            && binding.epoch == 1
+            && binding.evidence_reference.is_none()
+            && binding.response_bytes == 0;
         check(
             binding.evidence_reference.as_deref() == page.resource_evidence_reference.as_deref()
-                && binding.epoch == number(page_context, "session_epoch", 1)?
+                && (planned_before_session || binding.epoch == epoch)
                 && page.interpreted_response_bytes <= binding.response_bytes,
         )?;
     }

@@ -1928,10 +1928,10 @@ fn inspect_cli_auth_surface(source: &str) -> Result<Vec<String>, syn::Error> {
                 .to_owned(),
         );
     }
-    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V7{Some(\"`--wordpress-supplied-session`doesnotsupportclient-initiatedOAuthpolicies\")}elseifselected&&matches!(version,termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5|termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6){Some(\"`--wordpress-supplied-session`doesnotsupportimportedOAuthcodepolicies\")}elseifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{(selected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V3).then_some(\"`--wordpress-supplied-session`doesnotsupportboundedform-loginpolicies\",)}}";
+    let wordpress_v3_preflight = "fnscan_wordpress_supplied_session_policy_conflict(selected:bool,version:termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion,)->Option<&'staticstr>{ifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V7{Some(\"`--wordpress-supplied-session`doesnotsupportclient-initiatedOAuthpolicies\")}elseifselected&&matches!(version,termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V5|termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V6){Some(\"`--wordpress-supplied-session`doesnotsupportimportedOAuthcodepolicies\")}elseifselected&&version==termivar_scanner::supplied_session_review::SuppliedSessionPolicyVersion::V4{Some(\"`--wordpress-supplied-session`doesnotsupportrenewalpolicies\")}else{None}}";
     if compact.matches(wordpress_v3_preflight).count() != 1 {
         violations.push(
-            "CLI must reject WordPress composition with prepared V3/V4/V5/V6/V7 policies before output reservation or acquisition-secret reads"
+            "CLI must reject WordPress composition with prepared V4/V5/V6/V7 policies before output reservation or acquisition-secret reads while admitting V3 form login"
                 .to_owned(),
         );
     }
@@ -4538,14 +4538,14 @@ mod tests {
                 "exact historical and V5 supplied-session source union",
             ),
             (
-                "SuppliedSessionPolicyVersion::V3)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
-                "SuppliedSessionPolicyVersion::V2)\n            .then_some(\n                \"`--wordpress-supplied-session` does not support bounded form-login policies\",\n            )",
-                "reject WordPress composition with prepared V3/V4/V5/V6/V7 policies",
+                "Some(\"`--wordpress-supplied-session` does not support client-initiated OAuth policies\")",
+                "None",
+                "reject WordPress composition with prepared V4/V5/V6/V7 policies",
             ),
             (
                 "SuppliedSessionPolicyVersion::V4\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
                 "SuppliedSessionPolicyVersion::V2\n    {\n        Some(\"`--wordpress-supplied-session` does not support renewal policies\")",
-                "reject WordPress composition with prepared V3/V4/V5/V6/V7 policies",
+                "reject WordPress composition with prepared V4/V5/V6/V7 policies",
             ),
             (
                 "conflicts_with_all = [\"report_format\", \"report_output\"]",
@@ -4776,7 +4776,7 @@ mod tests {
         assert_ne!(changed, CLI_MAIN);
         let violations = inspect_cli_auth_surface(&changed).unwrap().join("\n");
         assert!(
-            violations.contains("prepared V3/V4/V5/V6/V7 policies"),
+            violations.contains("prepared V4/V5/V6/V7 policies"),
             "{violations}"
         );
     }

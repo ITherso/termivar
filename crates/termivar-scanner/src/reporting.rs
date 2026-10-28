@@ -12896,6 +12896,9 @@ const WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID: &str =
 const WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID: &str =
     "termivar.wordpress-supplied-session-metadata-discovery/v1";
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
+const WORDPRESS_FORM_LOGIN_DISCOVERY_POLICY_ID: &str =
+    "termivar.wordpress-supplied-session-metadata-discovery/v2";
+#[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 const WORDPRESS_DISCOVERY_LAYOUT_SCHEMA: &str = "security.wordpress-layout/v1";
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 const MAX_WORDPRESS_DISCOVERY_LAYOUT_BYTES: u64 = 16 * 1024;
@@ -14215,7 +14218,7 @@ impl AssessmentWordPressDiscoveryAuditDocument {
                     })
                     .collect::<Result<Vec<_>, ReportError>>()?;
                 Ok(WordPressSuppliedSessionPageCollectionDocument {
-                    mode: "committed_supplied_session_resources",
+                    mode: scope.mode(),
                     policy_reference: scope.policy_reference().to_owned(),
                     application_reference: scope.application_reference().to_owned(),
                     principal_reference: scope.principal_reference().to_owned(),
@@ -14402,6 +14405,9 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             .len();
         let is_page_scoped = page_validation.is_some();
         let is_supplied_session_scoped = supplied_session_page_validation.is_some();
+        let is_form_login_scoped = supplied_session_page_validation
+            .as_ref()
+            .is_some_and(|scope| scope.form_login);
         let combined_request_count = self.attempted_request_count.checked_add(
             self.page_collection
                 .as_ref()
@@ -14423,7 +14429,11 @@ impl AssessmentWordPressDiscoveryAuditDocument {
             || self.capability_id != WORDPRESS_DISCOVERY_CAPABILITY_ID
             || self.policy_id
                 != if is_supplied_session_scoped {
-                    WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID
+                    if is_form_login_scoped {
+                        WORDPRESS_FORM_LOGIN_DISCOVERY_POLICY_ID
+                    } else {
+                        WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID
+                    }
                 } else if is_page_scoped {
                     WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID
                 } else {
@@ -15327,6 +15337,7 @@ struct ValidatedWordPressPageCollection {
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
 struct ValidatedWordPressSuppliedSessionPageCollection {
     accepted_page_references: std::collections::BTreeSet<String>,
+    form_login: bool,
 }
 
 #[cfg(all(feature = "scanning", feature = "wordpress-review"))]
@@ -15378,21 +15389,26 @@ impl WordPressSuppliedSessionPageCollectionDocument {
                 .checked_add(page.interpreted_response_bytes)
                 .ok_or(ReportError::Serialization)?;
         }
-        if self.mode != "committed_supplied_session_resources"
-            || !valid_wordpress_supplied_session_reference(
-                &self.policy_reference,
-                "supplied-session-policy-sha256:",
-            )
-            || !valid_wordpress_supplied_session_reference(
-                &self.application_reference,
-                "supplied-session-application-sha256:",
-            )
-            || self.principal_reference != "supplied-session-principal-0001"
+        let form_login = self.mode == "form_login_supplied_session_resources";
+        if !matches!(
+            self.mode,
+            "committed_supplied_session_resources" | "form_login_supplied_session_resources"
+        ) || !valid_wordpress_supplied_session_reference(
+            &self.policy_reference,
+            "supplied-session-policy-sha256:",
+        ) || !valid_wordpress_supplied_session_reference(
+            &self.application_reference,
+            "supplied-session-application-sha256:",
+        ) || self.principal_reference != "supplied-session-principal-0001"
             || !matches!(
                 self.credential_mechanism,
                 "authorization_header" | "cookie_jar"
             )
-            || self.session_epoch != 1
+            || if form_login {
+                self.session_epoch > 1
+            } else {
+                self.session_epoch != 1
+            }
             || usize::from(self.selected_count) != self.pages.len()
             || self.pages.len() > MAX_WORDPRESS_SUPPLIED_SESSION_PAGE_AUDIT_COUNT
             || usize::from(self.committed_count) != committed_count
@@ -15410,8 +15426,24 @@ impl WordPressSuppliedSessionPageCollectionDocument {
         {
             return Err(ReportError::Serialization);
         }
+        if self.session_epoch == 0
+            && (committed_count != 0
+                || accepted_count != 0
+                || rejected_count != 0
+                || not_established_count != self.pages.len()
+                || not_evaluated_count != self.pages.len()
+                || interpreted_response_bytes != 0
+                || self.pages.iter().any(|page| {
+                    page.outcome != "not_evaluated"
+                        || page.resource_evidence_reference.is_some()
+                        || !page.evidence_references.is_empty()
+                }))
+        {
+            return Err(ReportError::Serialization);
+        }
         Ok(ValidatedWordPressSuppliedSessionPageCollection {
             accepted_page_references,
+            form_login,
         })
     }
 
@@ -15420,8 +15452,18 @@ impl WordPressSuppliedSessionPageCollectionDocument {
         &self,
         session: &AssessmentSuppliedSessionAuditDocument,
     ) -> Result<(), ReportError> {
-        if session.schema == SUPPLIED_SESSION_OAUTH_REFRESH_AUDIT_SCHEMA
-            || session.schema == SUPPLIED_SESSION_OAUTH_AUTHORIZATION_AUDIT_SCHEMA
+        let form_login = self.mode == "form_login_supplied_session_resources";
+        let acquisition_matches = if form_login {
+            session.schema == "security.supplied-session-audit/v3"
+                && self.credential_mechanism == "cookie_jar"
+                && session.login.as_ref().map(|login| login.final_epoch) == Some(self.session_epoch)
+        } else {
+            matches!(
+                session.schema,
+                "security.supplied-session-audit/v1" | "security.supplied-session-audit/v2"
+            ) && self.session_epoch == 1
+        };
+        if !acquisition_matches
             || self.policy_reference != session.policy_reference
             || self.application_reference != session.application_reference
             || self.principal_reference != session.principal_reference
@@ -15447,7 +15489,13 @@ impl WordPressSuppliedSessionPageCollectionDocument {
             } else {
                 None
             };
-            if resource.epoch != self.session_epoch
+            let planned_before_session = form_login
+                && self.session_epoch == 0
+                && resource.epoch == 1
+                && resource.outcome == "not_dispatched"
+                && resource.status.is_none()
+                && resource.response_bytes == 0;
+            if (!planned_before_session && resource.epoch != self.session_epoch)
                 || page.resource_evidence_reference.as_deref() != committed_evidence_reference
                 || page.interpreted_response_bytes > resource.response_bytes
             {

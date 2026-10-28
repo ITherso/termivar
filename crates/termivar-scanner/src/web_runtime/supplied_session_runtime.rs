@@ -5120,18 +5120,13 @@ max_wall_time_ms = 5000
             b"username\tUSER-RUNTIME-CANARY\npassword\tPASSWORD-RUNTIME-CANARY\n".to_vec(),
         )
         .unwrap();
-        let unsupported_form_login = WebAssessmentRuntimeBuilder::new(form_application)
+        WebAssessmentRuntimeBuilder::new(form_application)
             .with_wordpress_review(WordPressReviewInputs::new(None, None))
             .with_wordpress_discovery()
             .with_supplied_session_review(form_policy, form_credential)
             .with_wordpress_supplied_session()
             .build()
-            .err()
-            .expect("V3 form-login policy must not reach the WordPress session consumer");
-        assert!(matches!(
-            unsupported_form_login,
-            WebAssessmentRuntimeError::WordPressSuppliedSessionUnsupportedPolicy
-        ));
+            .expect("V3 is a bounded fixed-epoch WordPress session consumer");
 
         let renewal = renewal_policy(&application);
         let credential =

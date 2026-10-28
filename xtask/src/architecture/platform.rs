@@ -11544,8 +11544,10 @@ struct ReportingSourceVisitor {
     inside_test_module: usize,
 }
 
-const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 669_180;
-const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xf6b5_33ba_1545_b424_9462_4375_6127_4d4c;
+// Reviewed S02 V3 WordPress policy/mode and actual-epoch cross-link extension;
+// historical ready-session policy and all renderer limits remain unchanged.
+const EXACT_REPORTING_PRODUCTION_TOKEN_BYTES: usize = 670_805;
+const EXACT_REPORTING_PRODUCTION_FINGERPRINT: u128 = 0xdad3_17e2_cd93_7e46_e5d5_a21e_37f1_95a8;
 
 fn exact_comparison_module(module: &syn::ItemMod) -> bool {
     module.ident == "comparison"

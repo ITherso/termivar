@@ -2909,7 +2909,7 @@ fn authority_prelude_is_closed(
                 && expression.path.segments.len() == 1
                 && expression.path.is_ident("matches")
                 && normalized_token_text(&expression.tokens)
-                    == "policy.version(),SuppliedSessionPolicyVersion::V1|SuppliedSessionPolicyVersion::V2"
+                    == "policy.version(),SuppliedSessionPolicyVersion::V1|SuppliedSessionPolicyVersion::V2|SuppliedSessionPolicyVersion::V3"
             {
                 self.allowed_fixed_session_policy_macros =
                     self.allowed_fixed_session_policy_macros.saturating_add(1);
@@ -3164,7 +3164,7 @@ fn wordpress_fixed_session_if_is_exact(expression: &syn::ExprIf) -> bool {
         && selection.mac.path.is_ident("matches")
         && matches!(selection.mac.delimiter, syn::MacroDelimiter::Paren(_))
         && normalized_token_text(&selection.mac.tokens)
-            == "policy.version(),SuppliedSessionPolicyVersion::V1|SuppliedSessionPolicyVersion::V2"
+            == "policy.version(),SuppliedSessionPolicyVersion::V1|SuppliedSessionPolicyVersion::V2|SuppliedSessionPolicyVersion::V3"
 }
 
 fn reviewed_authority_local_is_exact(local: &syn::Local) -> bool {

@@ -19,6 +19,7 @@ pub(super) const SCANNER_SOURCES: &[&str] = &[
     "reporting/comparison/html.rs",
     "reporting/comparison_tests.rs",
     "reporting/comparison_oauth_authorization_tests.rs",
+    "reporting/comparison_wordpress_form_login_tests.rs",
 ];
 
 pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
@@ -31,14 +32,15 @@ pub(super) fn check(workspace_root: &Path) -> Result<Vec<String>, Box<dyn Error>
         .map(|value| (*value).to_owned())
         .collect();
     if actual != expected {
-        violations.push(
-            "comparison source ownership must remain the exact nine audited files".to_owned(),
-        );
+        violations
+            .push("comparison source ownership must remain the exact ten audited files".to_owned());
     }
     for relative in SCANNER_SOURCES.iter().filter(|path| {
         !matches!(
             **path,
-            "reporting/comparison_tests.rs" | "reporting/comparison_oauth_authorization_tests.rs"
+            "reporting/comparison_tests.rs"
+                | "reporting/comparison_oauth_authorization_tests.rs"
+                | "reporting/comparison_wordpress_form_login_tests.rs"
         )
     }) {
         match fs::read_to_string(scanner.join(relative)) {

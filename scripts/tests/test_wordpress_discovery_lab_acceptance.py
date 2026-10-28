@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import hashlib
 import importlib.util
 import io
@@ -57,15 +58,18 @@ SYNTHETIC_SESSION_CAPABILITY = {
         "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
         "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
         "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
-        "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
+        "optional --wordpress-supplied-session for V1/V2/V3 when also compiled with wordpress-review",
         "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
     ],
     "limitation": (
+        "When a V1/V2/V3 policy, both review features, and --wordpress-supplied-session are selected, "
         "complete health-qualified session-resource HTML may nominate public WordPress "
         "metadata; the credential is not sent to metadata or fingerprint requests; "
         "authenticated-page fingerprint acquisition is not selected; WordPress "
-        "supplied-session composition remains limited to V1/V2; V3/V4/V5/V6/V7 are rejected "
-        "before their secret files are read"
+        "supplied-session composition is limited to V1/V2/V3; V4/V5/V6/V7 are rejected "
+        "before their secret files are read. "
+        "V3 uses the form-login collection-policy revision; actual final epoch 0 is retained if "
+        "acquisition never completed, with no supporting component evidence."
     ),
 }
 DISCOVERY_METHOD = {
@@ -1630,11 +1634,13 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         self.assertTrue(limitation_line.endswith(','))
         limitation = json.loads(limitation_line[:-1])
         for clause in (
+            "When a V1/V2/V3 policy, both review features, and --wordpress-supplied-session are selected",
             "health-qualified session-resource HTML may nominate public WordPress metadata",
             "credential is not sent to metadata or fingerprint requests",
             "authenticated-page fingerprint acquisition is not selected",
-            "WordPress supplied-session composition remains limited to V1/V2",
-            "V3/V4/V5/V6/V7 are rejected before their secret files are read",
+            "V3 uses the form-login collection-policy revision; actual final epoch 0 is retained if acquisition never completed, with no supporting component evidence.",
+            "WordPress supplied-session composition is limited to V1/V2/V3",
+            "V4/V5/V6/V7 are rejected before their secret files are read",
         ):
             self.assertIn(clause, limitation)
 
@@ -1720,8 +1726,8 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         stale_wordpress_boundary = copy.deepcopy(document)
         stale_wordpress_boundary["surfaces"][1]["limitation"] = (
             stale_wordpress_boundary["surfaces"][1]["limitation"].replace(
-                "V3/V4/V5/V6/V7 are rejected before their secret files are read",
-                "V3/V4/V5/V6 are rejected before their secret files are read",
+                "V4/V5/V6/V7 are rejected before their secret files are read",
+                "V4/V5/V6 are rejected before their secret files are read",
             )
         )
         self.assertNotEqual(stale_wordpress_boundary, document)
@@ -1734,8 +1740,8 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
         widened_wordpress = copy.deepcopy(document)
         widened_wordpress["surfaces"][1]["limitation"] = (
             widened_wordpress["surfaces"][1]["limitation"].replace(
-                "composition remains limited to V1/V2",
-                "composition accepts V1/V2/V3",
+                "composition is limited to V1/V2/V3",
+                "composition accepts V1/V2/V3/V4",
             )
         )
         with self.assertRaisesRegex(
@@ -1743,6 +1749,18 @@ class WordPressDiscoveryLabAcceptanceTests(unittest.TestCase):
             "capabilities omit the supplied-session WordPress authority boundary",
         ):
             runner._validate_discovery_capability(widened_wordpress)
+
+        missing_epoch_boundary = copy.deepcopy(document)
+        missing_epoch_boundary["surfaces"][1]["limitation"] = (
+            missing_epoch_boundary["surfaces"][1]["limitation"].replace(
+                "actual final epoch 0 is retained if acquisition never completed",
+                "final epoch is always reported as 1",
+            )
+        )
+        self.assertNotEqual(missing_epoch_boundary, document)
+        with self.assertRaisesRegex(runner.AcceptanceError,
+                                   "capabilities omit the supplied-session WordPress authority boundary"):
+            runner._validate_discovery_capability(missing_epoch_boundary)
 
     def test_discovery_capability_rejects_missing_duplicate_or_uncompiled_rows(self):
         valid_row = {
@@ -7190,9 +7208,16 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
             "custom-fingerprint-observed-option-off", "custom-fingerprint-release-b",
             "session-custom-fingerprint-selected-empty",
         )
-        self.assertEqual(runner.EXPECTED_SCENARIOS, expected_registry)
-        self.assertEqual(len(runner.EXPECTED_SCENARIOS), 37)
-        self.assertEqual(len(set(runner.EXPECTED_SCENARIOS)), 37)
+        expected_form = (
+            "session-form-login-root", "session-form-login-option-off",
+            "session-form-login-wrong-password", "session-form-login-wrong-principal",
+            "session-form-login-health-loss", "session-form-login-subdirectory",
+            "session-form-login-custom-layout",
+        )
+        self.assertEqual(runner.EXPECTED_SCENARIOS, expected_registry + expected_form)
+        self.assertEqual(runner.FORM_LOGIN_SCENARIOS, expected_form)
+        self.assertEqual(len(runner.EXPECTED_SCENARIOS), 44)
+        self.assertEqual(len(set(runner.EXPECTED_SCENARIOS)), 44)
         self.assertEqual(len(runner.SESSION_SCENARIOS), 9)
         self.assertTrue(set(runner.SESSION_SCENARIOS) <= set(runner.EXPECTED_SCENARIOS))
         fixture = runner.validate_fixture()
@@ -7218,7 +7243,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
 
     def test_compact_evidence_serialization_preserves_the_fixed_boundary(self):
         # Indentation alone would breach the historical 256-KiB ceiling for this
-        # synthetic 37-scenario-shaped record; the compact writer retains it.
+        # synthetic 44-scenario-shaped record; the compact writer retains it.
         evidence = {
             "schema": runner.TASK_SCHEMA,
             "status": "passed",
@@ -7229,7 +7254,7 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                         for sequence in range(90)
                     ]
                 }
-                for index in range(37)
+                for index in range(44)
             },
         }
         pretty = (
@@ -7255,6 +7280,445 @@ class SuppliedSessionWordPressLabAcceptanceTests(unittest.TestCase):
                 (destination / "wordpress-discovery-lab-acceptance.json").read_bytes(),
                 compact,
             )
+
+
+class FormLoginWordPressLabAcceptanceTests(unittest.TestCase):
+    """Synthetic controller/oracle tests, not real WordPress execution."""
+
+    @staticmethod
+    def credential(alias="termivar-lab-alice", application_path="/"):
+        return runner.LabSessionCredential(
+            principal_alias=alias, cookie_name="wordpress_logged_in_" + "a" * 32,
+            cookie_value=alias + "|4102444800|" + "T" * 43 + "|" + "b" * 64,
+            application_path=application_path, expires_unix_seconds=4102444800,
+            server_expired=False, lose_after_resource=False,
+        )
+
+    def write_input(self, root, *, name="session-form-login-root", wrong_password=False):
+        return runner._write_form_login_inputs(
+            root, name=name, origin="http://127.0.0.1:8080/", credential=self.credential(),
+            password=b"P" * 43, csrf=b"C" * 32, wrong_password=wrong_password,
+        )
+
+    @classmethod
+    def document(cls, root, *, outcome="complete", integration=True, fingerprints=False):
+        base_outcome = "startup_unhealthy" if outcome == "login_cookie_unavailable" else outcome
+        document, session_input, oracle = SuppliedSessionWordPressLabAcceptanceTests.session_wordpress_document(
+            root, outcome=base_outcome, integration=integration, fingerprints=fingerprints,
+        )
+        audit = document["supplied_session"]
+        audit["schema"] = "security.supplied-session-audit/v3"
+        audit["credential_acquisition"] = "bounded_form_login"
+        acquired = outcome != "login_cookie_unavailable"
+        established = outcome in {"complete", "session_lost"}
+        audit["outcome"] = outcome
+        audit["cookie_policy"].update(
+            session_count=1, persistent_count=0, same_site_missing_count=0, same_site_lax_count=1,
+        )
+        audit["cookie_lifecycle"].update(initial_epoch=0, final_epoch=int(established))
+        if not acquired:
+            audit["checkpoints"] = []
+        audit["dispatched_request_count"] = 2 + len(audit["checkpoints"]) + audit["dispatched_resource_count"]
+        login_path = "/termivar-session-login/"
+        login_reference = runner._supplied_session_literal_reference(
+            b"security.supplied-session-login.reference.v1\0",
+            "http://127.0.0.1:8080" + login_path, "supplied-session-login-sha256",
+        )
+        audit["login"] = {
+            "login_reference": login_reference, "max_attempts": 1, "attempt_count": 1,
+            "page_dispatched": True, "page_status": 200, "page_body_state": "complete",
+            "form_outcome": "matched", "submit_dispatched": True, "submit_status": 200,
+            "submit_body_state": "complete", "submit_outcome": "cookie_acquired" if acquired else "cookie_unavailable",
+            "acquired_cookie_count": int(acquired), "response_bytes": 37,
+            "initial_epoch": 0, "final_epoch": int(established), "pre_session_cookie_applied": False,
+        }
+        audit["response_bytes"] = (37 + sum(row["response_bytes"] for row in audit["checkpoints"])
+                                    + audit["resources"][0]["response_bytes"])
+        session_input = dataclasses.replace(
+            session_input, policy_declares_expiry=False, login_path=login_path,
+            login_username=b"termivar-lab-alice", login_password=b"P" * 43,
+            server_password=b"P" * 43, login_csrf=b"C" * 32,
+            expected_policy_reference=audit["policy_reference"],
+        )
+        if integration:
+            discovery = document["wordpress_discovery"]
+            discovery["policy_id"] = "termivar.wordpress-supplied-session-metadata-discovery/v2"
+            discovery["supplied_session_pages"]["mode"] = "form_login_supplied_session_resources"
+            discovery["supplied_session_pages"]["session_epoch"] = int(established)
+        return document, session_input, oracle
+
+    def validate(self, document, session_input, oracle, *, outcome, integration=True, fingerprints=False):
+        return runner._validate_supplied_session_wordpress_document(
+            document, session_input=session_input, root_origin="http://127.0.0.1:8080/",
+            oracle=oracle, expected_session_outcome=outcome, integration_selected=integration,
+            expected_component_association="observed_conventional",
+            fingerprints_path=runner.FINGERPRINT_CATALOGUE_PATH if fingerprints else None,
+        )
+
+    def test_form_input_is_real_v3_grammar_private_exclusive_and_policy_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = self.write_input(root)
+            raw = session.policy_path.read_bytes()
+            wire = runner.tomllib.loads(raw.decode())
+            self.assertEqual(wire["schema"], "security.supplied-session-policy/v3")
+            self.assertEqual((wire["max_login_attempts"], wire["max_session_requests"]), (1, 5))
+            self.assertEqual(wire["cookies"][0]["same_site"], "lax")
+            self.assertNotIn("expires_unix_seconds", wire["cookies"][0])
+            self.assertEqual(session.cookie_path.read_bytes(), b"username\ttermivar-lab-alice\npassword\t" + b"P" * 43 + b"\n")
+            self.assertNotIn(session.cookie_value, session.cookie_path.read_bytes())
+            self.assertNotIn(b"P" * 43, raw)
+            self.assertNotIn(b"C" * 32, raw)
+            self.assertNotIn("P" * 43, repr(session))
+            original = session.cookie_path.read_bytes()
+            with self.assertRaisesRegex(runner.AcceptanceError, "creation failed"):
+                self.write_input(root)
+            self.assertEqual(session.cookie_path.read_bytes(), original)
+            changed = raw.replace(b'max_wall_time_ms = 10000', b'max_wall_time_ms = 9000')
+            self.assertNotEqual(session.expected_policy_reference,
+                                runner._form_login_policy_reference("http://127.0.0.1:8080/", changed))
+            runner._remove_supplied_session_inputs(session)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_controller_password_and_one_shot_state_use_private_stdin_only(self):
+        credential = self.credential()
+        encoded = ("4102444800\t" + credential.cookie_name + "\t" + credential.cookie_value).encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = runner.DockerWordPressLab(runner.ProcessRunner(), Path(temporary))
+            lab.wp = mock.Mock(side_effect=[
+                runner.CommandResult(b"", b"", 0), runner.CommandResult(b"", b"", 0),
+                runner.CommandResult(encoded, b"", 0), runner.CommandResult(b"", b"", 0),
+            ])
+            with mock.patch.object(runner.secrets, "token_urlsafe", side_effect=["P" * 43, "C" * 32]):
+                actual, password, csrf = lab.configure_form_login(
+                    path="/var/www/html", application_path="/", credential_login="termivar-lab-alice",
+                    expiration_unix_seconds=4102444800,
+                )
+            self.assertEqual((password, csrf), (b"P" * 43, b"C" * 32))
+            self.assertEqual(actual.cookie_value, credential.cookie_value)
+            calls = lab.wp.call_args_list
+            self.assertEqual(len(calls), 4)
+            for call in calls:
+                arguments = repr(call.args) + call.kwargs["label"]
+                self.assertNotIn("P" * 43, arguments)
+                self.assertNotIn("C" * 32, arguments)
+                self.assertTrue(call.kwargs["sensitive_values"])
+                self.assertLessEqual(len(call.kwargs["input_bytes"]), 4096)
+            self.assertIn(b"wp_set_password", calls[0].kwargs["input_bytes"])
+            self.assertIn(b"WP_Session_Tokens::get_instance", calls[2].kwargs["input_bytes"])
+            self.assertIn(b"termivar_session_form_user_id", calls[3].kwargs["input_bytes"])
+            php = (runner.FIXTURE_ROOT / "plugins/termivar-fingerprint-lab/termivar-fingerprint-lab.php").read_text()
+            for required in ("wp_authenticate(", "$user->user_login !== $login", "$user->ID !== (int) $user_id",
+                             "hash_equals(", "delete_option( 'termivar_session_form_csrf' )",
+                             "wp_generate_auth_cookie(", "; HttpOnly; SameSite=Lax"):
+                self.assertIn(required, php)
+            self.assertLess(php.index("wp_authenticate("), php.index("header( 'Set-Cookie:"))
+
+    def test_v3_document_positive_option_off_failed_login_health_and_empty_catalogue(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for outcome, integration, fingerprints, requests in (
+                ("complete", True, True, 5), ("complete", False, False, 5),
+                ("login_cookie_unavailable", True, False, 2),
+                ("startup_unhealthy", True, False, 3), ("session_lost", True, False, 5),
+            ):
+                with self.subTest(outcome=outcome, integration=integration):
+                    document, session, oracle = self.document(temporary, outcome=outcome,
+                        integration=integration, fingerprints=fingerprints)
+                    _, summary, fingerprint = self.validate(document, session, oracle, outcome=outcome,
+                        integration=integration, fingerprints=fingerprints)
+                    self.assertEqual(summary["dispatched_request_count"], requests)
+                    if fingerprints:
+                        self.assertEqual((fingerprint["resource_count"], fingerprint["component_count"]), (0, 0))
+
+    def test_v3_epoch_zero_cannot_carry_activity_and_does_not_rewrite_s01_planned_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for outcome, acquired, requests, checkpoint_count in (
+                ("login_cookie_unavailable", 0, 2, 0), ("startup_unhealthy", 1, 3, 1),
+            ):
+                with self.subTest(outcome=outcome):
+                    doc, session, oracle = self.document(temporary, outcome=outcome)
+                    audit = doc["supplied_session"]
+                    # Literal source contract: receiving a cookie alone cannot
+                    # call mark_login_authenticated after unhealthy startup.
+                    audit["login"]["final_epoch"] = 0
+                    audit["cookie_lifecycle"]["final_epoch"] = 0
+                    doc["wordpress_discovery"]["supplied_session_pages"]["session_epoch"] = 0
+                    self.assertEqual(audit["login"]["acquired_cookie_count"], acquired)
+                    self.assertEqual(audit["login"]["submit_outcome"],
+                                     "cookie_acquired" if acquired else "cookie_unavailable")
+                    self.assertEqual(audit["dispatched_request_count"], requests)
+                    self.assertEqual(len(audit["checkpoints"]), checkpoint_count)
+                    self.assertEqual(audit["resources"][0]["epoch"], 1)
+                    self.validate(doc, session, oracle, outcome=outcome)
+                    mutations = (
+                        lambda d: d["wordpress_discovery"]["supplied_session_pages"].update(session_epoch=1),
+                        lambda d: d["supplied_session"]["login"].update(final_epoch=1),
+                        lambda d: d["supplied_session"]["cookie_lifecycle"].update(final_epoch=1),
+                        lambda d: d["supplied_session"]["resources"][0].update(epoch=0),
+                        lambda d: d["wordpress_discovery"]["supplied_session_pages"].update(committed_count=1),
+                        lambda d: d["wordpress_discovery"]["supplied_session_pages"]["pages"][0].update(evidence_references=["evidence-1234"]),
+                        lambda d: d["wordpress_discovery"]["sources"][0].update(source_supplied_session_page_references=["sha256:" + "a" * 64]),
+                    )
+                    for mutate in mutations:
+                        bad = copy.deepcopy(doc)
+                        mutate(bad)
+                        with self.assertRaises(runner.AcceptanceError):
+                            self.validate(bad, session, oracle, outcome=outcome)
+
+    def test_v3_mode_policy_binding_cookie_and_selected_empty_mutations_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            doc, session, oracle = self.document(temporary, fingerprints=True)
+            mutations = (
+                lambda d: d["wordpress_discovery"].update(policy_id="termivar.wordpress-supplied-session-metadata-discovery/v1"),
+                lambda d: d["wordpress_discovery"]["supplied_session_pages"].update(mode="committed_supplied_session_resources"),
+                lambda d: d["supplied_session"].update(policy_reference="supplied-session-policy-sha256:" + "f" * 64),
+                lambda d: d["supplied_session"]["login"].update(attempt_count=2),
+                lambda d: d["supplied_session"]["login"].update(pre_session_cookie_applied=True),
+                lambda d: d["supplied_session"]["cookie_policy"].update(persistent_count=1),
+                lambda d: d["wordpress_asset_fingerprints"].update(component_count=1),
+            )
+            for mutate in mutations:
+                bad = copy.deepcopy(doc)
+                mutate(bad)
+                with self.assertRaises(runner.AcceptanceError):
+                    self.validate(bad, session, oracle, outcome="complete", fingerprints=True)
+
+    def test_v3_diagnostics_keep_safe_expected_actual_and_preserve_original_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            doc, session, oracle = self.document(temporary)
+            secret = "https://PRIVATE.invalid/PASSWORD-DO-NOT-EXPORT"
+            doc["supplied_session"]["dispatched_request_count"] = secret
+            with self.assertRaisesRegex(runner.AcceptanceError, "authority accounting") as caught:
+                self.validate(doc, session, oracle, outcome="complete")
+            diagnostic = caught.exception.diagnostic
+            self.assertEqual(diagnostic["form_login_contract"]["expected"]["session_requests"], 5)
+            self.assertNotIn(secret, json.dumps(diagnostic))
+            with mock.patch.object(runner, "_bounded_fields", side_effect=RuntimeError("diagnostic unavailable")):
+                with self.assertRaisesRegex(runner.AcceptanceError, "authority accounting") as original:
+                    self.validate(doc, session, oracle, outcome="complete")
+            self.assertEqual(original.exception.diagnostic,
+                             {"form_login_diagnostic_capture": "failed_original_error_preserved"})
+            doc, session, oracle = self.document(temporary)
+            doc["wordpress_discovery"]["attempted_request_count"] = secret
+            with self.assertRaisesRegex(runner.AcceptanceError, "WordPress request/source accounting") as metadata:
+                self.validate(doc, session, oracle, outcome="complete")
+            self.assertEqual(metadata.exception.diagnostic["form_login_wordpress_contract"]["expected"]["metadata_requests"], 5)
+            self.assertNotIn(secret, json.dumps(metadata.exception.diagnostic))
+            with mock.patch.object(runner, "_bounded_fields", side_effect=RuntimeError("diagnostic unavailable")):
+                with self.assertRaisesRegex(runner.AcceptanceError, "WordPress request/source accounting") as original_metadata:
+                    self.validate(doc, session, oracle, outcome="complete")
+            self.assertEqual(original_metadata.exception.diagnostic,
+                             {"form_login_diagnostic_capture": "failed_original_error_preserved"})
+
+    def test_v3_trace_has_cookie_free_login_exact_five_two_three_and_no_new_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = self.write_input(Path(temporary))
+            original_metadata = ["/wp-json/", "/wp-content/themes/child/style.css",
+                                 "/wp-content/themes/parent/style.css", "/wp-content/plugins/example/readme.txt"]
+            conditional = "/wp-content/plugins/private/readme.txt"
+            private_assets = ("/wp-content/plugins/private/assets/fingerprint.js?ver=private-page",
+                              "/wp-content/plugins/private/assets/fingerprint.css?ver=private-page")
+            login = [("GET", session.login_path, 200, ()), ("POST", session.login_path, 200, ())]
+            for name, paths, include_conditional in (
+                ("session-form-login-root", [session.health_path, session.resource_path, session.health_path], True),
+                ("session-form-login-option-off", [session.health_path, session.resource_path, session.health_path], False),
+                ("session-form-login-wrong-password", [], False),
+                ("session-form-login-wrong-principal", [session.health_path], False),
+                ("session-form-login-health-loss", [session.health_path, session.resource_path, session.health_path], False),
+            ):
+                with self.subTest(name=name):
+                    metadata = runner._expected_supplied_session_metadata_paths(
+                        original_metadata, conditional, include_conditional=include_conditional)
+                    public_prefix = [("GET", "/", 200, ())]
+                    public_suffix = [("HEAD", original_metadata[1], 200, ())]
+                    baseline = public_prefix + [("GET", path, 200, ()) for path in original_metadata] + public_suffix
+                    trace = (public_prefix + login + [("GET", path, 200, ("cookie",)) for path in paths]
+                             + [("GET", path, 200, ()) for path in metadata] + public_suffix)
+
+                    def validate(actual):
+                        return runner._assert_supplied_session_trace(actual, scenario=name, session=session,
+                            expected_session_paths=paths, expected_metadata_paths=metadata,
+                            known_metadata_paths=(*original_metadata, conditional),
+                            forbidden_anonymous_paths=private_assets)
+
+                    counts = validate(trace)
+                    self.assertEqual(counts["credentialed_request_count"], len(paths))
+                    self.assertEqual(counts["anonymous_metadata_request_count"], 5 if include_conditional else 4)
+                    compact = runner._compact_session_trace_evidence(trace, session, metadata_paths=metadata)
+                    # The existing anonymous metadata HEAD remains in compact evidence.
+                    self.assertEqual(compact["retained_request_count"], 2 + len(paths) + len(metadata) + 1)
+                    runner._assert_session_preserves_anonymous_trace(baseline, trace, session=session,
+                        conditional_metadata_path=conditional if include_conditional else None)
+                    mutations = (
+                        trace[:2] + [("POST", session.login_path, 200, ("cookie",))] + trace[3:],
+                        trace[:1] + [("GET", session.login_path, 302, ())] + trace[2:],
+                        trace + [("POST", session.login_path, 200, ())],
+                        trace + [("GET", session.resource_path, 200, ())],
+                        trace + [("GET", private_assets[0], 200, ())],
+                        trace + [("HEAD", private_assets[1], 200, ())],
+                        [("GET", original_metadata[0], 200, ())] + trace,
+                        trace + [("GET", "/", 200, ("authorization",))],
+                    )
+                    for changed in mutations:
+                        with self.assertRaises(runner.AcceptanceError):
+                            validate(changed)
+                    with self.assertRaises(runner.AcceptanceError):
+                        runner._assert_session_preserves_anonymous_trace(baseline,
+                            trace + [("GET", "/private-promoted/", 200, ())], session=session,
+                            conditional_metadata_path=conditional if include_conditional else None)
+            runner._remove_supplied_session_inputs(session)
+
+    def test_v3_scan_passes_only_private_login_input_and_checks_no_overwrite(self):
+        class SensitiveOnlyRunner:
+            def __init__(self):
+                self.call = None
+
+            def run(self, *_args, **_kwargs):
+                raise AssertionError("form-login scan used ordinary process path")
+
+            def run_sensitive(self, arguments, *, sensitive_values, **kwargs):
+                self.call = (list(arguments), tuple(sensitive_values), kwargs)
+                bundle = Path(arguments[arguments.index("--report-dir") + 1])
+                write_synthetic_bundle(bundle.parent, bundle.name,
+                    [synthetic_assessment_item(BASE_FINGERPRINT, BASE_CAPABILITY, "Synthetic V3 observation")])
+                return runner.CommandResult(b"", b"", 0, 0.01,
+                    {"status": "not_measured", "reason": "synthetic"})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = self.write_input(root, wrong_password=True)
+            before = (session.policy_path.read_bytes(), session.cookie_path.read_bytes())
+            process = SensitiveOnlyRunner()
+            runner._run_scan(process, Path("synthetic-termivar"), "http://127.0.0.1:8080/", root / "bundle",
+                wordpress_review=True, discovery=True, supplied_session=session,
+                wordpress_supplied_session=True, label="synthetic form-login scan")
+            arguments, sensitive, kwargs = process.call
+            self.assertIn("--session-login-file", arguments)
+            self.assertNotIn("--session-cookie-file", arguments)
+            self.assertNotIn(session.cookie_value.decode(), map(str, arguments))
+            for value in (session.login_password, session.server_password, session.login_csrf, session.cookie_value,
+                          b"http://127.0.0.1:8080" + session.login_path.encode(),
+                          b"http://127.0.0.1:8080" + session.resource_path.encode()):
+                self.assertIn(value, sensitive)
+            self.assertEqual(kwargs["label"], "synthetic form-login scan")
+            self.assertEqual((session.policy_path.read_bytes(), session.cookie_path.read_bytes()), before)
+            session.cookie_path.write_bytes(before[1] + b"changed")
+            with self.assertRaisesRegex(runner.AcceptanceError, "identity changed before execution"):
+                runner._run_scan(process, Path("synthetic-termivar"), "http://127.0.0.1:8080/", root / "unused",
+                    wordpress_review=True, discovery=True, supplied_session=session,
+                    wordpress_supplied_session=True, label="synthetic form-login scan")
+            runner._remove_supplied_session_inputs(session)
+
+    def test_form_inputs_bind_each_home_path_and_reject_undeclared_credentials(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, home in (("session-form-login-subdirectory", "/blog/"),
+                               ("session-form-login-custom-layout", "/")):
+                session = runner._write_form_login_inputs(root, name=name, origin="http://127.0.0.1:8080/",
+                    credential=self.credential(application_path=home), password=b"P" * 43, csrf=b"C" * 32)
+                policy = runner.tomllib.loads(session.policy_path.read_text())
+                self.assertEqual(policy["login_path"], home + "termivar-session-login/")
+                self.assertEqual(policy["health_path"], home + "termivar-session-health/")
+                self.assertEqual(policy["cookies"][0]["path"], home)
+                self.assertEqual(session.expected_policy_reference,
+                    runner._form_login_policy_reference("http://127.0.0.1:8080" + home, session.policy_path.read_bytes()))
+                runner._remove_supplied_session_inputs(session)
+            with self.assertRaises(runner.AcceptanceError):
+                self.write_input(root, name="session-root-healthy")
+            for password, csrf in ((b"short", b"C" * 32), (b"P" * 43, b"C" * 33)):
+                with self.assertRaises(runner.AcceptanceError):
+                    runner._write_form_login_inputs(root, name="session-form-login-root",
+                        origin="http://127.0.0.1:8080/", credential=self.credential(), password=password, csrf=csrf)
+
+    def test_form_input_io_failure_is_value_free_and_reports_unconfirmed_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            secret_error = str(root / "PRIVATE-PASSWORD-PATH")
+            with mock.patch.object(runner.os, "chmod", side_effect=PermissionError(secret_error)):
+                with self.assertRaises(runner.AcceptanceError) as failure:
+                    self.write_input(root)
+            self.assertEqual(failure.exception.diagnostic,
+                {"error_kind": "PermissionError", "private_input_cleanup": "confirmed"})
+            self.assertEqual(list(root.iterdir()), [])
+            with mock.patch.object(runner.os, "chmod", side_effect=PermissionError(secret_error)):
+                with mock.patch.object(type(root), "unlink", side_effect=OSError(secret_error)):
+                    with self.assertRaises(runner.AcceptanceError) as failed_cleanup:
+                        self.write_input(root)
+            self.assertEqual(failed_cleanup.exception.diagnostic,
+                {"error_kind": "PermissionError", "private_input_cleanup": "failed"})
+            for error in (failure.exception, failed_cleanup.exception):
+                self.assertNotIn(secret_error, str(error))
+                self.assertNotIn(secret_error, json.dumps(error.diagnostic))
+            self.assertEqual([path.name for path in root.iterdir()],
+                             ["session-form-login-root-session-policy.toml"])
+            (root / "session-form-login-root-session-policy.toml").unlink()
+
+    def test_all_seven_form_bundles_verify_and_self_compare_after_fixture_shutdown(self):
+        # This tests offline orchestration and closed projections, not a running CMS.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scenarios, responses, _ = offline_fixture(root)
+            outcomes = ("complete", "complete", "login_cookie_unavailable", "startup_unhealthy",
+                        "session_lost", "complete", "complete")
+            for name, outcome in zip(runner.FORM_LOGIN_SCENARIOS, outcomes, strict=True):
+                integrated = name != "session-form-login-option-off"
+                fingerprints = name == "session-form-login-root"
+                document, session, oracle = self.document(root, outcome=outcome,
+                    integration=integrated, fingerprints=fingerprints)
+                _, summary, fingerprint_summary = self.validate(document, session, oracle,
+                    outcome=outcome, integration=integrated, fingerprints=fingerprints)
+                items = [synthetic_assessment_item(BASE_FINGERPRINT, BASE_CAPABILITY, "Synthetic offline V3")]
+                optional = {key: copy.deepcopy(document[key]) for key in
+                            ("supplied_session", "wordpress_review", "wordpress_discovery")}
+                if fingerprints:
+                    optional["wordpress_asset_fingerprints"] = copy.deepcopy(document["wordpress_asset_fingerprints"])
+                bundle, raw = write_synthetic_bundle(root, name, items, optional_audits=optional)
+                scenario = {"bundle": runner._report_identity(bundle), "_bundle": str(bundle),
+                            "supplied_session": summary}
+                if fingerprints:
+                    scenario["fingerprints"] = fingerprint_summary
+                scenarios[name] = scenario
+                responses[f"offline verification {name}"] = {
+                    "schema": "termivar-report-verification/v1", "status": "integrity_match"}
+                compared = self_comparison(raw, items)
+                audit = document["supplied_session"]
+                attach_supplied_session_comparison(compared, before_audit=audit, after_audit=audit,
+                    context_status="same_declared_context", health_status="unchanged", accounting_status="unchanged",
+                    status="compared_within_same_declared_context", reason=None)
+                wordpress = wordpress_comparison(discovery=True, controlled=False)
+                wordpress["schema"] = ("termivar-wordpress-review-comparison/v4" if integrated
+                                       else "termivar-wordpress-review-comparison/v2")
+                inventory = runner._read_assessment_inventory(bundle / "assessment.json", "synthetic V3 source")
+                for facet, status, projector in (
+                    ("methodology", "unchanged", runner._project_wordpress_methodology),
+                    ("coverage", "not_established", runner._project_wordpress_coverage),
+                    ("provenance", "unchanged", runner._project_wordpress_provenance),
+                    ("discovery_source_content", "unchanged", runner._project_wordpress_discovery_source_content),
+                ):
+                    projection = projector(inventory, "synthetic V3 source")
+                    wordpress[facet] = {"status": status, "changed_fields": [],
+                                        "before": projection, "after": copy.deepcopy(projection),
+                                        "note": "Synthetic offline V3 facet."}
+                wordpress["components"]["paired_unchanged_count"] = document["wordpress_review"]["component_count"]
+                compared["wordpress_review_comparison"] = wordpress
+                if fingerprints:
+                    attach_fingerprint_self_comparison(compared, audit=optional["wordpress_asset_fingerprints"],
+                        resource_count=0, component_count=0)
+                    wordpress["schema"] = "termivar-wordpress-review-comparison/v4"
+                responses[f"offline self comparison {name}"] = compared
+            fake = offline_process_runner(responses, scenarios)
+            result = runner._run_offline_acceptance(fake, Path("synthetic-termivar"), scenarios)
+            self.assertTrue(result["fixture_was_stopped_first"])
+            for name in runner.FORM_LOGIN_SCENARIOS:
+                self.assertTrue(result["bundles"][name]["bundle_unchanged"])
+                self.assertEqual(result["bundles"][name]["self_compare_counts"],
+                    {"only_in_after": 0, "only_in_before": 0, "changed": 0, "unchanged": 1})
+            self.assertEqual(result["bundles"]["session-form-login-root"]["fingerprint_entity_counts"],
+                             {"resources": 0, "components": 0})
+            labels = [label for label, _ in fake.calls]
+            self.assertEqual(len([label for label in labels if label.startswith("offline verification session-form-login-")]), 7)
+            self.assertEqual(len([label for label in labels if label.startswith("offline self comparison session-form-login-")]), 7)
+            self.assertEqual(labels[-1], "offline collection-policy comparison")
 
 
 if __name__ == "__main__":

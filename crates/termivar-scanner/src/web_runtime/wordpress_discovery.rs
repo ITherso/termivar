@@ -41,6 +41,9 @@ pub const WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID: &str =
 /// Supplied-session page observations feeding anonymous metadata discovery.
 pub const WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID: &str =
     "termivar.wordpress-supplied-session-metadata-discovery/v1";
+/// Bounded form-login context, including honest pre-session empty coverage.
+pub const WORDPRESS_FORM_LOGIN_DISCOVERY_POLICY_ID: &str =
+    "termivar.wordpress-supplied-session-metadata-discovery/v2";
 /// Maximum retained root-derived candidates before per-kind selection.
 pub const MAX_WORDPRESS_DISCOVERY_CANDIDATES: usize = 32;
 /// Maximum broker-owned wire attempts, including failed attempts.
@@ -1237,12 +1240,19 @@ impl WordPressSuppliedSessionPageAudit {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WordPressSuppliedSessionPageAcquisition {
+    Ready,
+    FormLogin,
+}
+
 /// Separate bounded ledger for supplied-session page interpretation.
 ///
 /// Metadata sources nominated by accepted rows are still retrieved anonymously;
 /// the credential mechanism describes only how the source HTML was obtained.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WordPressSuppliedSessionPageScopeAudit {
+    pub(super) acquisition: WordPressSuppliedSessionPageAcquisition,
     pub(super) policy_reference: String,
     pub(super) application_reference: String,
     pub(super) principal_reference: String,
@@ -1259,6 +1269,26 @@ pub struct WordPressSuppliedSessionPageScopeAudit {
 }
 
 impl WordPressSuppliedSessionPageScopeAudit {
+    pub const fn mode(&self) -> &'static str {
+        match self.acquisition {
+            WordPressSuppliedSessionPageAcquisition::Ready => {
+                "committed_supplied_session_resources"
+            },
+            WordPressSuppliedSessionPageAcquisition::FormLogin => {
+                "form_login_supplied_session_resources"
+            },
+        }
+    }
+    pub const fn policy_id(&self) -> &'static str {
+        match self.acquisition {
+            WordPressSuppliedSessionPageAcquisition::Ready => {
+                WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID
+            },
+            WordPressSuppliedSessionPageAcquisition::FormLogin => {
+                WORDPRESS_FORM_LOGIN_DISCOVERY_POLICY_ID
+            },
+        }
+    }
     pub fn policy_reference(&self) -> &str {
         &self.policy_reference
     }
@@ -1468,8 +1498,8 @@ pub struct WebAssessmentWordPressDiscoveryAudit {
 
 impl WebAssessmentWordPressDiscoveryAudit {
     pub const fn policy_id(&self) -> &'static str {
-        if self.supplied_session_pages.is_some() {
-            WORDPRESS_SUPPLIED_SESSION_DISCOVERY_POLICY_ID
+        if let Some(scope) = self.supplied_session_pages.as_ref() {
+            scope.policy_id()
         } else if self.page_scope.is_some() {
             WORDPRESS_PAGE_SCOPED_DISCOVERY_POLICY_ID
         } else {
@@ -1791,7 +1821,24 @@ fn supplied_session_pages_are_consistent(audit: &WebAssessmentWordPressDiscovery
             "supplied-session-application-sha256:",
         )
         && scope.principal_reference == "supplied-session-principal-0001"
-        && scope.epoch == 1
+        && match scope.acquisition {
+            WordPressSuppliedSessionPageAcquisition::Ready => scope.epoch == 1,
+            WordPressSuppliedSessionPageAcquisition::FormLogin => {
+                scope.epoch == 1
+                    || (scope.epoch == 0
+                        && committed == 0
+                        && accepted == 0
+                        && rejected == 0
+                        && not_established == selected
+                        && not_evaluated == selected
+                        && scope.interpreted_response_bytes == 0
+                        && scope.pages.iter().all(|page| {
+                            page.outcome == WordPressSuppliedSessionPageOutcome::NotEvaluated
+                                && page.evidence_ids.is_empty()
+                                && page.resource_evidence_reference.is_none()
+                        }))
+            },
+        }
         && selected == usize::from(scope.selected_count)
         && committed == usize::from(scope.committed_count)
         && accepted == usize::from(scope.accepted_count)

@@ -5,6 +5,9 @@ use sha2::{Digest, Sha256};
 #[path = "comparison_oauth_authorization_tests.rs"]
 mod oauth_authorization_tests;
 
+#[path = "comparison_wordpress_form_login_tests.rs"]
+mod wordpress_form_login_tests;
+
 mod oauth_refresh_tests {
     //! Synthetic literal saved wires, independent of the runtime and reader.
 

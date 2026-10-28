@@ -425,7 +425,7 @@ SUPPLIED_SESSION_PREREQUISITES = (
     "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
     "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
     "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
-    "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
+    "optional --wordpress-supplied-session for V1/V2/V3 when also compiled with wordpress-review",
     "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
 )
 SUPPLIED_SESSION_LIMITATION = (
@@ -441,11 +441,13 @@ SUPPLIED_SESSION_LIMITATION = (
     "oracle; status, response text, or receiving a cookie alone is insufficient. V3 "
     "permits at most three resources while the unchanged total remains at most nine "
     "supplied-session requests. Health checkpoints qualify bounded coverage rather than "
-    "authenticate the principal. When a V1/V2 policy, both review features, and "
+    "authenticate the principal. When a V1/V2/V3 policy, both review features, and "
     "--wordpress-supplied-session are selected, complete health-qualified session-resource "
     "HTML may nominate public WordPress metadata that the WordPress broker retrieves "
     "anonymously; the credential is not sent to metadata or fingerprint requests, and "
-    "authenticated-page fingerprint acquisition is not selected. Session loss, a "
+    "authenticated-page fingerprint acquisition is not selected. "
+    "V3 uses the form-login collection-policy revision; actual final epoch 0 is retained "
+    "if acquisition never completed, with no supporting component evidence. Session loss, a "
     "selected post-login response-cookie "
     "update, or an unusable response-cookie classification stops later session work "
     "without anonymous fallback. V1/V2/V3 never apply post-establishment response cookie "
@@ -494,8 +496,8 @@ SUPPLIED_SESSION_LIMITATION = (
     "V7 performs no OIDC nonce, identity or token signature validation, refresh, endpoint discovery, automatic login, or WordPress/WebSocket composition. "
     "No browser-profile "
     "import, form discovery, credential guessing, automatic OAuth/OIDC login, MFA bypass, "
-    "exploit, or impact validation occurs. WordPress supplied-session composition remains "
-    "limited to V1/V2; V3/V4/V5/V6/V7 are rejected before their secret files are read."
+    "exploit, or impact validation occurs. WordPress supplied-session composition is "
+    "limited to V1/V2/V3; V4/V5/V6/V7 are rejected before their secret files are read."
 )
 WORDPRESS_OPTIONS = (
     "--wordpress-review",

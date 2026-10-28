@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import uuid
 from typing import Any, Iterable, Sequence
 
@@ -39,6 +40,7 @@ from typing import Any, Iterable, Sequence
 TASK_SCHEMA = "termivar-test.wordpress-discovery-lab-acceptance/v1"
 SESSION_HEALTH_LEAF = "termivar-session-health"
 SESSION_RESOURCE_LEAF = "termivar-session-member"
+SESSION_LOGIN_LEAF = "termivar-session-login"
 SESSION_PRIVATE_BODY_CANARY = b"TERMIVAR-PRIVATE-SESSION-BODY-CANARY"
 SESSION_PRIVATE_BODY_MARKERS = {
     "termivar-lab-alice": SESSION_PRIVATE_BODY_CANARY + b"-ALICE",
@@ -58,6 +60,15 @@ SESSION_SCENARIOS = (
     "session-root-expired-startup",
     "session-blog-healthy",
     "session-custom-fingerprint-selected-empty",
+)
+FORM_LOGIN_SCENARIOS = (
+    "session-form-login-root",
+    "session-form-login-option-off",
+    "session-form-login-wrong-password",
+    "session-form-login-wrong-principal",
+    "session-form-login-health-loss",
+    "session-form-login-subdirectory",
+    "session-form-login-custom-layout",
 )
 EXPECTED_SCENARIOS = (
     "ordinary-web-review",
@@ -91,6 +102,7 @@ EXPECTED_SCENARIOS = (
     "custom-fingerprint-observed-option-off",
     "custom-fingerprint-release-b",
     "session-custom-fingerprint-selected-empty",
+    *FORM_LOGIN_SCENARIOS,
 )
 WORDPRESS_IMAGE = (
     "wordpress@sha256:49801e46d08eb27ea68ed62e205bb35b1bb2dc962251bf2292a7d374f9637cee"
@@ -326,6 +338,12 @@ class LabSessionInput:
     credential_principal_alias: str
     server_expired: bool
     lose_after_resource: bool
+    login_path: str | None = None
+    login_username: bytes = dataclasses.field(default=b"", repr=False)
+    login_password: bytes = dataclasses.field(default=b"", repr=False)
+    login_csrf: bytes = dataclasses.field(default=b"", repr=False)
+    server_password: bytes = dataclasses.field(default=b"", repr=False)
+    expected_policy_reference: str | None = None
 
 
 def _framed_reference(domain: str, value: str) -> str:
@@ -794,10 +812,13 @@ def tree_sha256(root: Path) -> str:
 
 def validate_fixture(root: Path = FIXTURE_ROOT) -> dict[str, Any]:
     require(
-        len(EXPECTED_SCENARIOS) == 37
-        and len(set(EXPECTED_SCENARIOS)) == 37
+        len(EXPECTED_SCENARIOS) == 44
+        and len(set(EXPECTED_SCENARIOS)) == 44
+        and len(FORM_LOGIN_SCENARIOS) == 7
+        and EXPECTED_SCENARIOS[-7:] == FORM_LOGIN_SCENARIOS
+        and set(SESSION_SCENARIOS).isdisjoint(FORM_LOGIN_SCENARIOS)
         and set(SESSION_SCENARIOS) <= set(EXPECTED_SCENARIOS),
-        "real-CMS scenario registry is not the reviewed 28-plus-9 matrix",
+        "real-CMS scenario registry is not the reviewed 37-plus-7 matrix",
     )
     require(root.is_dir() and not root.is_symlink(), "lab fixture directory is unavailable")
     expected = {
@@ -1419,6 +1440,12 @@ class DockerWordPressLab:
         self.image_ids: dict[str, str] = {}
 
     def docker(self, *arguments: str, label: str, **kwargs: Any) -> CommandResult:
+        sensitive_values = kwargs.pop("sensitive_values", ())
+        if sensitive_values:
+            return self.runner.run_sensitive(
+                ["docker", *arguments], label=label,
+                sensitive_values=sensitive_values, **kwargs,
+            )
         return self.runner.run(["docker", *arguments], label=label, **kwargs)
 
     def start(self) -> None:
@@ -1606,7 +1633,8 @@ class DockerWordPressLab:
         require(self.loopback_relay is not None, "loopback relay is unavailable")
         self.loopback_relay.assert_healthy()
 
-    def wp(self, *arguments: str, label: str, input_bytes: bytes | None = None) -> CommandResult:
+    def wp(self, *arguments: str, label: str, input_bytes: bytes | None = None,
+           sensitive_values: Sequence[bytes] = ()) -> CommandResult:
         name = _safe_name("wp-cli", uuid.uuid4().hex[:12])
         self._wp_cli_containers.add(name)
         command_failed = False
@@ -1621,7 +1649,7 @@ class DockerWordPressLab:
                 "--env", "WP_CLI_DISABLE_AUTO_CHECK_UPDATE=1",
                 "--env", f"WP_CLI_CONFIG_PATH={WP_CLI_CONFIG_PATH}",
                 "--workdir", "/var/www/html", WORDPRESS_CLI_IMAGE, "wp", *arguments,
-                label=label, input_bytes=input_bytes,
+                label=label, input_bytes=input_bytes, sensitive_values=sensitive_values,
             )
         except BaseException:
             command_failed = True
@@ -1697,6 +1725,7 @@ class DockerWordPressLab:
         lose_after_resource: bool = False,
         expired: bool = False,
         expiration_unix_seconds: int | None = None,
+        sensitive_values: Sequence[bytes] = (),
     ) -> LabSessionCredential:
         """Create one private real-WordPress logged-in cookie for a lab run."""
         aliases = {alias for alias, _ in SESSION_PRINCIPALS}
@@ -1734,6 +1763,7 @@ class DockerWordPressLab:
             f"--path={path}", "eval-file", "-",
             label="supplied-session fixture policy selection",
             input_bytes=configured,
+            sensitive_values=sensitive_values,
         )
 
         cookie_program = (
@@ -1753,6 +1783,7 @@ class DockerWordPressLab:
             f"--path={path}", "eval-file", "-",
             label="supplied-session fixture cookie generation",
             input_bytes=cookie_program,
+            sensitive_values=sensitive_values,
         ).stdout
         require(0 < len(encoded) <= 4096 and b"\r" not in encoded and b"\n" not in encoded,
                 "fixture cookie output is malformed")
@@ -1790,6 +1821,65 @@ class DockerWordPressLab:
             server_expired=expired,
             lose_after_resource=lose_after_resource,
         )
+
+    def configure_form_login(
+        self, *, path: str, application_path: str, credential_login: str,
+        expected_login: str = "termivar-lab-alice", lose_after_resource: bool = False,
+        expiration_unix_seconds: int,
+    ) -> tuple[LabSessionCredential, bytes, bytes]:
+        """Provision private WordPress password/token inputs, never CLI argv.
+
+        The genuine token and independently calculated cookie are controller
+        privacy oracles. The endpoint must still authenticate the submitted
+        password before generating/releasing that cookie; failed-password and
+        wrong-principal scenarios independently exercise this boundary.
+        """
+        require(credential_login in dict(SESSION_PRINCIPALS)
+                and expected_login in dict(SESSION_PRINCIPALS),
+                "unknown form-login fixture principal")
+        password = secrets.token_urlsafe(32).encode("ascii")
+        csrf = secrets.token_urlsafe(24).encode("ascii")
+        require(len(password) == 43 and len(csrf) == 32,
+                "form-login fixture entropy encoding changed")
+        program = (
+            "<?php\n"
+            f"$login = {json.dumps(credential_login)};\n"
+            f"$password = {json.dumps(password.decode('ascii'))};\n"
+            "$user = get_user_by( 'login', $login );\n"
+            "if ( ! $user || ! in_array( 'subscriber', $user->roles, true ) ) { exit(2); }\n"
+            "wp_set_password( $password, $user->ID );\n"
+        ).encode("utf-8")
+        require(len(program) <= 4096, "form-login private password input exceeded its bound")
+        result = self.wp(
+            f"--path={path}", "eval-file", "-", input_bytes=program,
+            sensitive_values=(password, csrf), label="form-login private password provisioning",
+        )
+        require(result.stdout == b"", "form-login password setup produced output")
+        credential = self.configure_supplied_session(
+            path=path, application_path=application_path, credential_login=credential_login,
+            expected_login=expected_login, lose_after_resource=lose_after_resource,
+            expiration_unix_seconds=expiration_unix_seconds, sensitive_values=(password, csrf),
+        )
+        token = credential.cookie_value.split("|")[2]
+        configuration = (
+            "<?php\n"
+            f"$user = get_user_by( 'login', {json.dumps(credential_login)} );\n"
+            "if ( ! $user || ! in_array( 'subscriber', $user->roles, true ) ) { exit(2); }\n"
+            "update_option( 'termivar_session_form_user_id', (int) $user->ID, false );\n"
+            f"update_option( 'termivar_session_form_login', {json.dumps(credential_login)}, false );\n"
+            f"update_option( 'termivar_session_form_csrf', {json.dumps(csrf.decode('ascii'))}, false );\n"
+            f"update_option( 'termivar_session_form_token', {json.dumps(token)}, false );\n"
+            f"update_option( 'termivar_session_form_expiration', {expiration_unix_seconds}, false );\n"
+        ).encode("utf-8")
+        require(len(program) <= 4096 and len(configuration) <= 4096,
+                "form-login private fixture input exceeded its bound")
+        result = self.wp(
+            f"--path={path}", "eval-file", "-", input_bytes=configuration,
+            sensitive_values=(password, csrf, token.encode("ascii"), credential.cookie_value.encode("ascii")),
+            label="form-login private transaction provisioning",
+        )
+        require(result.stdout == b"", "form-login transaction setup produced output")
+        return credential, password, csrf
 
     def configure_fingerprint_assets(
         self,
@@ -3138,12 +3228,129 @@ def _write_supplied_session_inputs(
     )
 
 
+def _form_login_policy_reference(application_url: str, policy: bytes) -> str:
+    """Independent V3 reference framing; no secret material enters this value."""
+    wire = tomllib.loads(policy.decode("utf-8"))
+    digest = hashlib.sha256(b"security.supplied-session-policy.reference.v3\0")
+
+    def field(value: str | bytes) -> None:
+        encoded = value.encode("utf-8") if isinstance(value, str) else value
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+
+    for value in (
+        wire["schema"], application_url, "cookie_jar", "bounded_form_login",
+        wire["cookie_update_policy"], wire["login_path"], wire["login_method"],
+        wire["login_encoding"], wire["username_field"], wire["password_field"],
+        wire["csrf_field"], wire["health_path"], wire["health_json_field"],
+    ):
+        field(value)
+    field(bytes([wire["max_login_attempts"]]))
+    for resource in wire["resources"]:
+        field(resource)
+    for cookie in wire["cookies"]:
+        for value in (cookie["id"], cookie["name"], cookie["domain"],
+                      bytes([int(cookie["host_only"])]), cookie["path"],
+                      bytes([int(cookie["secure"])]), bytes([int(cookie["http_only"])]),
+                      cookie["same_site"], b"session"):
+            field(value)
+    field(bytes([wire["max_session_requests"]]))
+    for name in ("max_total_response_bytes", "max_response_body_bytes", "max_wall_time_ms"):
+        field(wire[name].to_bytes(8, "big"))
+    return "supplied-session-policy-sha256:" + digest.hexdigest()
+
+
+def _write_form_login_inputs(
+    work: Path, *, name: str, origin: str, credential: LabSessionCredential,
+    password: bytes, csrf: bytes, expected_principal_alias: str = "termivar-lab-alice",
+    wrong_password: bool = False,
+) -> LabSessionInput:
+    """Write one V3 policy and private username/password TSV; never cookie input."""
+    require(name in FORM_LOGIN_SCENARIOS and credential.application_path in {"/", "/blog/"},
+            "form-login scenario/path is outside the frozen registry")
+    match = re.fullmatch(r"http://(127\.0\.0\.1):([1-9][0-9]{0,4})/", origin)
+    require(match is not None and 1 <= int(match.group(2)) <= 65535,
+            "form-login lab requires numeric-loopback HTTP")
+    require(re.fullmatch(rb"[A-Za-z0-9_-]{43}", password) is not None
+            and re.fullmatch(rb"[A-Za-z0-9_-]{32}", csrf) is not None,
+            "form-login private credential encoding changed")
+    supplied_password = b"WRONG-" + password if wrong_password else password
+    login_path = credential.application_path + SESSION_LOGIN_LEAF + "/"
+    policy = (
+        'schema = "security.supplied-session-policy/v3"\n'
+        f'principal_alias = {json.dumps(expected_principal_alias)}\n'
+        'credential_mechanism = "cookie_jar"\n'
+        'credential_acquisition = "bounded_form_login"\n'
+        'cookie_update_policy = "stop_on_selected_cookie"\n'
+        f'login_path = {json.dumps(login_path)}\n'
+        'login_method = "post"\n'
+        'login_encoding = "application/x-www-form-urlencoded"\n'
+        'username_field = "user"\npassword_field = "pass"\ncsrf_field = "csrf"\n'
+        'max_login_attempts = 1\n'
+        f'health_path = {json.dumps(credential.health_path)}\n'
+        'health_json_field = "authenticated"\n'
+        f'resources = [{json.dumps(credential.resource_path)}]\n'
+        'max_session_requests = 5\nmax_total_response_bytes = 196608\n'
+        'max_response_body_bytes = 65536\nmax_wall_time_ms = 10000\n\n'
+        '[[cookies]]\nid = "wordpress-lab-session"\n'
+        f'name = {json.dumps(credential.cookie_name)}\n'
+        f'domain = {json.dumps(match.group(1))}\nhost_only = true\n'
+        f'path = {json.dumps(credential.application_path)}\n'
+        'secure = false\nhttp_only = true\nsame_site = "lax"\n'
+    ).encode("utf-8")
+    username = credential.principal_alias.encode("ascii")
+    secret = b"username\t" + username + b"\npassword\t" + supplied_password + b"\n"
+    require(len(policy) <= 4096 and len(secret) <= 1024,
+            "form-login private input exceeds the fixed controller bound")
+    policy_path, secret_path = work / f"{name}-session-policy.toml", work / f"{name}-session-login.tsv"
+    created = []
+    try:
+        for path, content in ((policy_path, policy), (secret_path, secret)):
+            with path.open("xb") as output:
+                created.append(path)
+                require(output.write(content) == len(content), "form-login private input short write")
+            os.chmod(path, 0o600)
+    except (OSError, AcceptanceError) as error:
+        cleanup_failed = False
+        for path in reversed(created):
+            try:
+                path.unlink()
+            except OSError:
+                cleanup_failed = True
+        raise AcceptanceError("form-login private input creation failed",
+                              {"error_kind": type(error).__name__,
+                               "private_input_cleanup": "failed" if cleanup_failed else "confirmed"}) from None
+    return LabSessionInput(
+        policy_path=policy_path, cookie_path=secret_path,
+        cookie_value=credential.cookie_value.encode("ascii"), principal_alias=expected_principal_alias,
+        health_path=credential.health_path, resource_path=credential.resource_path,
+        application_path=credential.application_path,
+        policy_identity={"byte_length": len(policy), "sha256": hashlib.sha256(policy).hexdigest()},
+        cookie_byte_length=len(credential.cookie_value), policy_declares_expiry=False,
+        credential_principal_alias=credential.principal_alias, server_expired=False,
+        lose_after_resource=credential.lose_after_resource, login_path=login_path,
+        login_username=username, login_password=supplied_password, login_csrf=csrf,
+        server_password=password,
+        expected_policy_reference=_form_login_policy_reference(
+            origin.rstrip("/") + credential.application_path, policy
+        ),
+    )
+
+
+def _session_secret_bytes(session: LabSessionInput) -> bytes:
+    if session.login_path is not None:
+        return b"username\t" + session.login_username + b"\npassword\t" + session.login_password + b"\n"
+    return b"wordpress-lab-session\t" + session.cookie_value + b"\r\n"
+
+
 def _remove_supplied_session_inputs(session: LabSessionInput) -> None:
     """Remove only the two exact task-owned per-scenario private inputs."""
     require(
         session.policy_path.parent == session.cookie_path.parent
         and session.policy_path.name.endswith("-session-policy.toml")
-        and session.cookie_path.name.endswith("-session-cookie.tsv"),
+        and session.cookie_path.name.endswith(
+            "-session-login.tsv" if session.login_path is not None else "-session-cookie.tsv"
+        ),
         "supplied-session cleanup target identity is invalid",
     )
     try:
@@ -3173,6 +3380,8 @@ def _supplied_session_sensitive_values(session: LabSessionInput) -> tuple[bytes,
         *SESSION_PRIVATE_BODY_MARKERS.values(),
         os.fsencode(session.policy_path),
         os.fsencode(session.cookie_path),
+        *((session.login_password, session.server_password, session.login_csrf)
+          if session.login_path is not None else ()),
     )
 
 
@@ -3209,7 +3418,10 @@ def _run_scan(
         if wordpress_supplied_session:
             arguments.append("--wordpress-supplied-session")
         arguments.extend(["--session-policy", supplied_session.policy_path])
-        arguments.extend(["--session-cookie-file", supplied_session.cookie_path])
+        arguments.extend([
+            "--session-login-file" if supplied_session.login_path is not None else "--session-cookie-file",
+            supplied_session.cookie_path,
+        ])
     else:
         require(not wordpress_supplied_session,
                 "WordPress supplied-session selection has no private input")
@@ -3217,6 +3429,12 @@ def _run_scan(
         _supplied_session_sensitive_values(supplied_session)
         if supplied_session is not None else ()
     )
+    if supplied_session is not None and supplied_session.login_path is not None:
+        root_origin = "/".join(origin.split("/", 3)[:3])
+        session_sensitive += (
+            (root_origin + supplied_session.login_path).encode("ascii"),
+            (root_origin + supplied_session.resource_path).encode("ascii"),
+        )
     if supplied_session is not None:
         try:
             policy_before = supplied_session.policy_path.read_bytes()
@@ -3230,8 +3448,7 @@ def _run_scan(
             len(policy_before) == supplied_session.policy_identity["byte_length"]
             and hashlib.sha256(policy_before).hexdigest()
             == supplied_session.policy_identity["sha256"]
-            and cookie_before
-            == b"wordpress-lab-session\t" + supplied_session.cookie_value + b"\r\n",
+            and cookie_before == _session_secret_bytes(supplied_session),
             "supplied-session private input identity changed before execution",
         )
     if supplied_session is None:
@@ -5332,6 +5549,8 @@ def _compact_session_trace_evidence(
     """Retain the authority-sensitive trace rows and bind the omitted remainder."""
     rows = _session_trace_json(trace, session)
     retained_targets = {session.health_path, session.resource_path, *metadata_paths}
+    if session.login_path is not None:
+        retained_targets.add(session.login_path)
     retained = [row for row in rows if row["target"] in retained_targets]
     omitted = len(rows) - len(retained)
     require(omitted >= 0, "session trace compaction accounting underflowed")
@@ -5411,7 +5630,7 @@ def _assert_supplied_session_trace(
     forbidden_anonymous_paths: Sequence[str] = (),
 ) -> dict[str, int]:
     require(
-        isinstance(scenario, str) and scenario in SESSION_SCENARIOS,
+        isinstance(scenario, str) and scenario in (*SESSION_SCENARIOS, *FORM_LOGIN_SCENARIOS),
         "supplied-session trace scenario is not in the closed registry",
     )
     # The private page uses a distinct query-bearing representation of assets that
@@ -5422,7 +5641,13 @@ def _assert_supplied_session_trace(
     expected_credentialed = [
         ("GET", path, 200, ("cookie",)) for path in expected_session_paths
     ]
-    session_targets = {session.health_path, session.resource_path}
+    credential_targets = {session.health_path, session.resource_path}
+    session_targets = set(credential_targets)
+    expected_login = []
+    if session.login_path is not None:
+        session_targets.add(session.login_path)
+        expected_login = [("GET", session.login_path, 200, ()), ("POST", session.login_path, 200, ())]
+    expected_session_requests = expected_login + expected_credentialed
     actual_session_requests = [row for row in trace if row[1] in session_targets]
     actual_credentialed = [row for row in trace if row[3]]
     known_metadata = tuple(
@@ -5475,12 +5700,14 @@ def _assert_supplied_session_trace(
         "scenario": scenario,
         "expected": {
             "credentialed_request_count": len(expected_credentialed),
+            "session_request_count": len(expected_session_requests),
             "metadata_get_sequence": [
                 metadata_class(row) for row in expected_metadata
             ],
         },
         "actual": {
             "credentialed_request_count": len(actual_credentialed),
+            "session_request_count": len(actual_session_requests),
             "metadata_get_sequence": [
                 metadata_class(row) for row in actual_metadata[:diagnostic_limit]
             ],
@@ -5494,7 +5721,7 @@ def _assert_supplied_session_trace(
         },
     }
     require(
-        actual_session_requests == expected_credentialed
+        actual_session_requests == expected_session_requests
         and actual_credentialed == expected_credentialed,
         "supplied-session target sequence or credential presence differs from the oracle",
         diagnostic,
@@ -5502,7 +5729,7 @@ def _assert_supplied_session_trace(
     require(
         all(
             names in {(), ("cookie",)}
-            and (names != ("cookie",) or target in session_targets)
+            and (names != ("cookie",) or target in credential_targets)
             for _, target, _, names in trace
         ),
         "credential material crossed the supplied-session child authority",
@@ -5567,6 +5794,8 @@ def _assert_session_preserves_anonymous_trace(
 ) -> None:
     """Remove only the explicitly new S01/S02 requests and compare the old plan."""
     session_targets = {session.health_path, session.resource_path}
+    if session.login_path is not None:
+        session_targets.add(session.login_path)
     retained = [row for row in observed if row[1] not in session_targets]
     if conditional_metadata_path is not None:
         conditional_request = ("GET", conditional_metadata_path, 200, ())
@@ -6684,9 +6913,14 @@ def _validate_supplied_session_audit(
     expected_outcome: str,
     expected_principal_alias: str,
     policy_declares_expiry: bool,
+    form_login: bool = False,
+    expected_login_reference: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     audit = document.get("supplied_session")
     require(isinstance(audit, dict), "assessment omits the supplied-session audit")
+    # V3 cookie acquisition and healthy startup establishment are distinct.
+    # Ready V1/V2 keep their historical epoch one even on startup failure.
+    expected_final_epoch = int(not form_login or expected_outcome in {"complete", "session_lost"})
     expected = {
         "complete": {
             "coverage": "complete", "dispatched_resources": 1,
@@ -6704,6 +6938,14 @@ def _validate_supplied_session_audit(
             "resource_outcome": "health_unqualified",
         },
     }
+    if form_login:
+        expected = {
+            **{name: {**row, "requests": row["requests"] + 2} for name, row in expected.items()},
+            "login_cookie_unavailable": {
+                "coverage": "none", "dispatched_resources": 0, "committed_resources": 0,
+                "requests": 2, "checkpoints": 0, "resource_outcome": "not_dispatched",
+            },
+        }
     oracle = expected.get(expected_outcome)
     require(oracle is not None, "unsupported supplied-session acceptance outcome")
     cookie_policy = audit.get("cookie_policy")
@@ -6712,7 +6954,9 @@ def _validate_supplied_session_audit(
     checkpoints = audit.get("checkpoints")
     resources = audit.get("resources")
     require(
-        audit.get("schema") == "security.supplied-session-audit/v2"
+        audit.get("schema") == ("security.supplied-session-audit/v3" if form_login
+                                else "security.supplied-session-audit/v2")
+        and (not form_login or audit.get("credential_acquisition") == "bounded_form_login")
         and audit.get("capability_id") == "session.supplied-context-assessment@1"
         and isinstance(audit.get("policy_reference"), str)
         and re.fullmatch(
@@ -6761,12 +7005,12 @@ def _validate_supplied_session_audit(
             cookie_policy.get("persistent_count"), int(policy_declares_expiry)
         )
         and _is_exact_nonnegative_integer(
-            cookie_policy.get("same_site_missing_count"), 1
+            cookie_policy.get("same_site_missing_count"), int(not form_login)
         )
         and _is_exact_nonnegative_integer(
             cookie_policy.get("same_site_strict_count"), 0
         )
-        and _is_exact_nonnegative_integer(cookie_policy.get("same_site_lax_count"), 0)
+        and _is_exact_nonnegative_integer(cookie_policy.get("same_site_lax_count"), int(form_login))
         and _is_exact_nonnegative_integer(cookie_policy.get("same_site_none_count"), 0)
         and cookie_policy.get("update_policy") == "stop_on_selected_cookie"
         and cookie_policy.get("browser_semantics")
@@ -6775,8 +7019,10 @@ def _validate_supplied_session_audit(
     )
     require(
         isinstance(lifecycle, dict)
-        and _is_exact_nonnegative_integer(lifecycle.get("initial_epoch"), 1)
-        and _is_exact_nonnegative_integer(lifecycle.get("final_epoch"), 1)
+        and _is_exact_nonnegative_integer(lifecycle.get("initial_epoch"), int(not form_login))
+        and _is_exact_nonnegative_integer(
+            lifecycle.get("final_epoch"), expected_final_epoch
+        )
         and _is_exact_nonnegative_integer(
             lifecycle.get("selected_update_response_count"), 0
         )
@@ -6805,7 +7051,7 @@ def _validate_supplied_session_audit(
         and all(isinstance(row, dict) for row in checkpoints + resources),
         "supplied-session checkpoint/resource inventory differs",
     )
-    expected_checkpoint_outcomes = (
+    expected_checkpoint_outcomes = [] if expected_outcome == "login_cookie_unavailable" else (
         [("startup", 0, "unhealthy", "not_matched")]
         if expected_outcome == "startup_unhealthy" else
         [
@@ -6866,7 +7112,7 @@ def _validate_supplied_session_audit(
             and 0 < resource["response_bytes"] <= 65_536,
             "healthy supplied-session resource was not completely committed",
         )
-    elif expected_outcome == "startup_unhealthy":
+    elif expected_outcome in {"startup_unhealthy", "login_cookie_unavailable"}:
         require(
             resource.get("status") is None
             and resource.get("evidence_reference") is None
@@ -6889,6 +7135,33 @@ def _validate_supplied_session_audit(
     accounted_response_bytes = sum(
         checkpoint["response_bytes"] for checkpoint in checkpoints
     ) + resource["response_bytes"]
+    if form_login:
+        login = audit.get("login")
+        acquired = expected_outcome != "login_cookie_unavailable"
+        diagnostic = {
+            "expected": {"session_requests": oracle["requests"], "final_epoch": expected_final_epoch,
+                         "acquired_cookie_count": int(acquired)},
+            "actual": {key: _bounded_integer_field(audit.get(key), key in audit)
+                       for key in ("dispatched_request_count", "committed_resource_count")},
+        }
+        require(
+            isinstance(login, dict) and login.get("login_reference") == expected_login_reference
+            and _is_exact_nonnegative_integer(login.get("max_attempts"), 1)
+            and _is_exact_nonnegative_integer(login.get("attempt_count"), 1)
+            and login.get("page_dispatched") is True and login.get("submit_dispatched") is True
+            and _is_exact_nonnegative_integer(login.get("page_status"), 200)
+            and _is_exact_nonnegative_integer(login.get("submit_status"), 200)
+            and login.get("page_body_state") == login.get("submit_body_state") == "complete"
+            and login.get("form_outcome") == "matched" and "form_error_code" not in login
+            and login.get("submit_outcome") == ("cookie_acquired" if acquired else "cookie_unavailable")
+            and _is_exact_nonnegative_integer(login.get("acquired_cookie_count"), int(acquired))
+            and _is_exact_nonnegative_integer(login.get("initial_epoch"), 0)
+            and _is_exact_nonnegative_integer(login.get("final_epoch"), expected_final_epoch)
+            and login.get("pre_session_cookie_applied") is False
+            and type(login.get("response_bytes")) is int and 0 < login["response_bytes"] <= 131072,
+            "form-login acquisition differs from the independently frozen V3 contract", diagnostic,
+        )
+        accounted_response_bytes += login["response_bytes"]
     require(
         isinstance(audit.get("response_bytes"), int)
         and not isinstance(audit.get("response_bytes"), bool)
@@ -6976,12 +7249,46 @@ def _validate_supplied_session_wordpress_document(
     expected_component_association: str,
     fingerprints_path: Path | None,
 ) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
-    session, committed = _validate_supplied_session_audit(
-        document,
-        expected_outcome=expected_session_outcome,
-        expected_principal_alias=session_input.principal_alias,
-        policy_declares_expiry=session_input.policy_declares_expiry,
-    )
+    form_login = session_input.login_path is not None
+    expected_final_epoch = int(not form_login or expected_session_outcome in {"complete", "session_lost"})
+    try:
+        session, committed = _validate_supplied_session_audit(
+            document,
+            expected_outcome=expected_session_outcome,
+            expected_principal_alias=session_input.principal_alias,
+            policy_declares_expiry=session_input.policy_declares_expiry,
+            form_login=form_login,
+            expected_login_reference=(
+                _supplied_session_literal_reference(
+                    b"security.supplied-session-login.reference.v1\0",
+                    root_origin.rstrip("/") + session_input.login_path,
+                    "supplied-session-login-sha256",
+                ) if form_login else None
+            ),
+        )
+    except AcceptanceError as error:
+        if form_login:
+            try:
+                actual_session = document.get("supplied_session")
+                actual_login = actual_session.get("login") if isinstance(actual_session, dict) else None
+                diagnostic = dict(error.diagnostic) if isinstance(error.diagnostic, dict) else {}
+                diagnostic["form_login_contract"] = {
+                    "expected": {"session_requests": 2 if expected_session_outcome == "login_cookie_unavailable"
+                                 else 3 if expected_session_outcome == "startup_unhealthy" else 5,
+                                 "final_epoch": expected_final_epoch},
+                    "actual_session": _bounded_fields(actual_session, (
+                        "dispatched_request_count", "committed_resource_count", "response_bytes")),
+                    "actual_login": _bounded_fields(actual_login, (
+                        "page_status", "submit_status", "attempt_count", "acquired_cookie_count", "initial_epoch", "final_epoch")),
+                }
+                error.diagnostic = diagnostic
+            except Exception:
+                error.diagnostic = {"form_login_diagnostic_capture": "failed_original_error_preserved"}
+        raise
+    if form_login:
+        require(session_input.expected_policy_reference is not None
+                and session.get("policy_reference") == session_input.expected_policy_reference,
+                "form-login session policy reference differs from the private controller input")
     discovery = document.get("wordpress_discovery")
     require(isinstance(discovery, dict), "session scenario omits WordPress discovery")
     application_url = root_origin.rstrip("/") + session_input.application_path
@@ -6994,7 +7301,7 @@ def _validate_supplied_session_wordpress_document(
     expected_private_body = _expected_session_private_body(
         plugin_base_url, session_input.credential_principal_alias
     )
-    resource_was_dispatched = expected_session_outcome != "startup_unhealthy"
+    resource_was_dispatched = expected_session_outcome in {"complete", "session_lost"}
     require(
         session.get("application_reference")
         == _supplied_session_literal_reference(
@@ -7040,7 +7347,7 @@ def _validate_supplied_session_wordpress_document(
             "coverage": session["coverage"],
             "selected_resource_count": 1,
             "committed_resource_count": 1,
-            "dispatched_request_count": 3,
+            "dispatched_request_count": session["dispatched_request_count"],
             "wordpress_integration": "not_selected",
             "private_response_variant": (
                 "principal_alice" if session_input.credential_principal_alias.endswith("alice")
@@ -7063,6 +7370,23 @@ def _validate_supplied_session_wordpress_document(
         expected_sources.insert(3, ("plugin_readme", FINGERPRINT_COMPONENT))
     expected_count = len(expected_sources)
     expected_seed_count = 3 + int(committed)
+    form_accounting_diagnostic = None
+    if form_login:
+        try:
+            actual_pages = discovery.get("supplied_session_pages")
+            form_accounting_diagnostic = {"form_login_wordpress_contract": {
+                "expected": {"metadata_requests": expected_count, "seed_count": expected_seed_count,
+                             "selected_pages": 1, "committed_pages": int(committed),
+                             "session_epoch": expected_final_epoch},
+                "actual_discovery": _bounded_fields(discovery, (
+                    "seed_count", "candidate_count", "attempted_request_count", "completed_response_count",
+                    "committed_response_count", "source_count")),
+                "actual_pages": _bounded_fields(actual_pages, (
+                    "session_epoch", "selected_count", "committed_count", "accepted_association_count",
+                    "rejected_association_count", "not_established_association_count", "not_evaluated_count")),
+            }}
+        except Exception:
+            form_accounting_diagnostic = {"form_login_diagnostic_capture": "failed_original_error_preserved"}
     require(
         set(discovery) == {
             "schema", "capability_id", "policy_id", "selected", "method",
@@ -7075,7 +7399,8 @@ def _validate_supplied_session_wordpress_document(
         and discovery.get("schema") == "security.wordpress-discovery-audit/v4"
         and discovery.get("capability_id") == "technology.wordpress-metadata-discovery@1"
         and discovery.get("policy_id")
-        == "termivar.wordpress-supplied-session-metadata-discovery/v1"
+        == ("termivar.wordpress-supplied-session-metadata-discovery/v2" if form_login
+            else "termivar.wordpress-supplied-session-metadata-discovery/v1")
         and discovery.get("selected") is True
         and discovery.get("method") == "get"
         and discovery.get("credential_mode") == "anonymous"
@@ -7098,6 +7423,7 @@ def _validate_supplied_session_wordpress_document(
         )
         and _is_exact_nonnegative_integer(discovery.get("source_count"), expected_count),
         "supplied-session WordPress request/source accounting differs",
+        form_accounting_diagnostic,
     )
     layout = discovery.get("layout")
     require(
@@ -7144,12 +7470,15 @@ def _validate_supplied_session_wordpress_document(
     page_reference = _framed_supplied_session_page_reference(session, resource_url)
     page_rows = pages.get("pages")
     require(
-        pages.get("mode") == "committed_supplied_session_resources"
+        pages.get("mode") == ("form_login_supplied_session_resources" if form_login
+                              else "committed_supplied_session_resources")
         and pages.get("policy_reference") == session.get("policy_reference")
         and pages.get("application_reference") == session.get("application_reference")
         and pages.get("principal_reference") == session.get("principal_reference")
         and pages.get("credential_mechanism") == "cookie_jar"
-        and _is_exact_nonnegative_integer(pages.get("session_epoch"), 1)
+        and _is_exact_nonnegative_integer(
+            pages.get("session_epoch"), expected_final_epoch
+        )
         and _is_exact_nonnegative_integer(pages.get("selected_count"), 1)
         and _is_exact_nonnegative_integer(pages.get("committed_count"), int(committed))
         and _is_exact_nonnegative_integer(
@@ -7166,6 +7495,7 @@ def _validate_supplied_session_wordpress_document(
         and len(page_rows) == 1
         and isinstance(page_rows[0], dict),
         "supplied-session WordPress page accounting differs",
+        form_accounting_diagnostic,
     )
     page = page_rows[0]
     resource_evidence_reference = session["resources"][0].get("evidence_reference")
@@ -7379,6 +7709,8 @@ def _validate_supplied_session_wordpress_document(
         if fingerprints_path is not None
         else None
     )
+    if form_login and fingerprint_summary is not None:
+        fingerprint_summary["state"] = "no_eligible_fingerprint_resources_from_form_login_supplied_session"
     return "security.wordpress-discovery-audit/v4", {
         "outcome": expected_session_outcome,
         "coverage": session["coverage"],
@@ -7456,7 +7788,7 @@ def _validate_discovery_capability(document: Any) -> None:
             "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
             "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
             "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
-            "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
+            "optional --wordpress-supplied-session for V1/V2/V3 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS",
         ],
         "capabilities do not report compiled supplied-session review",
@@ -7464,12 +7796,14 @@ def _validate_discovery_capability(document: Any) -> None:
     limitation = session.get("limitation")
     require(
         isinstance(limitation, str)
+        and "When a V1/V2/V3 policy, both review features, and --wordpress-supplied-session are selected" in limitation
         and "health-qualified session-resource HTML may nominate public WordPress metadata"
         in limitation
         and "credential is not sent to metadata or fingerprint requests" in limitation
         and "authenticated-page fingerprint acquisition is not selected" in limitation
-        and "WordPress supplied-session composition remains limited to V1/V2" in limitation
-        and "V3/V4/V5/V6/V7 are rejected before their secret files are read" in limitation,
+        and "V3 uses the form-login collection-policy revision; actual final epoch 0 is retained if acquisition never completed, with no supporting component evidence." in limitation
+        and "WordPress supplied-session composition is limited to V1/V2/V3" in limitation
+        and "V4/V5/V6/V7 are rejected before their secret files are read" in limitation,
         "capabilities omit the supplied-session WordPress authority boundary",
     )
 
@@ -7525,6 +7859,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
             "url_ver": "cache_hint_not_release_selector",
             "generator_absence": "unknown_not_negative",
             "rest_namespace": "protocol_support_not_component_version",
+            "form_login": "task_owned_v3_route_not_native_wp_login_php_compatibility",
+            "form_login_session_material": "private_preallocated_wp_session_released_after_exact_password_authentication",
+            "form_login_fresh_session_creation_or_fixation_prevention": "not_established",
             "exploit_execution": "not_performed",
             "impact_validation": "not_performed",
         },
@@ -7584,7 +7921,22 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 expected_login: str = "termivar-lab-alice",
                 lose_after_resource: bool = False,
                 expired: bool = False,
+                form_login: bool = False,
+                wrong_password: bool = False,
             ) -> LabSessionInput:
+                if form_login:
+                    require(not expired, "form-login does not import an expired cookie")
+                    credential, password, csrf = lab.configure_form_login(
+                        path=wordpress_path, application_path=application_path,
+                        credential_login=credential_login, expected_login=expected_login,
+                        lose_after_resource=lose_after_resource,
+                        expiration_unix_seconds=positive_session_expiration,
+                    )
+                    return _write_form_login_inputs(
+                        work, name=name, origin=lab.origin or "", credential=credential,
+                        password=password, csrf=csrf, expected_principal_alias=expected_login,
+                        wrong_password=wrong_password,
+                    )
                 credential = lab.configure_supplied_session(
                     path=wordpress_path,
                     application_path=application_path,
@@ -7790,6 +8142,7 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                         "session trace has no independent oracle",
                     )
                     expected_session_paths = (
+                        [] if expected_session_outcome == "login_cookie_unavailable" else
                         [supplied_session.health_path]
                         if expected_session_outcome == "startup_unhealthy"
                         else [
@@ -7907,6 +8260,11 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                                 ),
                             },
                             "cleanup_confirmed": True,
+                            **({
+                                "credential_acquisition": "bounded_form_login",
+                                "session_material": "private_preallocated_wp_session_released_after_exact_password_authentication",
+                                "fresh_session_creation_or_fixation_prevention_established": False,
+                            } if supplied_session.login_path is not None else {}),
                         }
                         if supplied_session is not None else None
                     ),
@@ -8098,6 +8456,33 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     session_case_trace,
                     session=supplied,
                     conditional_metadata_path=conditional_path,
+                )
+
+            for form_case in (
+                {"name": "session-form-login-root", "outcome": "complete", "fingerprints": True},
+                {"name": "session-form-login-option-off", "outcome": "complete", "integration": False},
+                {"name": "session-form-login-wrong-password", "outcome": "login_cookie_unavailable", "wrong_password": True},
+                {"name": "session-form-login-wrong-principal", "outcome": "startup_unhealthy", "credential": "termivar-lab-bob"},
+                {"name": "session-form-login-health-loss", "outcome": "session_lost", "loss": True},
+            ):
+                supplied_form = session_input(
+                    form_case["name"], wordpress_path="/var/www/html", application_path="/",
+                    credential_login=form_case.get("credential", "termivar-lab-alice"),
+                    form_login=True, wrong_password=form_case.get("wrong_password", False),
+                    lose_after_resource=form_case.get("loss", False),
+                )
+                integration = form_case.get("integration", True)
+                form_trace = run_case(
+                    form_case["name"], review=True, discovery=True,
+                    discovery_oracle=root_pretty_oracle, supplied_session=supplied_form,
+                    wordpress_supplied_session=integration,
+                    expected_session_outcome=form_case["outcome"],
+                    fingerprints_path=FINGERPRINT_CATALOGUE_PATH if form_case.get("fingerprints", False) else None,
+                )
+                _assert_session_preserves_anonymous_trace(
+                    pretty_discovery, form_trace, session=supplied_form,
+                    conditional_metadata_path=(conditional_root_readme
+                        if integration and form_case["outcome"] == "complete" else None),
                 )
 
             observed_baselines: dict[
@@ -8322,6 +8707,20 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 conditional_metadata_path=(
                     "/blog/wp-content/plugins/termivar-fingerprint-lab/readme.txt"
                 ),
+            )
+
+            blog_form = session_input(
+                "session-form-login-subdirectory", wordpress_path="/var/www/html/blog",
+                application_path="/blog/", credential_login="termivar-lab-alice", form_login=True,
+            )
+            blog_form_trace = run_case(
+                "session-form-login-subdirectory", review=True, discovery=True,
+                target=blog_target, discovery_oracle=blog_pretty_oracle, supplied_session=blog_form,
+                wordpress_supplied_session=True, expected_session_outcome="complete",
+            )
+            _assert_session_preserves_anonymous_trace(
+                blog_pretty_discovery, blog_form_trace, session=blog_form,
+                conditional_metadata_path="/blog/wp-content/plugins/termivar-fingerprint-lab/readme.txt",
             )
 
             lab.configure_fingerprint_assets(
@@ -8568,9 +8967,30 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                 "session run modified the operator layout declaration",
             )
 
+            custom_form = session_input(
+                "session-form-login-custom-layout", wordpress_path="/var/www/html/cms",
+                application_path="/", credential_login="termivar-lab-alice", form_login=True,
+            )
+            custom_form_trace = run_case(
+                "session-form-login-custom-layout", review=True, discovery=True,
+                target=cms_target, discovery_oracle=custom_layout_oracle, layout_path=layout_path,
+                supplied_session=custom_form, wordpress_supplied_session=True,
+                expected_session_outcome="complete", expected_component_association="explicit_operator",
+            )
+            _assert_session_preserves_anonymous_trace(
+                custom_layout, custom_form_trace, session=custom_form,
+                conditional_metadata_path="/modules/termivar-fingerprint-lab/readme.txt",
+            )
+            require(layout_path.read_bytes() == declaration_bytes,
+                    "form-login run modified the operator layout declaration")
+
             require(
-                tuple(scenarios) == EXPECTED_SCENARIOS,
-                "real-CMS scenario registry differs from the reviewed 28-plus-9 matrix",
+                len(scenarios) == 44
+                and tuple(name for name in scenarios if name not in FORM_LOGIN_SCENARIOS)
+                == EXPECTED_SCENARIOS[:-7]
+                and tuple(name for name in scenarios if name in FORM_LOGIN_SCENARIOS)
+                == FORM_LOGIN_SCENARIOS,
+                "real-CMS scenario registry differs from the reviewed 37-plus-7 matrix",
                 {
                     "status": "scenario_registry_mismatch",
                     "expected_count": len(EXPECTED_SCENARIOS),
@@ -8579,6 +8999,9 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
                     "unexpected": sorted(set(scenarios) - set(EXPECTED_SCENARIOS)),
                 },
             )
+            # Layouts execute in their existing controller stages. Canonical
+            # evidence keeps the immutable old37 order followed by the new7.
+            scenarios = {name: scenarios[name] for name in EXPECTED_SCENARIOS}
 
             measured = [
                 scenario["process_metrics"]["peak_memory"].get("status") == "measured"
@@ -8629,6 +9052,11 @@ def execute_acceptance(binary: Path, source_ref: str, expected_version: str) -> 
         "real_wordpress_executed": True,
         "wordpress_cli_used_only_as_test_ground_truth": True,
         "termivar_received_task_owned_supplied_session_cookie": True,
+        "form_login_received_username_password_not_precomputed_cookie": True,
+        "form_login_password_authenticated_by_wordpress": True,
+        "form_login_preallocated_session_limit_preserved": True,
+        "native_wp_login_php_compatibility": "not_tested",
+        "fresh_session_creation_or_fixation_prevention": "not_established",
         "supplied_session_cookie_use": "exact_child_health_and_resource_gets_only",
         "supplied_session_raw_secret_in_evidence_or_logs": False,
         "wordpress_metadata_credential_mode": "anonymous",

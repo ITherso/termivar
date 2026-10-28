@@ -755,7 +755,7 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
             "V5: --session-oauth-code-file FILE and explicit external public-code S256 policy",
             "V6: --session-oauth-code-file FILE and explicit once-only scheduled Bearer refresh policy",
             "V7: --session-oauth-authorization-output FILE and explicit client-initiated public-code S256 policy",
-            "optional --wordpress-supplied-session for V1/V2 when also compiled with wordpress-review",
+            "optional --wordpress-supplied-session for V1/V2/V3 when also compiled with wordpress-review",
             "HTTPS, except numeric-loopback HTTP fixtures; Secure cookies still require HTTPS"
         ])
     );
@@ -807,8 +807,10 @@ fn actual_binary_reports_package_scoped_compile_time_truth() {
         "owned-numeric-loopback-http/v1",
         "No browser-profile import, form discovery, credential guessing, automatic OAuth/OIDC login, MFA bypass",
         "exploit, or impact validation",
-        "WordPress supplied-session composition remains limited to V1/V2",
-        "V3/V4/V5/V6/V7 are rejected before their secret files are read",
+        "WordPress supplied-session composition is limited to V1/V2/V3",
+        "V3 uses the form-login collection-policy revision",
+        "actual final epoch 0 is retained if acquisition never completed",
+        "V4/V5/V6/V7 are rejected before their secret files are read",
         "V7 alone initiates one public-client S256 authorization transaction",
         "independent OS-random verifier and state",
         "requires matching state and issuer",

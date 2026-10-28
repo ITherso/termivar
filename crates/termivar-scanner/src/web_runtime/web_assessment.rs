@@ -2085,7 +2085,7 @@ pub enum WebAssessmentRuntimeError {
     )]
     WordPressSuppliedSessionRequiresInputs,
     #[cfg(all(feature = "wordpress-review", feature = "supplied-session-review"))]
-    #[error("WordPress supplied-session integration does not support bounded form-login policies")]
+    #[error("WordPress supplied-session integration does not support renewal or OAuth policies")]
     WordPressSuppliedSessionUnsupportedPolicy,
     #[cfg(feature = "wordpress-review")]
     #[error("WordPress context root does not match the exact assessment target")]
@@ -2751,7 +2751,9 @@ impl WebAssessmentRuntimeBuilder {
                 .is_some_and(|(policy, _)| {
                     !matches!(
                         policy.version(),
-                        SuppliedSessionPolicyVersion::V1 | SuppliedSessionPolicyVersion::V2
+                        SuppliedSessionPolicyVersion::V1
+                            | SuppliedSessionPolicyVersion::V2
+                            | SuppliedSessionPolicyVersion::V3
                     )
                 })
         {
@@ -4926,10 +4928,23 @@ impl WebAssessmentRuntime {
                                     ),
                                 });
                             };
-                            self.supplied_session_audit = Some(
+                            let audit =
                                 boxed_session_review(session, &self.authority, Some(&binding))
-                                    .await,
-                            );
+                                    .await;
+                            let complete = binding.complete(&audit);
+                            self.supplied_session_audit = Some(audit);
+                            if complete.is_err() {
+                                return Err(WebAssessmentRuntimeError::ProjectionInvariant {
+                                    receipt: self.failure_receipt(
+                                        &known_subjects,
+                                        subject_reports,
+                                        forms,
+                                        subject_report,
+                                        failed_reasons(&reasons),
+                                        started_at,
+                                    ),
+                                });
+                            }
                         }
                         if subject.origin == WebAssessmentSubjectOrigin::AuthorizedRoot
                             && !should_stop
