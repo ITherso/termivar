@@ -2439,6 +2439,24 @@ def validate_authorization_case(name: str, audit: object, target_rows: list[dict
     expected = AUTHORIZATION_EXPECTED[name]
     nested = audit.get("oauth_authorization", _MISSING) if type(audit) is dict else _MISSING
     token = audit.get("oauth_token_exchange", _MISSING) if type(audit) is dict else _MISSING
+    checkpoint_rows = audit.get("checkpoints", _MISSING) if type(audit) is dict else _MISSING
+
+    def closed_marker(value: object, allowed: tuple[str, ...]) -> object:
+        return value if type(value) is str and value in allowed else marker(value)
+
+    checkpoint_diagnostic = {
+        "container": marker(checkpoint_rows),
+        "rows": [
+            {**{key: marker(row.get(key, _MISSING)) for key in (
+                "sequence", "after_subject_count", "epoch", "status", "response_bytes")},
+             "phase": closed_marker(row.get("phase", _MISSING), ("startup", "subject_boundary", "terminal", "renewal")),
+             "body_state": closed_marker(row.get("body_state", _MISSING), ("complete", "incomplete", "unavailable")),
+             "outcome": closed_marker(row.get("outcome", _MISSING), ("healthy", "unhealthy", "indeterminate")),
+             "predicate": closed_marker(row.get("predicate", _MISSING), ("matched", "not_matched", "not_evaluated"))}
+            if type(row) is dict else marker(row)
+            for row in checkpoint_rows[:4]
+        ] if type(checkpoint_rows) is list else [],
+    }
     diagnostic = {"scenario": name, "expected": dict(expected), "actual": {
         "audit": marker(audit), "target_rows": marker(target_rows), "idp_rows": marker(idp_rows),
         "authorization": {key: marker(nested.get(key, _MISSING)) if type(nested) is dict else marker(nested)
@@ -2447,9 +2465,21 @@ def validate_authorization_case(name: str, audit: object, target_rows: list[dict
         "token": {key: marker(token.get(key, _MISSING)) if type(token) is dict else marker(token)
             for key in ("request_attempt_count", "request_admitted_count", "response_completed_count",
                         "credential_commit_count", "token_response_validated", "response_bytes")},
+        "checkpoints": checkpoint_diagnostic,
         "resources": marker(audit.get("resources", _MISSING)) if type(audit) is dict else marker(audit),
         "user_agent": {key: marker(user_agent.get(key, _MISSING)) if type(user_agent) is dict else marker(user_agent)
             for key in ("post_count", "request_bytes", "reply_bytes", "product_generated_request_used")}}}
+    diagnostic["expected"]["checkpoints"] = {
+        "sequence": [0, 1, 2] if name == "initiated-valid-a" else [],
+        "phase": ["startup", "subject_boundary", "terminal"] if name == "initiated-valid-a" else [],
+        "epoch_field": "absent_on_nonrenewable_v7_checkpoint_wire",
+    }
+    diagnostic["expected"]["token_outcome"] = (
+        "credential_committed" if name == "initiated-valid-a" else
+        "response_rejected" if expected["token_posts"] else "not_dispatched")
+    diagnostic["actual"]["token"]["outcome"] = closed_marker(
+        token.get("outcome", _MISSING) if type(token) is dict else token,
+        ("credential_committed", "response_rejected", "not_dispatched", "not_started"))
     require(type(audit) is dict and type(nested) is dict and type(token) is dict
             and type(target_rows) is list and type(idp_rows) is list
             and len(target_rows) <= MAX_TRACE and len(idp_rows) <= MAX_TRACE
@@ -2532,7 +2562,7 @@ def validate_authorization_case(name: str, audit: object, target_rows: list[dict
             and token.get("token_response_validated") is successful
             and token.get("response_scope_matched") is (True if successful else None)
             and token.get("outcome") == ("credential_committed" if successful else
-                "response_rejected" if expected["token_posts"] else "not_started")
+                "response_rejected" if expected["token_posts"] else "not_dispatched")
             and type(token.get("configured_token_response_byte_limit")) is int
             and token["configured_token_response_byte_limit"] == 8192
             and integer(token.get("response_bytes"))
@@ -2575,7 +2605,9 @@ def validate_authorization_case(name: str, audit: object, target_rows: list[dict
         require(type(row.get("sequence")) is int and row["sequence"] == index
                 and row.get("phase") == ("startup", "subject_boundary", "terminal")[index]
                 and type(row.get("after_subject_count")) is int and row["after_subject_count"] == index
-                and type(row.get("epoch")) is int and row["epoch"] == 1
+                # V7 does not renew: its checkpoint epoch is implicit, unlike
+                # explicit resource epochs or V4/V6 renewable checkpoints.
+                and "epoch" not in row
                 and row.get("status") == 200 and row.get("body_state") == "complete"
                 and row.get("outcome") == "healthy" and row.get("predicate") == "matched"
                 and _opaque_reference(row.get("evidence_reference"), "supplied-session-checkpoint-evidence-sha256:")

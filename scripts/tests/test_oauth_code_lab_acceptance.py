@@ -236,8 +236,6 @@ def synthetic_authorization_audit(name):
                    "outcome": "complete" if positive else "oauth_code_exchange_unavailable",
                    "response_byte_limit": 65536, "dispatched_request_count": 6 if positive else int(exchange),
                    "response_bytes": 612 if positive else 64 if exchange else 0})
-    for row in source["checkpoints"]:
-        row["epoch"] = 1
     source["oauth_authorization"] = {
         "profile": "loopback-form-post-state/v1",
         "authorization_policy_reference": "oauth-authorization-policy-sha256:" + "a" * 64,
@@ -265,7 +263,7 @@ def synthetic_authorization_audit(name):
         "response_scope_matched": True if positive else None, "declared_token_lifetime_seconds": 180 if positive else None,
         "refresh_token_returned": True if positive else None,
         "evidence_reference": "supplied-session-oauth-code-evidence-sha256:" + "d" * 64 if positive else None,
-        "outcome": "credential_committed" if positive else "response_rejected" if exchange else "not_started",
+        "outcome": "credential_committed" if positive else "response_rejected" if exchange else "not_dispatched",
     }
     return source
 
@@ -1097,6 +1095,127 @@ class AuthorizationAcceptanceTests(unittest.TestCase):
                                                        baseline, synthetic_user_agent_result(name))
             self.assertEqual((result["outgoing_session_requests"], result["evaluated_resources"],
                               synthetic_authorization_audit(name)["oauth_authorization"]["callback_commit_count"]), counts)
+
+    def test_nonrenewable_v7_checkpoint_wire_omits_epoch_and_resource_epoch_remains_explicit(self):
+        name = "initiated-valid-a"
+        baseline = [{"method": "GET", "role": "ordinary", "entry_path": True}] * 3
+        target, provider = synthetic_authorization_trace(name)
+        source = synthetic_authorization_audit(name)
+        self.assertEqual([row["phase"] for row in source["checkpoints"]],
+                         ["startup", "subject_boundary", "terminal"])
+        self.assertTrue(all("epoch" not in row for row in source["checkpoints"]))
+        self.assertEqual([row["epoch"] for row in source["resources"]], [1, 1])
+        passed = lab.validate_authorization_case(name, source, target, provider, baseline,
+                                                 synthetic_user_agent_result(name))
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(passed["diagnostic"]["actual"]["checkpoints"]["rows"][1]["epoch"],
+                         {"state": "missing"})
+        for value in (1, 2, 0, None, True, "1"):
+            invalid = copy.deepcopy(source)
+            invalid["checkpoints"][1]["epoch"] = value
+            with self.subTest(unexpected_epoch=value), self.assertRaisesRegex(
+                    lab.LabError, "^authorization_health_oracle$") as raised:
+                lab.validate_authorization_case(name, invalid, target, provider, baseline,
+                                                  synthetic_user_agent_result(name))
+            self.assertNotEqual(raised.exception.diagnostic["actual"]["checkpoints"]["rows"][1]["epoch"],
+                                {"state": "missing"})
+        for key, value in (("sequence", True), ("phase", "terminal"),
+                           ("phase", "https://private.invalid/PRIVATE-PHASE-CANARY"),
+                           ("after_subject_count", False)):
+            invalid = copy.deepcopy(source)
+            invalid["checkpoints"][1][key] = value
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(
+                    lab.LabError, "^authorization_health_oracle$") as raised:
+                lab.validate_authorization_case(name, invalid, target, provider, baseline,
+                                                  synthetic_user_agent_result(name))
+            diagnostic = json.dumps(raised.exception.diagnostic)
+            self.assertNotIn("PRIVATE-PHASE-CANARY", diagnostic)
+            self.assertLess(len(diagnostic), 4096)
+        invalid = copy.deepcopy(source)
+        del invalid["resources"][0]["epoch"]
+        with self.assertRaisesRegex(lab.LabError, "^authorization_resource_identity$"):
+            lab.validate_authorization_case(name, invalid, target, provider, baseline,
+                                              synthetic_user_agent_result(name))
+
+    def test_unattempted_v7_token_wire_is_not_dispatched_not_callback_not_started(self):
+        baseline = [{"method": "GET", "role": "ordinary", "entry_path": True}] * 3
+        for name in ("initiated-wrong-state", "initiated-wrong-issuer", "initiated-provider-error"):
+            source = synthetic_authorization_audit(name)
+            target, provider = synthetic_authorization_trace(name)
+            token = source["oauth_token_exchange"]
+            self.assertEqual(token["outcome"], "not_dispatched")
+            self.assertEqual((token["request_attempt_count"], token["request_admitted_count"],
+                              token["response_completed_count"], token["credential_commit_count"]), (0, 0, 0, 0))
+            passed = lab.validate_authorization_case(name, source, target, provider, baseline,
+                                                     synthetic_user_agent_result(name))
+            self.assertEqual(passed["token_outcome"], "not_dispatched")
+            for value in ("not_started", None, False, 0, "PRIVATE-TOKEN-OUTCOME-CANARY"):
+                invalid = copy.deepcopy(source)
+                invalid["oauth_token_exchange"]["outcome"] = value
+                with self.subTest(scenario=name, value=value), self.assertRaisesRegex(
+                        lab.LabError, "^authorization_exchange_accounting$") as raised:
+                    lab.validate_authorization_case(name, invalid, target, provider, baseline,
+                                                      synthetic_user_agent_result(name))
+                diagnostic = json.dumps(raised.exception.diagnostic)
+                self.assertNotIn("PRIVATE-TOKEN-OUTCOME-CANARY", diagnostic)
+                self.assertLess(len(diagnostic), 4096)
+                if value == "not_started":
+                    self.assertEqual(raised.exception.diagnostic["actual"]["token"]["outcome"], "not_started")
+            invalid = copy.deepcopy(source)
+            del invalid["oauth_token_exchange"]["outcome"]
+            with self.assertRaisesRegex(lab.LabError, "^authorization_exchange_accounting$") as raised:
+                lab.validate_authorization_case(name, invalid, target, provider, baseline,
+                                                  synthetic_user_agent_result(name))
+            self.assertEqual(raised.exception.diagnostic["actual"]["token"]["outcome"], {"state": "missing"})
+
+    def test_independent_v7_wire_literals_agree_with_named_producer_and_strict_reader(self):
+        # Narrow source-contract guard, not a Rust parser and not a generator of
+        # the mock input/oracle. Fail if these reviewed anchors cease to apply.
+        scanner = ROOT / "crates/termivar-scanner/src"
+        runtime = (scanner / "web_runtime/supplied_session_runtime.rs").read_text(encoding="utf-8")
+        checkpoint = runtime.split("pub struct WebAssessmentSuppliedSessionCheckpointAudit {", 1)[1].split("\n}", 1)[0]
+        self.assertRegex(checkpoint, r'#\[serde\(skip_serializing_if = "Option::is_none"\)\]\s+epoch: Option<u8>')
+        selected_epoch = runtime.split("record.epoch = matches!(", 1)[1].split(".then_some(self.epoch);", 1)[0]
+        self.assertIn("SuppliedSessionPolicyVersion::V4 | SuppliedSessionPolicyVersion::V6", selected_epoch)
+        self.assertNotIn("SuppliedSessionPolicyVersion::V7", selected_epoch)
+        reader = (scanner / "reporting/comparison/import/audits.rs").read_text(encoding="utf-8")
+        checkpoint_reader = reader.split("fn validate_supplied_session_checkpoint", 1)[1].split(
+            'check(number(fields, "sequence"', 1)[0]
+        self.assertIn('"response_bytes"', checkpoint_reader)
+        self.assertIn("&[],", checkpoint_reader)
+        self.assertNotIn('"epoch"', checkpoint_reader)
+        token_producer = (scanner / "web_runtime/supplied_session_runtime/oauth_code.rs").read_text(encoding="utf-8")
+        self.assertIn('Self::NotDispatched => "not_dispatched"', token_producer)
+        self.assertIn('s.serialize_field("outcome", &a.outcome)?;', token_producer)
+        v7_reader = (scanner / "reporting/comparison/import/audits/supplied_session_oauth_authorization.rs").read_text(encoding="utf-8")
+        token_outcomes = v7_reader.split("let exchange_outcome = token(", 1)[1].split(
+            'let outcome = string(fields, "outcome")?', 1)[0]
+        self.assertIn('"not_dispatched"', token_outcomes)
+        self.assertNotIn('"not_started"', token_outcomes)
+        self.assertIn("validate_supplied_session(&Value::Object(common), items)?", v7_reader)
+
+    def test_actual_execution_loop_uses_producer_conformant_v7_shapes_through_every_offline_check(self):
+        observed = []
+
+        def inspect(name, document):
+            if name in AUTHORIZATION_NAMES:
+                observed.append(name)
+                audit = document["supplied_session"]
+                self.assertTrue(all("epoch" not in row for row in audit["checkpoints"]))
+                self.assertEqual([row["epoch"] for row in audit["resources"]], [1, 1])
+                if name in AUTHORIZATION_NAMES[1:4]:
+                    self.assertEqual(audit["oauth_token_exchange"]["outcome"], "not_dispatched")
+
+        document, runner, _ = AcceptanceTests.execute_fake(self, FakeRunner(inspect))
+        self.assertEqual(tuple(observed), AUTHORIZATION_NAMES)
+        self.assertEqual(len(runner.scanner_arguments), 14)
+        self.assertEqual(len(runner.records), 48)
+        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-verify")]), 14)
+        self.assertEqual(len([row for row in runner.records if row["id"].endswith("-self-compare")]), 14)
+        self.assertEqual(len(document["offline"]["controlled_comparisons"]), 4)
+        self.assertEqual(len(document["authorization_offline"]["controlled_comparisons"]), 1)
+        self.assertTrue(document["offline"]["fixtures_stopped_before_execution"])
+        self.assertTrue(document["authorization_offline"]["fixtures_stopped_before_execution"])
 
     def test_missing_bool_wrong_counts_and_inflated_claims_fail_with_bounded_diagnostics(self):
         mutations = (
