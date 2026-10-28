@@ -269,6 +269,13 @@ fn wordpress_form_login_real_cli_qualifies_anonymous_metadata() {
 fn record_executed_binary_identity() {
     use sha2::{Digest, Sha256};
     const LIMIT: u64 = 128 * 1024 * 1024;
+    // The four native qualification commands explicitly use --release. Debug
+    // images may embed extensive symbols; they still execute EVERY functional
+    // assertion above, but this extra release-image measurement is not theirs.
+    if cfg!(debug_assertions) {
+        eprintln!("TERMIVAR_WORDPRESS_FORM_LOGIN_IDENTITY_NOT_MEASURED profile=debug reason=release_only_qualification");
+        return;
+    }
     let path = Path::new(env!("CARGO_BIN_EXE_termivar"));
     let metadata = fs::symlink_metadata(path).expect("inspect executed fixture CLI");
     assert!(metadata.is_file() && !metadata.file_type().is_symlink());
