@@ -260,6 +260,50 @@ fn wordpress_form_login_real_cli_qualifies_anonymous_metadata() {
         fs::read(destination.join("assessment.json")).unwrap(),
         assessment_bytes
     );
+    record_executed_binary_identity();
+}
+
+// Test-only identity of the actual CLI used above, not the earlier OAuth-only
+// build in a native job. The observer binds this to that job's exact checkout;
+// GITHUB_SHA is intentionally not treated as the PR head (it can be a merge ref).
+fn record_executed_binary_identity() {
+    use sha2::{Digest, Sha256};
+    const LIMIT: u64 = 128 * 1024 * 1024;
+    let path = Path::new(env!("CARGO_BIN_EXE_termivar"));
+    let metadata = fs::symlink_metadata(path).expect("inspect executed fixture CLI");
+    assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+    assert!(metadata.len() > 0 && metadata.len() <= LIMIT);
+    let mut file = fs::File::open(path).expect("read executed fixture CLI");
+    let mut hasher = Sha256::new();
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 32 * 1024];
+    loop {
+        let count = file.read(&mut buffer).expect("hash executed fixture CLI");
+        if count == 0 {
+            break;
+        }
+        total = total.checked_add(count as u64).unwrap();
+        assert!(total <= LIMIT);
+        hasher.update(&buffer[..count]);
+    }
+    assert_eq!(total, metadata.len());
+    assert_eq!(fs::metadata(path).unwrap().len(), total);
+    let record = serde_json::json!({
+        "schema": "native-wordpress-form-login-executable/v1",
+        "run_id": std::env::var("GITHUB_RUN_ID").ok(),
+        "run_attempt": std::env::var("GITHUB_RUN_ATTEMPT").ok(),
+        "target_os": std::env::consts::OS,
+        "target_arch": std::env::consts::ARCH,
+        "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "package_version": env!("CARGO_PKG_VERSION"),
+        "supplied_session_review": true,
+        "wordpress_review": true,
+        "release_bundle": cfg!(feature = "release-bundle"),
+        "bytes": total,
+        "sha256": format!("{:x}", hasher.finalize()),
+        "assurance": "self_reported_hash_joined_to_exact_job_checkout_not_attestation"
+    });
+    eprintln!("TERMIVAR_WORDPRESS_FORM_LOGIN_EXECUTABLE {record}");
 }
 
 // Literal framing oracle: no production collector/reference helper is called.

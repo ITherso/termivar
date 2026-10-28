@@ -1177,8 +1177,15 @@ fn form_login_policy_mismatch_precedes_output_reservation_and_secret_acquisition
 }
 
 #[cfg(feature = "wordpress-review")]
-#[test]
-fn wordpress_form_login_missing_secret_precedes_output_and_network_acquisition() {
+fn assert_wordpress_form_login_input_refusal(occupied: bool) {
+    let mut server = serve_form_login(|_, _| {
+        response(
+            "503 Service Unavailable",
+            "text/plain",
+            "unexpected request",
+            "",
+        )
+    });
     let directory = tempfile::tempdir().expect("create private WordPress form-login fixture");
     let policy_path = directory.path().join("form-login-policy.toml");
     let missing_login = directory
@@ -1188,12 +1195,14 @@ fn wordpress_form_login_missing_secret_precedes_output_and_network_acquisition()
         .path()
         .join("blocked-wordpress-form-login-destination");
     fs::write(&policy_path, form_login_policy("127.0.0.1")).expect("write valid form-login policy");
-    fs::write(&blocked_destination, b"existing sentinel").expect("reserve sentinel path");
+    if occupied {
+        fs::write(&blocked_destination, b"existing sentinel").expect("reserve sentinel path");
+    }
 
     let output = termivar()
         .args([
             "scan",
-            "http://127.0.0.1:9/app/",
+            &server.application_url,
             "--profile",
             "web-review",
             "--wordpress-review",
@@ -1213,14 +1222,39 @@ fn wordpress_form_login_missing_secret_precedes_output_and_network_acquisition()
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("bounded UTF-8 diagnostic");
     assert!(
-        stderr.contains("supplied-session credential source could not be loaded"),
-        "missing V3 secret did not precede output and network acquisition: {stderr}"
+        stderr.contains(if occupied {
+            "report bundle destination already exists"
+        } else {
+            "CredentialSource(SourceUnavailable)"
+        }),
+        "V3 preflight did not retain the selected output/input refusal contract"
     );
     assert!(!stderr.contains("PRIVATE-MISSING-WORDPRESS-FORM-LOGIN"));
-    assert_eq!(
-        fs::read(&blocked_destination).expect("read unchanged sentinel"),
-        b"existing sentinel"
-    );
+    if occupied {
+        assert_eq!(
+            fs::read(&blocked_destination).expect("read unchanged sentinel"),
+            b"existing sentinel"
+        );
+    } else {
+        assert!(
+            !blocked_destination.exists(),
+            "failed acquisition must abort its own reservation"
+        );
+    }
+    server.stop();
+    assert!(server.requests.lock().unwrap().is_empty());
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn wordpress_form_login_missing_secret_aborts_before_network_or_publication() {
+    assert_wordpress_form_login_input_refusal(false);
+}
+
+#[cfg(feature = "wordpress-review")]
+#[test]
+fn wordpress_form_login_output_collision_precedes_secret_acquisition() {
+    assert_wordpress_form_login_input_refusal(true);
 }
 
 #[cfg(feature = "ssrf-oast-review")]
